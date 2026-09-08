@@ -242,8 +242,6 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
       field_3: role,
       field_4: Number(payload?.attemptNo || 1),
       field_5: nonEmpty(payload?.parentMeasurementId),
-      field_6: nonEmpty(payload?.sourceFileName),
-      field_7: nonEmpty(payload?.sourceSheet),
     }, accessToken);
     created.push(["XRF_Measurements", header.id]);
 
@@ -327,7 +325,9 @@ function itemFieldsFromPayload(itemId, payload) {
     field_11: item.registrationPeriodNo == null ? null : Number(item.registrationPeriodNo),
     field_13: nonEmpty(item.actionNote),
     Replacement_Of: payload.requestType === "Replacement" ? nonEmpty(payload.targetPartNumber) : nonEmpty(item.replacementOf),
-    Replacement_Date: dateOnly(item.replacementDate || payload.form?.replacementDate),
+    Replacement_Date: payload.requestType === "Replacement"
+      ? dateOnly(item.replacementDate || payload.form?.replacementDate)
+      : null,
   };
 }
 

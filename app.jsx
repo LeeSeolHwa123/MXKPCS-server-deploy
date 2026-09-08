@@ -636,6 +636,12 @@ function buildSharePointRequestItems(requestRows,masterItems,measurementMap){
       && proposedCode
       && masterByCode.has(proposedCode)) continue;
 
+    // 승인된 단종 요청은 별도 가상 품목으로 다시 만들지 않습니다.
+    // 원본 Master 품목이 Discontinued 상태와 기존 측정 이력을 함께 표시합니다.
+    if(requestTypeKey==="discontinue"
+      && target
+      && status.toLowerCase()==="applied") continue;
+
     const runtimeCode=requestTypeKey==="discontinue"
       ? requestId
       : (proposedCode||requestId);
@@ -666,6 +672,7 @@ function buildSharePointRequestItems(requestRows,masterItems,measurementMap){
     ).trim();
 
     const base=normalizeItemRecord({
+      _isRequestRecord:true,
       itemId:proposedItemId||null,
       _spRequestItemId:row?.id||null,
       _sourceCode:runtimeCode,
@@ -773,13 +780,25 @@ function mergeSharePointRequestMetadata(masterItems,requestRows){
 
     if(requestType==="discontinue"){
       const target=byItemId.get(String(f.field_3||"").trim())||null;
+      const applied=status.toLowerCase()==="applied";
       mergePatch(target,{
         ...requestCommon,
-        discontinuedByRequestCode:requestId,
+        discontinueTargetCode:target?.code||"",
+        pendingDiscontinueRequestCode:applied?null:requestId,
+        discontinuedByRequestCode:applied?requestId:(target?.discontinuedByRequestCode||null),
         discontinueReason:String(f.Discontinue_Reason||f.field_15||"").trim(),
         discontinueReasonOther:sharePointPlainText(f.Discontinue_Reason_Other||""),
         finalUseDate:dateOnly(f.Final_Use_Date||f.Effective_Date),
         stockDisposition:String(f.Stock_Disposition||f.field_16||"").trim(),
+        ...(applied?{
+          category:"changed",
+          categoryLabel:"변경·대체",
+          lifecycle:"Discontinued",
+          isCurrent:false,
+          nextDue:null,
+          dDay:null,
+          complianceStatus:"notAvailable",
+        }:{}),
       });
     }
   }
@@ -2410,8 +2429,14 @@ function dateGte(a,b){ return a && b && new Date(a) >= new Date(b); }
 function dateLt(a,b){ return a && b && new Date(a) < new Date(b); }
 function cleanStatus(s){ return String(s||"").toLowerCase().replace(/[\s_-]/g,""); }
 function isDiscontinueRequestItem(item){
-  const rt=String(item?.requestType||"").toLowerCase();
-  return rt==="discontinue" || String(item?.name||"").startsWith("[단종 요청]");
+  return item?._isRequestRecord===true || String(item?.name||"").startsWith("[단종 요청]");
+}
+function hasDiscontinueRequestMetadata(item){
+  return String(item?.requestType||"").toLowerCase()==="discontinue"
+    && !!(item?._spRequestItemId || item?.requestId || item?.discontinuedByRequestCode);
+}
+function discontinueRequestCodeOf(item){
+  return item?.requestId || item?.discontinuedByRequestCode || item?.code || "—";
 }
 function isDiscontinuedItem(item){
   return item?.lifecycle==="Discontinued";
@@ -4641,6 +4666,7 @@ export default function App(){
   const [approvalOverrides,setApprovalOverrides]=useState({});
   const [itemEditOpen,setItemEditOpen]=useState(false);
   const [itemEditForm,setItemEditForm]=useState(null);
+  const [itemEditAuth,setItemEditAuth]=useState({open:false,item:null,password:"",error:""});
   const [regMode,setRegMode]=useState("requester");
   const [reqXrfMode,setReqXrfMode]=useState("request");
   const [reqUploadResult,setReqUploadResult]=useState(emptyUploadedXrfResult());
@@ -4754,7 +4780,12 @@ export default function App(){
   },[lang]);
 
   // 품목이 바뀌면 이전 품목에서 수동으로 선택했던 주기 페이지를 이어받지 않습니다.
-  useEffect(()=>{ setSelPeriodPage(null); setItemEditOpen(false); setItemEditForm(null); },[selKey]);
+  useEffect(()=>{
+    setSelPeriodPage(null);
+    setItemEditOpen(false);
+    setItemEditForm(null);
+    setItemEditAuth({open:false,item:null,password:"",error:""});
+  },[selKey]);
   // 탭별로 따로 계산하지 않고, 모든 탭이 같은 runtime workflow를 읽도록 단일 연결 구조를 구성합니다.
   // XRF 업로드(itemOverrides) → 정밀분석 입력(precisionOverrides) → Workflow/Approval 파생 → 목록/XRF/정밀분석/Risk 탭이 일괄 갱신됩니다.
   const baseItems=useMemo(()=>applyPeriodBasedCategories(deriveReplacementRelations([
@@ -5198,6 +5229,7 @@ export default function App(){
       const target=selectedDiscontinueItem || {};
       const code=`${target.code||"DISC"}-REQ-${TODAY_STR.replaceAll("-","")}`;
       const item={
+        _isRequestRecord:true,
         code,
         name:`[단종 요청] ${target.name||"기존 품목"}`,
         nameEn:target.nameEn||"",
@@ -5249,8 +5281,10 @@ export default function App(){
         history:[],
         latest:null
       };
-      setRequestItems(prev=>[item,...prev.filter(x=>x.code!==code)]);
-      setApprovalOverrides(prev=>({...prev,[code]:adminDirect?"승인":"보류"}));
+      if(!adminDirect){
+        setRequestItems(prev=>[item,...prev.filter(x=>x.code!==code)]);
+        setApprovalOverrides(prev=>({...prev,[code]:"보류"}));
+      }
       if(adminDirect && target.code){
         const beforeTargetSnapshot={...target};
         const targetStateKey=itemStateKey(target);
@@ -5737,7 +5771,7 @@ export default function App(){
     [allItems,approvalStatusOf,discontinueRequestItems]
   );
   const canUndoDiscontinueRequest=useCallback((item)=>{
-    if(!item || !isDiscontinueRequestItem(item)) return false;
+    if(!item || !hasDiscontinueRequestMetadata(item)) return false;
     const approvalKey=approvalFilterKey(approvalStatusOf(item));
     const processKey=String(item.processStatus||"").trim().toLowerCase();
     const lifecycleKey=String(item.lifecycle||"").trim();
@@ -5747,6 +5781,7 @@ export default function App(){
   },[approvalStatusOf]);
   const selectedDiscontinueRequestForTarget=useMemo(()=>{
     if(!sel || isDiscontinueRequestItem(sel)) return null;
+    if(hasDiscontinueRequestMetadata(sel) && canUndoDiscontinueRequest(sel)) return sel;
     return discontinueRequestItems.find(item=>
       item.discontinueTargetCode===sel.code
       && canUndoDiscontinueRequest(item)
@@ -5756,7 +5791,8 @@ export default function App(){
   const handleAdminXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
     if(!file || !sel || !isAdminUser) return;
-    if(approvalFilterKey(approvalStatusOf(sel))!=="measuring" || isDiscontinueRequestItem(sel)) return;
+    // 신규 품목은 XRF 결과가 없어 Approval이 보류여도 XRF_REQUIRED 단계에서 최초 측정을 업로드할 수 있습니다.
+    if(!selectedIsMeasuring || isDiscontinueRequestItem(sel)) return;
     setAdminUploadFileNameByCode(prev=>({...prev,[sel.code]:file.name}));
     setAdminUploadResultByCode(prev=>({...prev,[sel.code]:emptyUploadedXrfResult(file.name,{pending:true})}));
     const result=await parseUploadedXrfFile(file);
@@ -5778,7 +5814,7 @@ export default function App(){
       setTab("xrf");
     }
     e.target.value="";
-  },[approvalStatusOf,commitParsedMeasurement,isAdminUser,sel]);
+  },[commitParsedMeasurement,isAdminUser,sel,selectedIsMeasuring]);
 
   const handlePeriodXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
@@ -5975,6 +6011,8 @@ export default function App(){
         [targetStateKey]:{...(prev[targetStateKey]||{}),...terminalPatch,_sourceCode:targetStateKey}
       }));
       setRequestItems(prev=>prev.map(item=>itemStateKey(item)===targetStateKey?{...item,...terminalPatch}:item));
+      setSelKey(targetCode);
+      setSelPeriodNum(null);
     }
 
     void persistSharePointAction("processDiscontinue",{
@@ -5989,10 +6027,12 @@ export default function App(){
   },[allItems,isAdminUser,sel,persistSharePointAction]);
 
   const handleUndoDiscontinue=useCallback((candidate)=>{
-    const requestItem=isDiscontinueRequestItem(candidate) ? candidate : sel;
-    if(!requestItem || !isAdminUser || !isDiscontinueRequestItem(requestItem)) return;
-    if(!canUndoDiscontinueRequest(requestItem)) return;
-    const targetCode=requestItem.discontinueTargetCode;
+    const requestItem=hasDiscontinueRequestMetadata(candidate)
+      ? candidate
+      : (hasDiscontinueRequestMetadata(sel)?sel:null);
+    if(!requestItem || !isAdminUser || !canUndoDiscontinueRequest(requestItem)) return;
+    const targetCode=requestItem.discontinueTargetCode
+      || (!isDiscontinueRequestItem(requestItem)?requestItem.code:"");
     const baseTarget=allItems.find(item=>item.code===targetCode) || sharePointItems.find(item=>item.code===targetCode) || null;
     const snapshot=requestItem.beforeTargetSnapshot || (baseTarget ? {
       category:baseTarget.originCategory || baseTarget.category || "existing",
@@ -6042,7 +6082,7 @@ export default function App(){
       discontinueReason:"",
       finalUseDate:snapshot.finalUseDate||null,
       discontinueApprovalNote:"",
-      restoredFromDiscontinueRequestCode:requestItem.code,
+      restoredFromDiscontinueRequestCode:discontinueRequestCodeOf(requestItem),
       restoredAt:TODAY_STR,
       restoredBy:"admin",
       restoreReason:reason,
@@ -6054,7 +6094,7 @@ export default function App(){
       discontinuationHistory:[
         ...(Array.isArray(baseTarget?.discontinuationHistory)?baseTarget.discontinuationHistory:[]),
         {
-          requestCode:requestItem.code,
+          requestCode:discontinueRequestCodeOf(requestItem),
           approvedAt:requestItem.processedAt||requestItem.approvalCompletedAt||TODAY_STR,
           revertedAt:TODAY_STR,
           revertedBy:"admin",
@@ -6120,10 +6160,19 @@ export default function App(){
       window.alert("품목 정보 편집은 관리자만 가능합니다.");
       return;
     }
-    const password=window.prompt("관리자 비밀번호를 입력하세요.");
-    if(password===null) return;
-    if(password!==ADMIN_ITEM_EDIT_PASSWORD){
-      window.alert("관리자 비밀번호가 올바르지 않습니다.");
+    setItemEditAuth({open:true,item,password:"",error:""});
+  },[isAdminUser]);
+
+  const closeItemEditAuth=useCallback(()=>{
+    setItemEditAuth({open:false,item:null,password:"",error:""});
+  },[]);
+
+  const submitItemEditAuth=useCallback((event)=>{
+    event?.preventDefault?.();
+    const item=itemEditAuth.item;
+    if(!item) return closeItemEditAuth();
+    if(itemEditAuth.password!==ADMIN_ITEM_EDIT_PASSWORD){
+      setItemEditAuth(prev=>({...prev,error:"관리자 비밀번호가 올바르지 않습니다."}));
       return;
     }
     setItemEditForm({
@@ -6135,7 +6184,8 @@ export default function App(){
       dept:item.dept||"",
     });
     setItemEditOpen(true);
-  },[isAdminUser]);
+    closeItemEditAuth();
+  },[closeItemEditAuth,itemEditAuth]);
 
   const updateItemEditField=useCallback((field,value)=>{
     setItemEditForm(prev=>prev?{...prev,[field]:value}:prev);
@@ -6607,6 +6657,20 @@ export default function App(){
       `}</style>
       {openFilter&&<div style={{position:"fixed",inset:0,zIndex:9998}} onClick={()=>setOpenFilter(null)}/>}
       {openFilter&&<FilterPanel column={openFilter} pos={fPos} selected={fs[openFilter]||[]} onToggle={handleToggle} onClear={handleClear} onClose={()=>setOpenFilter(null)}/>}
+      {itemEditAuth.open&&(
+        <div role="presentation" onMouseDown={closeItemEditAuth} style={{position:"fixed",inset:0,zIndex:10000,display:"flex",alignItems:"center",justifyContent:"center",padding:18,background:"rgba(10,16,16,.58)",boxSizing:"border-box"}}>
+          <form role="dialog" aria-modal="true" aria-labelledby="admin-item-auth-title" onSubmit={submitItemEditAuth} onMouseDown={event=>event.stopPropagation()} onKeyDown={event=>{if(event.key==="Escape") closeItemEditAuth();}} style={{width:"min(380px,100%)",padding:"20px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
+            <div id="admin-item-auth-title" style={{fontSize:15,fontWeight:750,color:C.text1}}>관리자 인증</div>
+            <div style={{marginTop:6,fontSize:11,color:C.text3,lineHeight:1.55}}>품목 정보를 수정하려면 관리자 비밀번호를 입력하세요.</div>
+            <input type="password" value={itemEditAuth.password} onChange={event=>setItemEditAuth(prev=>({...prev,password:event.target.value,error:""}))} autoFocus autoComplete="current-password" aria-label="관리자 비밀번호" style={{...inp,width:"100%",marginTop:14,boxSizing:"border-box"}}/>
+            {itemEditAuth.error&&<div role="alert" style={{marginTop:7,fontSize:11,color:C.redDk}}>{itemEditAuth.error}</div>}
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+              <button type="button" onClick={closeItemEditAuth} style={{padding:"7px 13px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,fontWeight:600,cursor:"pointer"}}>취소</button>
+              <button type="submit" style={{padding:"7px 15px",border:`1px solid ${C.charcoal}`,borderRadius:7,background:C.charcoal,color:"#fff",fontSize:11,fontWeight:650,cursor:"pointer"}}>확인</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <div style={{background:C.card,borderBottom:`1px solid ${C.bd}`}}>
         <div className="app-shell app-topbar">
@@ -6791,17 +6855,15 @@ export default function App(){
                     <div style={{fontSize:12,color:"rgba(255,255,255,.72)",fontWeight:400}}>{sel.code} · {sel.dept}</div>
                     {isAdminUser&&!selectedIsDiscontinue&&<button type="button" onClick={()=>openAdminItemEditor(sel)} style={{alignSelf:"flex-start",marginTop:8,padding:"5px 9px",border:"1px solid rgba(255,255,255,.38)",borderRadius:6,background:"rgba(255,255,255,.08)",color:"#fff",fontSize:10.5,fontWeight:650,cursor:"pointer"}}>품목정보 수정</button>}
                   </div>
-                  <div className="xrf-hero-metrics">
-                    {selectedIsDiscontinue?(
+                  {selectedIsDiscontinue&&(
+                    <div className="xrf-hero-metrics">
                       <>
                         <MetricChip label="요청 유형" dark><span style={{fontSize:11,fontWeight:800,color:"#fff"}}>단종 / 사용 중지</span></MetricChip>
                         <MetricChip label="Approval_Status" dark><ApprovalBadge status={approvalStatusOf(sel)} context="discontinue"/></MetricChip>
                         <MetricChip label="XRF" dark><span style={{fontSize:11,fontWeight:800,color:"rgba(255,255,255,.86)"}}>대상 아님</span></MetricChip>
                       </>
-                    ):selectedIsMeasuring?(
-                      <MetricChip label="Approval_Status" dark><ApprovalBadge status={approvalStatusOf(sel)} detail={sel.approvalDetail||sel.retestRequiredElements||latestMeasurementOf(sel)?.retestRequiredElements}/></MetricChip>
-                    ):null}
-                  </div>
+                    </div>
+                  )}
                   {/* 우측 정보표 — 변동값(선택 주기 XRF 결과 · 현재 단계)과
                       고정값(최초 등록 · R Final Risk · R 검사주기 · C&R)을 한 표에 칸으로 나눠 담습니다. */}
                   <div className="xrf-hero-meta">
@@ -6857,7 +6919,7 @@ export default function App(){
                 {selectedDiscontinueRequestForTarget&&(
                    <div style={{padding:"12px clamp(14px, 2.4vw, 32px)",borderBottom:`1px solid ${C.bd}`,background:C.charcoalBg,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                     <span style={{fontSize:11,color:C.text2,fontWeight:700}}>이 품목은 단종 승인 처리됨</span>
-                    <span style={{fontSize:10,color:C.text3}}>요청 번호 {selectedDiscontinueRequestForTarget.code}</span>
+                    <span style={{fontSize:10,color:C.text3}}>요청 번호 {discontinueRequestCodeOf(selectedDiscontinueRequestForTarget)}</span>
                     {isAdminUser&&<button onClick={()=>handleUndoDiscontinue(selectedDiscontinueRequestForTarget)} className="pill-btn" style={{marginLeft:"auto",padding:"7px 14px",border:`1px solid ${A.amber.ln}`,background:A.amber.bg,color:A.amber.tx,fontSize:11,fontWeight:600}}>단종 처리 원복</button>}
                   </div>
                 )}
