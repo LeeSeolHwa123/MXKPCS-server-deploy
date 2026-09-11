@@ -9,6 +9,27 @@ const TODAY_STR = [
   String(TODAY.getDate()).padStart(2,"0")
 ].join("-");
 
+// Visual UAT fixtures are local, URL-gated display records. They are never sent to SharePoint.
+const VISUAL_UAT_MODE =
+  typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("uat") === "1";
+const VISUAL_UAT_READ_ONLY_MESSAGE = "Visual UAT 테스트 데이터는 읽기 전용입니다.";
+const VISUAL_UAT_MUTATION_ACTIONS = new Set([
+  "createRequest","saveMeasurement","updateItem","processDiscontinue",
+  "revertDiscontinue","upsertPrecision","deleteRecord"
+]);
+
+function containsVisualUatReference(value,depth=0){
+  if(depth>5 || value==null) return false;
+  if(typeof value==="string") return value.startsWith("VU-") || value.includes("VISUAL_UAT::VU-");
+  if(Array.isArray(value)) return value.some(row=>containsVisualUatReference(row,depth+1));
+  if(typeof value==="object"){
+    if(value.__visualUat===true || value.__readOnlyFixture===true) return true;
+    return Object.values(value).some(row=>containsVisualUatReference(row,depth+1));
+  }
+  return false;
+}
+
 // Prototype-only admin gate for item master editing.
 // 실제 운영에서는 프론트엔드 상수 대신 로그인/권한 서버 검증으로 교체해야 합니다.
 const ADMIN_ITEM_EDIT_PASSWORD = "admin1234";
@@ -335,23 +356,29 @@ const ST = {
 
 const FILTER_LABELS = {
   category: {existing:"기존 품목", new:"신규 등록", changed:"변경·대체"},
+  code: {},
+  name: {},
   dept: {},
   cycle: {Monthly:"월 1회", Semiannual:"반기 1회", Annual:"연 1회", "Not Available":"—"},
-  xrf: {NG:"NG · 정밀분석", OK:"OK", "재측정 필요":"재측정", "확인 필요":"결과 확인", H:"H · Exceeded", M:"M · Less than", L:"L · N.D."},
+  firstDate: {},
+  xrf: {NG:"NG · 정밀분석", OK:"OK", "재측정 필요":"재측정", "확인 필요":"결과 확인", H:"H · Exceeded", M:"M · Less than", L:"L · N.D.", "—":"—"},
   compliance: {overdue:"미이행", dueSoon:"측정권장", ok:"이행", upcoming:"예정", notAvailable:"대상 아님"},
+  precision: {OK:"OK", NG:"NG", "—":"—"},
   crLevel: {H:"H · 직접접촉+잔류", M:"M · 직접접촉+비잔류", L:"L · 비접촉"},
   risk: {"Not Allowed":"사용불허", H:"H", M:"M", L:"L", "—":"—"},
   retest: {review:"재측정", trusted:"재측정 불필요"},
   approval: {approved:"사용/단종 승인", measuring:"측정 진행중", request:"의뢰 필요", rejected:"사용/단종 반려", hold:"보류/검토중", cancelled:"처리 취소"},
   lifecycle: {ExistingActive:"기존 운영", NewReplacement:"신규 대체", ReplacedOld:"대체됨", Discontinued:"단종", NewItem:"신규 도입", Cancelled:"처리 취소"},
+  nextDue: {},
+  dDay: {},
   dueMonth: {},
 };
-const COL_NAMES = {category:"분류", dept:"부서", cycle:"주기", xrf:"XRF 결과", compliance:"현재 상태", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", dueMonth:"도래월"};
+const COL_NAMES = {category:"분류", code:"품번", name:"품목명", dept:"부서", cycle:"주기", firstDate:"최초 등록", xrf:"XRF 결과", compliance:"현재 상태", precision:"정밀분석", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", nextDue:"다음 마감", dDay:"D-DAY", dueMonth:"도래월"};
 const UNIQUE_VALS = {
   category: ["existing","new","changed"],
   dept: ["Assembly","Common","Molding","Plating","Stamping"],
   cycle: ["Monthly","Semiannual","Annual","Not Available"],
-  xrf: ["NG","OK","재측정 필요","확인 필요"],
+  xrf: ["NG","OK","재측정 필요","확인 필요","—"],
   compliance: ["overdue","dueSoon","ok","upcoming","notAvailable"],
   crLevel: ["H","M","L"],
   risk: ["Not Allowed","H","M","L","—"],
@@ -361,7 +388,7 @@ const UNIQUE_VALS = {
 };
 
 // SharePoint DB는 브라우저 번들에 하드코딩하지 않습니다.
-// 브라우저는 같은 Vercel 프로젝트의 /api/xrf-sharepoint만 호출하고,
+// 브라우저는 동일 호스트의 /api/xrf-sharepoint만 호출하고,
 // Microsoft Graph용 Client Secret은 서버 환경변수에만 보관합니다.
 const XRF_SHAREPOINT_API = "/api/xrf-sharepoint";
 
@@ -437,6 +464,14 @@ function sharePointRequestApproval(status){
   if(key==="Rejected") return "반려";
   if(key==="Cancelled" || key==="Reverted") return "처리 취소";
   return "보류";
+}
+function discontinueRequestLifecycle(status,targetLifecycle="ExistingActive"){
+  const key=String(status||"Pending").trim().toLowerCase();
+  if(key==="applied") return "Discontinued";
+  if(key==="rejected" || key==="cancelled" || key==="reverted") return "Cancelled";
+  return targetLifecycle && targetLifecycle!=="Discontinued" && targetLifecycle!=="Cancelled"
+    ? targetLifecycle
+    : "ExistingActive";
 }
 function sourceClassificationFromLifecycle(lifecycle){
   if(lifecycle==="ReplacedOld" || lifecycle==="Discontinued") return "변경·대체";
@@ -646,7 +681,7 @@ function buildSharePointRequestItems(requestRows,masterItems,measurementMap){
       ? requestId
       : (proposedCode||requestId);
     const lifecycle=requestTypeKey==="discontinue"
-      ? "Discontinued"
+      ? discontinueRequestLifecycle(status,target?.lifecycle)
       : requestTypeKey==="replacement" ? "NewReplacement" : "NewItem";
     const crType=String(f.field_13||target?.crType||"비접촉").trim();
     const requestReason=sharePointPlainText(f.Request_Reason ?? (requestTypeKey==="new"?f.field_15:""));
@@ -780,17 +815,21 @@ function mergeSharePointRequestMetadata(masterItems,requestRows){
 
     if(requestType==="discontinue"){
       const target=byItemId.get(String(f.field_3||"").trim())||null;
-      const applied=status.toLowerCase()==="applied";
-      mergePatch(target,{
-        ...requestCommon,
-        discontinueTargetCode:target?.code||"",
-        pendingDiscontinueRequestCode:applied?null:requestId,
-        discontinuedByRequestCode:applied?requestId:(target?.discontinuedByRequestCode||null),
-        discontinueReason:String(f.Discontinue_Reason||f.field_15||"").trim(),
-        discontinueReasonOther:sharePointPlainText(f.Discontinue_Reason_Other||""),
-        finalUseDate:dateOnly(f.Final_Use_Date||f.Effective_Date),
-        stockDisposition:String(f.Stock_Disposition||f.field_16||"").trim(),
-        ...(applied?{
+      const statusKey=status.toLowerCase();
+      const applied=statusKey==="applied";
+      const pending=statusKey==="pending";
+      const reverted=statusKey==="reverted" || statusKey==="cancelled";
+      // Pending/Rejected 요청의 상태를 Master 품목에 덮어쓰지 않습니다.
+      // 대상 품목은 승인된 경우에만 단종되고, 반려되면 기존 Lifecycle과 XRF 이력을 그대로 유지합니다.
+      if(applied) mergePatch(target,{
+          ...requestCommon,
+          discontinueTargetCode:target?.code||"",
+          pendingDiscontinueRequestCode:null,
+          discontinuedByRequestCode:requestId,
+          discontinueReason:String(f.Discontinue_Reason||f.field_15||"").trim(),
+          discontinueReasonOther:sharePointPlainText(f.Discontinue_Reason_Other||""),
+          finalUseDate:dateOnly(f.Final_Use_Date||f.Effective_Date),
+          stockDisposition:String(f.Stock_Disposition||f.field_16||"").trim(),
           category:"changed",
           categoryLabel:"변경·대체",
           lifecycle:"Discontinued",
@@ -798,8 +837,16 @@ function mergeSharePointRequestMetadata(masterItems,requestRows){
           nextDue:null,
           dDay:null,
           complianceStatus:"notAvailable",
-        }:{}),
       });
+      else if(reverted) mergePatch(target,{
+        pendingDiscontinueRequestCode:null,
+        restoredFromDiscontinueRequestCode:requestId,
+        restoredAt:dateOnly(f.Reverted_At),
+        restoredBy:sharePointPlainText(f.Reverted_By||""),
+        restoreReason:sharePointPlainText(f.Revert_Reason||""),
+      });
+      else if(pending) mergePatch(target,{pendingDiscontinueRequestCode:requestId});
+      else mergePatch(target,{pendingDiscontinueRequestCode:null});
     }
   }
 
@@ -1385,7 +1432,7 @@ const UI_EN_MAP = {
   "XRF 측정 ID":"XRF Measurement ID","XRF 원본 보고서":"Original XRF Report",
   "XRF NG 판정":"XRF NG","재측정 후 ?? 판정":"?? After Remeasurement",
   "XRF 재측정 필요":"XRF Remeasurement Required",
-  "정밀분석 필요":"Precision Analysis Required","정밀분석 인계":"Transfer to Precision Analysis",
+  "정밀분석 필요":"Precision Analysis Required","정밀분석 및 XRF 재측정 필요":"Precision Analysis and XRF Remeasurement Required","정밀분석 인계":"Transfer to Precision Analysis",
   "정밀분석 인계 필요":"Transfer Required","정밀분석 인계 완료":"Transfer Complete",
   "정밀분석 의뢰 필요":"Precision Request Required","정밀분석 결과":"Precision Result",
   "정밀 결과":"Precision Result","정밀분석 결과 대기":"Awaiting Precision Result",
@@ -1413,7 +1460,7 @@ const UI_EN_MAP = {
   "적용 Risk":"Applied Risk","라이프사이클":"Lifecycle","C&R 등급":"C&R Level","도래월":"Due Month",
   "기준·도래일":"Reference / Due Date","주기 측정 필요":"Cycle Measurement Required",
   "주기 측정 권장":"Cycle Measurement Recommended","주기 미이행":"Cycle Overdue",
-  "측정권장 D-30":"Recommended D-30","기한 내 미측정":"Not Measured by Due Date",
+  "측정권장 (월 D-15 / 반기·연 D-30)":"Recommended (Monthly D-15 / Semiannual·Annual D-30)","기한 내 미측정":"Not Measured by Due Date",
   "과거 주기의 지연 측정 이력":"Late Measurements in Past Cycles",
   "첫 관리주기 내 등록":"Registered in Current Cycle","운영 관리 대상":"Actively Managed",
   "전체 품목":"All Items","활성 품목":"Active Items","고위험":"High Risk",
@@ -1429,7 +1476,7 @@ const UI_EN_MAP = {
   "요청 유형":"Request Type","요청 유형 선택":"Select Request Type","요청 완료":"Request Complete",
   "요청 요약":"Request Summary","기본정보 입력":"Enter Basic Information","요청 사유":"Request Reason",
   "요청 사유 / 비고":"Request Reason / Note","요청 부서":"Requesting Department",
-  "완전 신규 도입":"Completely New Item","기존 품목 대체 등록":"Replace Existing Item",
+  "기존 품목 대체 등록":"Replace Existing Item",
   "기존 품목 단종 / 사용 중지":"Discontinue / Stop Using Existing Item",
   "단종 / 사용 중지":"Discontinue / Stop Use","단종 / 사용 중지 사유":"Discontinuation Reason",
   "단종 / 사용 중지 정보 입력":"Enter Discontinuation Information",
@@ -1503,14 +1550,11 @@ const UI_EN_MAP = {
   "단종 요청은 XRF 측정 대상이 아니므로 원소 분석, Final Risk, 주기별 이행현황을 계산하지 않습니다. 관리자는 요청 사유만 검토하여 승인 또는 반려를 적용합니다.":"A discontinuation request is not an XRF target, so element analysis, Final Risk, and cycle compliance are not calculated. The administrator reviews the reason and approves or rejects it.",
   "단종 요청 상세 정보가 없습니다.":"No discontinuation request details.",
   "저장 즉시 부자재 리스트와 XRF 분석 화면에 같은 값이 반영됩니다.":"Saved values apply immediately to the auxiliary material list and the XRF analysis screen.",
-  "신규 도입, 기존 품목 대체, 단종·사용 중지 요청을 한 화면에서 관리합니다. 관리자는 Approval_Status와 처리 이력을 확인하고 잘못 처리한 단종 승인을 원복할 수 있습니다.":"Manage new items, replacements, and discontinuation requests in one screen. Administrators can review Approval_Status and processing history and restore an incorrectly approved discontinuation.",
   "기존 관리 품목과 관계없이 새로운 부자재/공정부자재를 등록합니다.":"Register a new auxiliary or process material unrelated to existing managed items.",
   "현재 사용 중인 품목을 새로운 품목으로 변경하거나 대체합니다.":"Change or replace an item currently in use with a new item.",
   "신규 품목 추가 없이 기존 품목의 사용 중지 또는 단종을 요청합니다.":"Request stop-use or discontinuation of an existing item without adding a new item.",
   "의뢰자 등록은 먼저 요청 유형을 선택한 뒤, 해당 유형에 필요한 정보만 입력합니다. 단종/사용 중지는 XRF 측정 단계 없이 상태 변경 요청으로 제출됩니다.":"For requester registration, choose the request type first and enter only the fields that type needs. Discontinuation is submitted as a status change request without an XRF step.",
   "신규 대체품 품번은 선택한 기존 품번 뒤에 순번을 붙여 자동 생성합니다. 예: 기존 품번 뒤에 -01, -02 순번을 추가합니다. 기존 품목은 변경·대체 이력으로 전환되고, 신규 대체품은 신규 등록 품목으로 주기 관리를 시작합니다.":"The replacement part number is generated by appending a sequence to the selected part number (e.g. -01, -02). The existing item moves to change / replacement history, and the replacement starts cycle management as a newly registered item.",
-  "Part Number는 Handling_Dept 첫 글자 + 내부 품번 오름차순 다음 번호로 자동 발번됩니다. XRF 결과가 승인되기 전까지 주기, Risk, 이행현황은 리스트에서 —로 표시됩니다.":"The part number is issued from the first letter of Handling_Dept plus the next internal sequence. Until the XRF result is approved, cycle, risk, and compliance appear as — in the list.",
-  "단종/사용 중지 요청은 신규 품목을 만들지 않는 상태 변경 요청입니다. 제출 후 Approval_Status는 보류로 표시되며, 관리자가 승인하면 기존 품목의 Lifecycle을 Discontinued로 전환합니다. 승인 전 상태는 Before_Snapshot_JSON에 저장하고, 잘못 승인한 경우 Reverted_At·Reverted_By·Revert_Reason을 남긴 뒤 원복합니다.":"A discontinuation request creates no new item. After submission Approval_Status shows On hold. Once approved, the item's lifecycle becomes Discontinued. The pre-approval state is stored in Before_Snapshot_JSON, and an incorrect approval is restored with Reverted_At, Reverted_By, and Revert_Reason.",
   "방식 A — XRF 사전 완료":"Option A — XRF Already Completed",
   "방식 B — XRF 측정 의뢰":"Option B — Request XRF Measurement",
   "XRF 원본 보고서가 이미 있을 때":"When the original XRF report already exists",
@@ -1545,7 +1589,7 @@ const UI_EN_MAP = {
   "신규 도입 또는 대체 등록 사유를 입력하세요":"Enter the reason for the new item or replacement",
   "기타 단종 사유를 구체적으로 입력하세요":"Describe the other discontinuation reason",
   "기타 대체 사유를 구체적으로 입력하세요":"Describe the other replacement reason",
-  "품번 · 품목명 검색":"Search part no. / item name",
+  "전체 열 검색":"Search all columns",
   "관리자 비밀번호를 입력하세요.":"Enter the administrator password.",
   "관리자 비밀번호가 올바르지 않습니다.":"The administrator password is incorrect.",
   "품목 정보 편집은 관리자만 가능합니다.":"Only administrators can edit item information.",
@@ -1611,7 +1655,7 @@ const UI_EN_MAP = {
   "측정 의뢰":"Measurement Request","최종 컨펌":"Final Confirmation",
   "사용/단종 승인":"Use / Discontinuation Approved","사용/단종 반려":"Use / Discontinuation Rejected",
   "보류/검토중":"On Hold / Under Review","품목 등록·변경 관리":"Item Registration / Change Management",
-  "완전 신규 도입 기본정보":"New Item Basic Information",
+  "신규 도입 기본정보":"New Item Basic Information",
   "대체 대상 및 신규 대체품 기본정보":"Replacement Target and New Item Information",
   "신규 대체품 Item_Name":"Replacement Item Name","신규 등록 요청 품목":"New Registration Request Item",
   "예: 제품 포장용 엠보스":"e.g. Packaging emboss","예: ABC Chemical":"e.g. ABC Chemical",
@@ -1619,10 +1663,10 @@ const UI_EN_MAP = {
   "예상 Approval_Status":"Expected Approval_Status","측정 후 산출":"Calculated after measurement",
   "관리자 직접 등록 · 기존 주기 측정 추가":"Admin Direct Registration · Add Periodic Measurement",
   "관리자 직접 등록 · 변경·대체 등록":"Admin Direct Registration · Change / Replacement",
-  "관리자 직접 등록 · 완전 신규 도입":"Admin Direct Registration · New Item",
+  "관리자 직접 등록 · 신규 도입":"Admin Direct Registration · New Item",
   "관리자 직접 등록 · 단종 처리":"Admin Direct Registration · Discontinuation",
   "관리자 직접 등록 · 기존 품목 대체 등록":"Admin Direct Registration · Replace Existing Item",
-  "의뢰자 등록 · 완전 신규 도입":"Requester Registration · New Item",
+  "의뢰자 등록 · 신규 도입":"Requester Registration · New Item",
   "의뢰자 등록 · 기존 품목 대체 등록":"Requester Registration · Replace Existing Item",
   "Cl + Br Content 합계 기준 · Internal Limit 1,050 ppm":"Sum of Cl and Br content · Internal Limit 1,050 ppm",
   "신규 품목 승인 후 기존 재고 소진 후 단종":"Discontinue after the new item is approved and stock is used up",
@@ -1907,8 +1951,10 @@ function baseWorkflowForItem(item){
   const latest=item?latestMeasurementOf(item):null;
   const xrfResult=latest?measurementXrfResult(latest):"—";
   const precisionTriggers=item?precisionTriggerMeasurementsOf(item):[];
+  const remeasureTargets=pendingXrfRemeasureElements(latest);
   let stage="XRF_REQUIRED";
-  if(precisionTriggers.length) stage="PRECISION_REQUEST_REQUIRED";
+  if(remeasureTargets.length) stage="XRF_REMEASURE_REQUIRED";
+  else if(precisionTriggers.length) stage="PRECISION_REQUEST_REQUIRED";
   else if(xrfResult==="OK") stage="APPROVED";
   else if(xrfResult==="재측정 필요") stage="XRF_REMEASURE_REQUIRED";
   else if(xrfResult==="NG") stage="PRECISION_REQUEST_REQUIRED";
@@ -1971,6 +2017,8 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
     const precisionCases=runtimePrecisionCasesForItem(item,precisionOverrides);
     const latest=latestMeasurementOf(item);
     const latestXrfState=latest ? measurementXrfResult(latest) : "—";
+    const latestRemeasureTargets=pendingXrfRemeasureElements(latest);
+    const latestNeedsRemeasure=latestRemeasureTargets.length>0;
     const latestCase=precisionCases[0] || null;
     const latestNeedsPrecision=!!latestCase;
     const finalRisk=itemFinalRisk(item);
@@ -1980,7 +2028,15 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
 
     if(latestNeedsPrecision){
       const p=latestCase.precision;
-      if(p?.result==="OK"){
+      if(p?.result==="NG"){
+        stage="PRECISION_NG_REVIEW";
+        approval={status:"반려",basis:"PRECISION_NG_REJECTED",basisRecordId:latestCase.key};
+      }else if(latestNeedsRemeasure){
+        // NG 정밀분석과 ?? 재측정은 서로 독립 의무입니다. 정밀분석 진행 여부와 관계없이
+        // 1차 ??의 Retest가 완료되기 전에는 승인하지 않습니다.
+        stage="XRF_REMEASURE_REQUIRED";
+        approval={status:"보류",basis:"XRF_REMEASURE_AND_PRECISION_REQUIRED",basisRecordId:latestCase.key};
+      }else if(p?.result==="OK"){
         // 최신 XRF NG라도 정밀분석 결과가 OK로 확정되면 승인 가능합니다.
         // 단, R Final Risk가 사용불허인 품목은 위험도 기준상 승인하지 않습니다.
         if(finalRisk==="Not Allowed"){
@@ -1990,9 +2046,6 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
           stage="APPROVED";
           approval={status:"승인",basis:"PRECISION_OK",basisRecordId:latestCase.key};
         }
-      }else if(p?.result==="NG"){
-        stage="PRECISION_NG_REVIEW";
-        approval={status:"반려",basis:"PRECISION_NG_REJECTED",basisRecordId:latestCase.key};
       }else if(p?.requestStatus==="REQUESTED"){
         stage="PRECISION_RESULT_WAITING";
         approval={status:"측정 진행중",basis:"PRECISION_REQUESTED",basisRecordId:latestCase.key};
@@ -2000,6 +2053,9 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
         stage="PRECISION_REQUEST_REQUIRED";
         approval={status:"의뢰 필요",basis:"PRECISION_REQUEST_REQUIRED",basisRecordId:latestCase.key};
       }
+    }else if(latestNeedsRemeasure){
+      stage="XRF_REMEASURE_REQUIRED";
+      approval={status:"보류",basis:"XRF_REMEASURE_REQUIRED",basisRecordId:latest?.id||item?.code};
     }else if(latestXrfState==="OK"){
       if(finalRisk==="Not Allowed"){
         stage="RISK_NOT_ALLOWED";
@@ -2140,6 +2196,30 @@ function elementXrfResult(d){
 function retestRequiredElements(m){
   if(!m?.elements) return [];
   return XRF_REPORT_ELEMENTS.filter(el=>isXrfRemeasureRequired(m.elements?.[el]));
+}
+function pendingXrfRemeasureElements(m){
+  const targets=retestRequiredElements(m);
+  // 1차 측정의 ??만 XRF 재측정 의무입니다. Retest에서도 남은 ??는
+  // precisionRequiredElements()가 정밀분석 대상으로 전환하므로 재측정을 다시 요구하지 않습니다.
+  const isRetest=Number(m?.attemptNo||0)>=2 || String(m?.role||m?.measurementRole||"").toLowerCase()==="retest";
+  return isRetest ? [] : targets;
+}
+function measurementFollowupInfo(m){
+  const precisionElements=precisionRequiredElements(m);
+  const remeasureElements=pendingXrfRemeasureElements(m);
+  const flaggedElements=[...new Set([...precisionElements,...remeasureElements])];
+  const label=precisionElements.length && remeasureElements.length
+    ? "정밀분석 및 XRF 재측정 필요"
+    : precisionElements.length
+      ? "정밀분석 필요"
+      : remeasureElements.length
+        ? "XRF 재측정"
+        : "후속조치 없음";
+  const detail=[
+    precisionElements.length?`정밀분석: ${precisionElements.join(", ")}`:"",
+    remeasureElements.length?`XRF 재측정: ${remeasureElements.join(", ")}`:""
+  ].filter(Boolean).join(" · ") || "추가 조치 없음";
+  return {precisionElements,remeasureElements,flaggedElements,label,detail,hasFollowup:flaggedElements.length>0};
 }
 function retestShortText(list){
   return list?.length ? `${list.join(", ")} 필요` : "필요 없음";
@@ -2544,6 +2624,10 @@ function deriveXrfApprovalStatus(xrfResult){
 }
 function deriveInitialApprovalStatus(measurement){
   if(!measurement) return "보류";
+  // NG와 ??가 동시에 있어도 XRF 재측정 의무가 끝나기 전에는 승인/정밀분석 단독 상태로 넘기지 않습니다.
+  if(pendingXrfRemeasureElements(measurement).length) return "보류";
+  // Retest에서도 남은 ??는 정밀분석 대상으로 전환되므로 저장 상태도 Workflow와 동일하게 맞춥니다.
+  if(precisionRequiredElements(measurement).length) return "의뢰 필요";
   const xrfResult=measurement.xrfResult || measurementXrfResult(measurement);
   return deriveXrfApprovalStatus(xrfResult);
 }
@@ -2628,6 +2712,25 @@ function uploadedPartNumberFromFileName(fileName){
 }
 function samePartNumber(a,b){
   return String(a||"").toUpperCase().replace(/[^A-Z0-9]/g,"")===String(b||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+}
+const GENERATED_ITEM_ACTION_NOTE_LINES=new Set([
+  "의뢰자 등록 · 신규 도입",
+  "관리자 직접 등록 · 신규 도입",
+  "XRF 측정 의뢰 상태",
+  "XRF 원본 업로드 완료",
+]);
+function withoutGeneratedItemActionNote(value){
+  return String(value||"")
+    .replace(/\\n/g,"\n")
+    .split(/\r?\n/)
+    .map(line=>line.trim())
+    .filter(line=>{
+      if(!line) return false;
+      // 과거에 저장된 자동 문구도 현재 명칭으로 정규화해 계속 숨김 처리합니다.
+      const normalizedLine=line.replace(/완전\s+(?=신규\s+도입$)/,"");
+      return !GENERATED_ITEM_ACTION_NOTE_LINES.has(normalizedLine);
+    })
+    .join("\n");
 }
 function uploadedDateToISO(value){
   if(value==null || value==="") return null;
@@ -2829,7 +2932,7 @@ function cycleMonthsOf(item){
   return cycleMonthsFromCycle(itemCycleFromRisk(item)) || 0;
 }
 function windowDaysOf(item){
-  return itemCycleFromRisk(item)==="Monthly" ? 7 : 30;
+  return itemCycleFromRisk(item)==="Monthly" ? 15 : 30;
 }
 function periodLabel(p){
   if(!p) return "—";
@@ -3157,9 +3260,10 @@ function itemXrfDisplayPeriods(item){
 // 선택한 Pn의 XRF 시도 이력을 반환합니다.
 // 과거 데이터의 Cycle_Reset/num=-1 측정도 새 R 기준 Pn에 measurementId가 연결되면 해당 Pn의 1차 측정으로 취급합니다.
 function measurementAttemptsForPeriod(item,period){
-  if(!item || !period || period?.isReference || Number(period?.num)===0) return [];
+  if(!item || !period) return [];
   const history=Array.isArray(item.history)?item.history:[];
   const periodNo=Number(period.num);
+  const isReference=!!period?.isReference || periodNo===0;
   const linkedIds=periodMeasurementIds(period);
   const rows=[];
   const seen=new Set();
@@ -3167,7 +3271,7 @@ function measurementAttemptsForPeriod(item,period){
     if(!h) return;
     const id=h.id||h.measurementId;
     if(!id || seen.has(id)) return;
-    if(String(h.measurementRole||h.role||"")==="Initial") return;
+    if(String(h.measurementRole||h.role||"")==="Initial" && !isReference) return;
     seen.add(id);
     rows.push(h);
   };
@@ -3176,7 +3280,8 @@ function measurementAttemptsForPeriod(item,period){
   history.forEach(h=>{
     const id=h.id||h.measurementId;
     const parentId=h.parentMeasurementId||null;
-    const sameStoredPeriod=Number(h.periodNo)===periodNo && !["Initial","Cycle_Reset"].includes(h.measurementRole);
+    const sameStoredPeriod=Number(h.periodNo)===periodNo
+      && (isReference ? String(h.measurementRole||h.role||"")!=="Cycle_Reset" : !["Initial","Cycle_Reset"].includes(h.measurementRole));
     const linkedRetest=String(h.measurementRole||h.role||"")==="Retest" && parentId && linkedIds.includes(parentId);
     if(sameStoredPeriod || linkedRetest || linkedIds.includes(id)) add(h);
   });
@@ -3378,12 +3483,492 @@ function getCS(item){
   return hasCompletedPeriodic ? "ok" : "upcoming";
 }
 
-function FilterPanel({column, pos, selected, onToggle, onClear, onClose}){
-  const values = UNIQUE_VALS[column]||[];
+// -----------------------------------------------------------------------------
+// Visual UAT fixture pack
+// Raw element/measurement inputs are supplied here; the existing production
+// normalization, XRF, Risk, Cycle, Pn and Workflow functions derive all results.
+const VISUAL_UAT_DEPTS=["Assembly","Plating","Stamping","Common"];
+const VISUAL_UAT_MATERIALS=["Chemical","Metal","Plastic","Others"];
+const VISUAL_UAT_CHEMICAL_STATES=["Liquid","Volatile Liquid","Viscous Liquid","Aerosol","Gas"];
+const VISUAL_UAT_CR_TYPES=["직접접촉+잔류","직접접촉+비잔류","비접촉"];
+
+function visualUatSequence(code){
+  return String(code||"").split("").reduce((sum,ch)=>sum+ch.charCodeAt(0),0);
+}
+function visualUatElementInputs(overrides={}){
+  const output={};
+  ["Pb","Hg","Cr","Cd","Cl","Br"].forEach((element,index)=>{
+    const override=overrides[element]||{};
+    output[element]={
+      rawPpm:"ND",
+      rawSigma:index+1,
+      rawJudgement:"ND",
+      ...override
+    };
+  });
+  return output;
+}
+function makeVisualUatMeasurement(id,date,{role="Initial",attemptNo=1,parentMeasurementId=null,elements={},periodNo=null,precisionAnalysisResult=""}={}){
+  return normalizeMeasurementRecord({
+    id,date,role,attemptNo,parentMeasurementId,periodNo,
+    precisionAnalysisResult,
+    sourceFileName:`${id}.xlsx`,
+    sourceSheet:"Visual UAT",
+    elements:visualUatElementInputs(elements)
+  },id);
+}
+function visualUatRawForLevel(level){
+  if(level==="H") return {Pb:{rawPpm:701,rawSigma:3,rawJudgement:"NG"}};
+  if(level==="M") return {Pb:{rawPpm:100,rawSigma:3,rawJudgement:"OK"}};
+  return {};
+}
+function makeVisualUatItem(code,name,{measurements=[],crType="직접접촉+비잔류",type="Auxiliary Materials",lifecycle="ExistingActive",isCurrent=true,category="existing",replacementOf=null,replacedBy=null,extra={}}={}){
+  const seq=visualUatSequence(code);
+  const materialCategory=extra.materialCategory||VISUAL_UAT_MATERIALS[seq%VISUAL_UAT_MATERIALS.length];
+  const materialState=materialCategory==="Chemical"
+    ? (extra.materialState||VISUAL_UAT_CHEMICAL_STATES[seq%VISUAL_UAT_CHEMICAL_STATES.length])
+    : (extra.materialState||"");
+  const normalizedMeasurements=measurements.map(row=>normalizeMeasurementRecord(row,row?.id||""));
+  const measurementMap=Object.fromEntries(normalizedMeasurements.map(row=>[row.id,row]));
+  const initial=normalizedMeasurements.find(row=>normalizeMeasurementRole(row.role||row.measurementRole)==="Initial")||null;
+  const latest=normalizedMeasurements[normalizedMeasurements.length-1]||null;
+  const history=normalizedMeasurements.map((row,index)=>({
+    id:row.id,date:row.date,periodNo:row.periodNo??(normalizeMeasurementRole(row.role)==="Initial"?0:index),
+    measurementRole:normalizeMeasurementRole(row.role),attemptNo:Number(row.attemptNo||1),
+    parentMeasurementId:row.parentMeasurementId||null,elements:row.elements,
+    sourceFileName:row.sourceFileName||"",sourceSheet:row.sourceSheet||"Visual UAT"
+  }));
+  const base={
+    __visualUat:true,__readOnlyFixture:true,
+    itemId:`VISUAL_UAT::${code}`,_sourceCode:code,code,name,nameEn:`Visual UAT fixture ${code}`,
+    type,dept:extra.dept||VISUAL_UAT_DEPTS[seq%VISUAL_UAT_DEPTS.length],respDept:"PQE",
+    materialCategory,materialState,manufacturer:"Visual UAT only",
+    crType,crLevel:crLevelFromType(crType),riskBasisCrLevel:crLevelFromType(crType),
+    sourceClassification:category==="new"?"신규 등록":"기존 품목",originCategory:category,
+    category,categoryLabel:category==="new"?"신규 등록":"기존 품목",lifecycle,isCurrent,
+    replacementOf,replacedBy,replacementDate:extra.replacementDate||null,
+    firstDate:initial?.date||extra.firstDate||null,lastMeasured:latest?.date||null,
+    firstMeasurementId:initial?.id||null,latestMeasurementId:latest?.id||null,
+    riskBasisMeasurementId:initial?.id||null,measurementCount:normalizedMeasurements.length,
+    periods:initial?[{
+      num:0,label:"R",displayLabel:"R",displaySeq:0,isReference:true,
+      referenceDate:initial.date,date:initial.date,measured:initial.date,
+      measurementId:initial.id,measurementIds:[initial.id],measuredDates:[initial.date],
+      status:"reference",closeType:"registered",isDisplayTarget:false,isCurrentCycle:true,
+      measurementRole:"Initial"
+    }]:[],
+    history,latest,__measurementMap:measurementMap,
+    ...extra
+  };
+  return normalizeItemRecord(base);
+}
+function visualUatInitial(code,date,level="M",options={}){
+  return makeVisualUatMeasurement(`${code}_R`,date,{...options,elements:{...visualUatRawForLevel(level),...(options.elements||{})}});
+}
+function visualUatPeriodic(code,date,level="M",options={}){
+  return makeVisualUatMeasurement(`${code}_${options.suffix||"P1"}`,date,{...options,role:options.role||"Periodic",periodNo:options.periodNo||1,elements:{...visualUatRawForLevel(level),...(options.elements||{})}});
+}
+
+function buildVisualUatFixtures(){
+  const fixtures=[];
+  const push=(code,name,options)=>fixtures.push(makeVisualUatItem(code,name,options));
+  const xrfDate=addMonthsISO(TODAY_STR,-2);
+
+  const xrfCases=[
+    ["VU-X01","All ND → L / OK",{}],
+    ["VU-X02","N.D. marker → L / OK",{Pb:{rawPpm:"N.D.",rawSigma:11,rawJudgement:"N.D."}}],
+    ["VU-X03","---- marker → L / OK",{Cr:{rawPpm:"----",rawSigma:"----",rawJudgement:"----"}}],
+    ["VU-X04","Single dash → Missing",{Cd:{rawPpm:"-",rawSigma:4,rawJudgement:""}}],
+    ["VU-X05","Blank Content → Missing",{Pb:{rawPpm:"",rawSigma:5,rawJudgement:""}}],
+    ["VU-X06","Judgment ?? → Remeasure",{Pb:{rawPpm:45,rawSigma:6,rawJudgement:"??"}}],
+    ["VU-X07","Cannot Judge → Remeasure",{Hg:{rawPpm:100,rawSigma:7,rawJudgement:"Cannot Judge"}}],
+    ["VU-X08","Cd 69.9 → M / OK",{Cd:{rawPpm:69.9,rawSigma:8,rawJudgement:"OK"}}],
+    ["VU-X09","Cd 70.0 boundary → M / OK",{Cd:{rawPpm:70,rawSigma:9,rawJudgement:"OK"}}],
+    ["VU-X10","Cd 70.1 → H / NG",{Cd:{rawPpm:70.1,rawSigma:10,rawJudgement:"NG"}}],
+    ["VU-X11","Pb 700 boundary → M / OK",{Pb:{rawPpm:700,rawSigma:11,rawJudgement:"OK"}}],
+    ["VU-X12","Pb 700.1 → H / NG",{Pb:{rawPpm:700.1,rawSigma:12,rawJudgement:"NG"}}],
+    ["VU-X13","Cl+Br = 1050 boundary",{Cl:{rawPpm:630,rawSigma:13,rawJudgement:"OK"},Br:{rawPpm:420,rawSigma:14,rawJudgement:"OK"}}],
+    ["VU-X14","Cl+Br = 1050.1 → H",{Cl:{rawPpm:630,rawSigma:13,rawJudgement:"OK"},Br:{rawPpm:420.1,rawSigma:14,rawJudgement:"OK"}}],
+    ["VU-X15","NG + ?? mixed precedence",{Pb:{rawPpm:45,rawSigma:15,rawJudgement:"??"},Br:{rawPpm:890,rawSigma:16,rawJudgement:"NG"}}],
+    ["VU-X16","Zero + Judgment ND",{Pb:{rawPpm:0,rawSigma:16,rawJudgement:"ND"}}],
+    ["VU-X17","Zero + Judgment OK",{Pb:{rawPpm:0,rawSigma:17,rawJudgement:"OK"}}]
+  ];
+  xrfCases.forEach(([code,label,elements],index)=>push(code,`[UAT-VIS][XRF] ${label}`,{
+    measurements:[visualUatInitial(code,xrfDate,"L",{elements})],
+    crType:VISUAL_UAT_CR_TYPES[index%VISUAL_UAT_CR_TYPES.length]
+  }));
+
+  const riskCases=[
+    ["VU-R01","H","직접접촉+잔류","Not Allowed"],
+    ["VU-R02","H","직접접촉+비잔류","Not Allowed"],
+    ["VU-R03","H","비접촉","Not Allowed"],
+    ["VU-R04","M","직접접촉+잔류","H"],
+    ["VU-R05","M","직접접촉+비잔류","M"],
+    ["VU-R06","M","비접촉","M"],
+    ["VU-R07","L","직접접촉+잔류","M"],
+    ["VU-R08","L","직접접촉+비잔류","M"],
+    ["VU-R09","L","비접촉","L"]
+  ];
+  riskCases.forEach(([code,xrfLevel,crType,risk])=>push(code,`[UAT-VIS][RISK] XRF ${xrfLevel} + CR ${crLevelFromType(crType)} → ${risk}`,{
+    measurements:[visualUatInitial(code,xrfDate,xrfLevel)],crType
+  }));
+
+  push("VU-C01","[UAT-VIS][CYCLE] Risk H → Monthly",{measurements:[visualUatInitial("VU-C01",xrfDate,"M")],crType:"직접접촉+잔류"});
+  push("VU-C02","[UAT-VIS][CYCLE] Risk M → Semiannual",{measurements:[visualUatInitial("VU-C02",xrfDate,"M")],crType:"직접접촉+비잔류"});
+  push("VU-C03","[UAT-VIS][CYCLE] Risk L → Annual",{measurements:[visualUatInitial("VU-C03",xrfDate,"L")],crType:"비접촉"});
+  push("VU-C04","[UAT-VIS][CYCLE] Not Allowed → No Cycle",{measurements:[visualUatInitial("VU-C04",xrfDate,"H")],crType:"직접접촉+잔류"});
+  push("VU-C05","[UAT-VIS][CYCLE] Unresolved → No Cycle",{measurements:[visualUatInitial("VU-C05",xrfDate,"L",{elements:{Pb:{rawPpm:"-",rawSigma:2,rawJudgement:""}}})],crType:"비접촉"});
+  push("VU-C06","[UAT-VIS][CYCLE] Facility → No Cycle",{measurements:[visualUatInitial("VU-C06",xrfDate,"M")],crType:"직접접촉+비잔류",type:"Facility"});
+
+  const p1DueSoon=addDaysISO(TODAY_STR,3);
+  const p1Overdue=addDaysISO(TODAY_STR,-3);
+  const p1CompletedDue=addDaysISO(TODAY_STR,3);
+  const p1LateDue=addDaysISO(TODAY_STR,-10);
+  const p1FutureDue=addDaysISO(TODAY_STR,20);
+  const p1SequenceDue=addDaysISO(TODAY_STR,-10);
+  const monthlyItem=(code,name,due,periodic=[])=>push(code,name,{
+    measurements:[visualUatInitial(code,addMonthsISO(due,-1),"M"),...periodic],crType:"직접접촉+잔류"
+  });
+  monthlyItem("VU-P01","[UAT-VIS][PERIOD] 측정권장",p1DueSoon);
+  monthlyItem("VU-P02","[UAT-VIS][PERIOD] 미이행",p1Overdue);
+  monthlyItem("VU-P03","[UAT-VIS][PERIOD] 이행",p1CompletedDue,[visualUatPeriodic("VU-P03",TODAY_STR,"M")]);
+  monthlyItem("VU-P04","[UAT-VIS][PERIOD] 지연측정",p1LateDue,[visualUatPeriodic("VU-P04",addDaysISO(p1LateDue,2),"M")]);
+  monthlyItem("VU-P05","[UAT-VIS][PERIOD] 예정",p1FutureDue);
+  monthlyItem("VU-P06","[UAT-VIS][PERIOD] R + P1 + P2",p1SequenceDue,[visualUatPeriodic("VU-P06",addDaysISO(p1SequenceDue,-2),"M")]);
+  const currentYear=TODAY.getFullYear();
+  const annualR=`${currentYear-1}-01-31`;
+  push("VU-P07","[UAT-VIS][PERIOD] Annual same-year multiple",{
+    measurements:[
+      visualUatInitial("VU-P07",annualR,"L"),
+      visualUatPeriodic("VU-P07",`${currentYear}-01-15`,"L",{suffix:"P1A"}),
+      visualUatPeriodic("VU-P07",`${currentYear}-07-15`,"L",{suffix:"P1B"})
+    ],crType:"비접촉"
+  });
+
+  const workflowR=addMonthsISO(TODAY_STR,-2);
+  push("VU-W01","[UAT-VIS][WF] 신규 · XRF 미측정",{measurements:[],category:"new",lifecycle:"NewItem"});
+  push("VU-W02","[UAT-VIS][WF] Initial OK → Approved",{measurements:[visualUatInitial("VU-W02",workflowR,"M")],crType:"비접촉"});
+  push("VU-W03","[UAT-VIS][WF] Initial ?? → Retest required",{measurements:[visualUatInitial("VU-W03",workflowR,"L",{elements:{Pb:{rawPpm:45,rawSigma:3,rawJudgement:"??"}}})]});
+  const w04Initial=visualUatInitial("VU-W04",workflowR,"L",{elements:{Pb:{rawPpm:45,rawSigma:3,rawJudgement:"??"}}});
+  const w04Retest=makeVisualUatMeasurement("VU-W04_RET2",addDaysISO(workflowR,2),{role:"Retest",attemptNo:2,parentMeasurementId:w04Initial.id,elements:{Pb:{rawPpm:45,rawSigma:3,rawJudgement:"OK"}}});
+  push("VU-W04","[UAT-VIS][WF] ?? → Retest OK",{measurements:[w04Initial,w04Retest]});
+  const w05Initial=visualUatInitial("VU-W05",workflowR,"L",{elements:{Pb:{rawPpm:45,rawSigma:3,rawJudgement:"??"}}});
+  const w05Retest=makeVisualUatMeasurement("VU-W05_RET2",addDaysISO(workflowR,2),{role:"Retest",attemptNo:2,parentMeasurementId:w05Initial.id,elements:{Pb:{rawPpm:45,rawSigma:3,rawJudgement:"??"}}});
+  push("VU-W05","[UAT-VIS][WF] ?? → Retest ??",{measurements:[w05Initial,w05Retest]});
+  push("VU-W06","[UAT-VIS][WF] Initial NG → Precision required",{measurements:[visualUatInitial("VU-W06",workflowR,"L",{elements:{Br:{rawPpm:701,rawSigma:6,rawJudgement:"NG"}}})]});
+  push("VU-W07","[UAT-VIS][WF] Precision requested → Waiting",{measurements:[visualUatInitial("VU-W07",workflowR,"L",{elements:{Br:{rawPpm:701,rawSigma:7,rawJudgement:"NG"}}})]});
+  const safeR=(code)=>visualUatInitial(code,addMonthsISO(workflowR,-6),"M");
+  const ngPeriodic=(code)=>visualUatPeriodic(code,workflowR,"L",{elements:{Br:{rawPpm:701,rawSigma:8,rawJudgement:"NG"}}});
+  push("VU-W08","[UAT-VIS][WF] Precision OK → Approved",{measurements:[safeR("VU-W08"),ngPeriodic("VU-W08")],crType:"직접접촉+잔류"});
+  push("VU-W09","[UAT-VIS][WF] Precision NG → Rejected",{measurements:[safeR("VU-W09"),ngPeriodic("VU-W09")],crType:"직접접촉+잔류"});
+  push("VU-W10","[UAT-VIS][POLICY] Not Allowed + Precision OK",{measurements:[visualUatInitial("VU-W10",workflowR,"H")],crType:"직접접촉+잔류"});
+
+  push("VU-L01","[UAT-VIS][LIFE] NewItem",{measurements:[],category:"new",lifecycle:"NewItem",isCurrent:true});
+  push("VU-L03","[UAT-VIS][LIFE] ReplacedOld",{measurements:[visualUatInitial("VU-L03",xrfDate,"M")],lifecycle:"ExistingActive",isCurrent:true,replacedBy:"VU-L02"});
+  push("VU-L02","[UAT-VIS][LIFE] NewReplacement",{measurements:[],category:"new",lifecycle:"NewReplacement",isCurrent:true,replacementOf:"VU-L03",extra:{firstDate:addDaysISO(xrfDate,1),replacementDate:addDaysISO(xrfDate,1)}});
+  push("VU-L04","[UAT-VIS][LIFE] Discontinue Pending",{measurements:[],lifecycle:"ExistingActive",isCurrent:false,extra:{
+    _isRequestRecord:true,requestId:"VU-L04-REQUEST",requestType:"Discontinue",requestStatus:"Pending",
+    approvalStatus:"단종 검토중",processStatus:"Pending",discontinueTargetCode:"VU-L05",
+    discontinueReason:"Visual UAT only",finalUseDate:addDaysISO(TODAY_STR,30)
+  }});
+  push("VU-L05","[UAT-VIS][LIFE] Discontinued",{measurements:[visualUatInitial("VU-L05",xrfDate,"M")],lifecycle:"Discontinued",isCurrent:false,extra:{processedAt:addDaysISO(TODAY_STR,-1),processedBy:"admin",finalUseDate:addDaysISO(TODAY_STR,-1)}});
+  push("VU-L06","[UAT-VIS][LIFE] Discontinue Reverted",{measurements:[visualUatInitial("VU-L06",xrfDate,"M")],lifecycle:"ExistingActive",isCurrent:true,extra:{
+    processStatus:"Reverted",approvalStatus:"처리 취소",restoredFromDiscontinueRequestCode:"VU-L06-REQUEST",
+    restoredAt:TODAY_STR,restoredBy:"admin",restoreReason:"Visual UAT 원복 상태 확인"
+  }});
+  return fixtures;
+}
+
+const VISUAL_UAT_ITEMS=Object.freeze(buildVisualUatFixtures());
+
+// Compliance Visual UAT fixtures are kept separate from the original 55-case pack.
+// Only raw dates and measurements are supplied; production period functions derive every status.
+function buildVisualUatComplianceFixtures(){
+  const fixtures=[];
+  const push=(code,label,options)=>fixtures.push(makeVisualUatItem(code,`[UAT-VIS][CMP] ${label}`,options));
+  const monthly=(code,label,p1Due,periodic=[])=>push(code,label,{
+    measurements:[visualUatInitial(code,addMonthsISO(p1Due,-1),"M"),...periodic],
+    crType:"직접접촉+잔류"
+  });
+  const semiannual=(code,label,p1Due)=>push(code,label,{
+    measurements:[visualUatInitial(code,addMonthsISO(p1Due,-6),"M")],
+    crType:"직접접촉+비잔류"
+  });
+  const annual=(code,label,p1Due,periodic=[])=>push(code,label,{
+    measurements:[visualUatInitial(code,addMonthsISO(p1Due,-12),"L"),...periodic],
+    crType:"비접촉"
+  });
+
+  monthly("VU-CMP-L01","R 기준",addMonthsISO(TODAY_STR,1));
+  monthly("VU-CMP-L02","측정권장 · Monthly D-15 경계",addDaysISO(TODAY_STR,15));
+  monthly("VU-CMP-L03","측정권장 · Monthly D-7 경계",addDaysISO(TODAY_STR,7));
+  monthly("VU-CMP-L04","측정권장 · Monthly D-1",addDaysISO(TODAY_STR,1));
+  monthly("VU-CMP-L05","측정권장 · D-Day",TODAY_STR);
+  monthly("VU-CMP-L06","미이행 · D+1",addDaysISO(TODAY_STR,-1));
+  monthly("VU-CMP-L07","미이행 · D+10",addDaysISO(TODAY_STR,-10));
+
+  const l08Due=addDaysISO(TODAY_STR,3);
+  monthly("VU-CMP-L08","정상 이행",l08Due,[visualUatPeriodic("VU-CMP-L08",TODAY_STR,"M")]);
+  monthly("VU-CMP-L09","도래일 당일 이행",TODAY_STR,[visualUatPeriodic("VU-CMP-L09",TODAY_STR,"M")]);
+  const l10Due=addDaysISO(TODAY_STR,20);
+  monthly("VU-CMP-L10","매우 이른 측정",l10Due,[visualUatPeriodic("VU-CMP-L10",TODAY_STR,"M")]);
+  const l11Due=addDaysISO(TODAY_STR,-10);
+  monthly("VU-CMP-L11","지연측정 · D+5에 측정",l11Due,[visualUatPeriodic("VU-CMP-L11",addDaysISO(l11Due,5),"M")]);
+  monthly("VU-CMP-L12","Monthly D-20 Compact 경계검증",addDaysISO(TODAY_STR,20));
+
+  semiannual("VU-CMP-L13","Semiannual D-30 경계",addDaysISO(TODAY_STR,30));
+  semiannual("VU-CMP-L14","Semiannual D-31",addDaysISO(TODAY_STR,31));
+  annual("VU-CMP-L15","Annual D-30 경계",addDaysISO(TODAY_STR,30));
+  annual("VU-CMP-L16","Annual D-31",addDaysISO(TODAY_STR,31));
+
+  const l17P4Due=addDaysISO(TODAY_STR,15);
+  const l17RDate=addMonthsISO(l17P4Due,-4);
+  const l17P1Due=addMonthsISO(l17RDate,1);
+  const l17P2Due=addMonthsISO(l17RDate,2);
+  const l17P3Due=addMonthsISO(l17RDate,3);
+  push("VU-CMP-L17","4-slot Rolling",{
+    measurements:[
+      visualUatInitial("VU-CMP-L17",l17RDate,"M"),
+      visualUatPeriodic("VU-CMP-L17",addDaysISO(l17P1Due,-2),"M",{suffix:"P1",periodNo:1}),
+      visualUatPeriodic("VU-CMP-L17",addDaysISO(l17P2Due,-2),"M",{suffix:"P2",periodNo:2}),
+      visualUatPeriodic("VU-CMP-L17",addDaysISO(l17P3Due,-2),"M",{suffix:"P3",periodNo:3})
+    ],
+    crType:"직접접촉+잔류"
+  });
+
+  const currentYear=TODAY.getFullYear();
+  const l18Due=`${currentYear}-12-15`;
+  annual("VU-CMP-L18","Annual same-year multiple",l18Due,[
+    visualUatPeriodic("VU-CMP-L18",`${currentYear}-03-15`,"L",{suffix:"P1A",periodNo:1}),
+    visualUatPeriodic("VU-CMP-L18",`${currentYear}-09-01`,"L",{suffix:"P1B",periodNo:1})
+  ]);
+
+  push("VU-CMP-L19","Facility · 대상 아님",{
+    measurements:[visualUatInitial("VU-CMP-L19",addMonthsISO(TODAY_STR,-1),"M")],
+    crType:"직접접촉+비잔류",type:"Facility"
+  });
+  push("VU-CMP-L20","Supplemental Measured F1",{
+    measurements:[
+      visualUatInitial("VU-CMP-L20",addMonthsISO(TODAY_STR,-2),"H"),
+      visualUatPeriodic("VU-CMP-L20",addMonthsISO(TODAY_STR,-1),"L",{suffix:"F1",periodNo:1})
+    ],
+    crType:"직접접촉+잔류"
+  });
+
+  return fixtures;
+}
+
+const VISUAL_UAT_COMPLIANCE_ITEMS=Object.freeze(buildVisualUatComplianceFixtures());
+
+// 부자재 리스트의 100건 단위 페이지 전환을 실제 화면에서 검증하기 위한 읽기 전용 데이터입니다.
+// 10번째 항목마다 Initial Pb Judgment를 ??로 두어 1·2페이지 모두에 XRF 재측정 항목이 나타납니다.
+function buildVisualUatPaginationFixtures(){
+  const referenceDate=addMonthsISO(TODAY_STR,-2);
+  return Array.from({length:40},(_,index)=>{
+    const number=index+1;
+    const code=`VU-PG-${String(number).padStart(3,"0")}`;
+    const remeasureRequired=number%10===0;
+    const elements=remeasureRequired
+      ? {Pb:{rawPpm:45,rawSigma:3,rawJudgement:"??"}}
+      : {};
+    return makeVisualUatItem(
+      code,
+      `[UAT-VIS][PAGE] ${String(number).padStart(3,"0")}${remeasureRequired?" · Pb 재측정":" · 정상"}`,
+      {
+        measurements:[visualUatInitial(code,referenceDate,"L",{elements})],
+        crType:"비접촉",
+        extra:{dept:VISUAL_UAT_DEPTS[index%VISUAL_UAT_DEPTS.length]}
+      }
+    );
+  });
+}
+
+const VISUAL_UAT_PAGINATION_ITEMS=Object.freeze(buildVisualUatPaginationFixtures());
+const VISUAL_UAT_ALL_ITEMS=Object.freeze([
+  ...VISUAL_UAT_ITEMS,
+  ...VISUAL_UAT_COMPLIANCE_ITEMS,
+  ...VISUAL_UAT_PAGINATION_ITEMS
+]);
+
+const VISUAL_UAT_COMPLIANCE_EXPECTATIONS=Object.freeze([
+  {code:"VU-CMP-L01",expected:{cycle:"Monthly",referenceStatus:"reference",referenceMeasured:true}},
+  {code:"VU-CMP-L02",expected:{periodStatus:"due_soon",currentStatus:"dueSoon",dDay:15}},
+  {code:"VU-CMP-L03",expected:{periodStatus:"due_soon",currentStatus:"dueSoon",dDay:7}},
+  {code:"VU-CMP-L04",expected:{periodStatus:"due_soon",currentStatus:"dueSoon",dDay:1}},
+  {code:"VU-CMP-L05",expected:{periodStatus:"due_soon",currentStatus:"dueSoon",dDay:0}},
+  {code:"VU-CMP-L06",expected:{periodStatus:"overdue",currentStatus:"overdue",dDay:-1,daysOver:1}},
+  {code:"VU-CMP-L07",expected:{periodStatus:"overdue",currentStatus:"overdue",dDay:-10,daysOver:10}},
+  {code:"VU-CMP-L08",expected:{periodStatus:"compliant",currentStatus:"ok",p1MeasurementCount:1}},
+  {code:"VU-CMP-L09",expected:{periodStatus:"compliant",currentStatus:"ok",p1MeasurementCount:1}},
+  {code:"VU-CMP-L10",expected:{periodStatus:"compliant",currentStatus:"ok",p1MeasurementCount:1}},
+  {code:"VU-CMP-L11",expected:{periodStatus:"late",currentStatus:"ok",daysOver:5,p1MeasurementCount:1}},
+  {code:"VU-CMP-L12",expected:{periodStatus:"upcoming",currentStatus:"upcoming",dDay:20}},
+  {code:"VU-CMP-L13",expected:{cycle:"Semiannual",periodStatus:"due_soon",currentStatus:"dueSoon",dDay:30}},
+  {code:"VU-CMP-L14",expected:{cycle:"Semiannual",periodStatus:"upcoming",currentStatus:"upcoming",dDay:31}},
+  {code:"VU-CMP-L15",expected:{cycle:"Annual",periodStatus:"due_soon",currentStatus:"dueSoon",dDay:30}},
+  {code:"VU-CMP-L16",expected:{cycle:"Annual",periodStatus:"upcoming",currentStatus:"upcoming",dDay:31}},
+  {code:"VU-CMP-L17",expected:{cycle:"Monthly",compactLabels:["P3","P4","P5","P6"],compactCount:4}},
+  {code:"VU-CMP-L18",expected:{cycle:"Annual",p1MeasurementCount:2}},
+  {code:"VU-CMP-L19",expected:{cycle:"Not Available",currentStatus:"notAvailable",regularPeriodCount:0,allLabels:["R"]}},
+  {code:"VU-CMP-L20",expected:{cycle:"Not Available",currentStatus:"notAvailable",displayLabels:["R","F1"],supplementalStatus:"measured"}}
+]);
+
+function visualUatComplianceSelfCheckRow(item,manifest){
+  const periods=itemAllPeriods(item);
+  const displayPeriods=itemXrfDisplayPeriods(item);
+  const compactPeriods=itemListPeriods(item);
+  const reference=periods.find(period=>period?.isReference||Number(period?.num)===0)||null;
+  const p1=periods.find(period=>Number(period?.num)===1)||null;
+  const supplemental=displayPeriods.find(period=>period?.isSupplementalMeasurement)||null;
+  const dueDays=p1?.due?diffDaysISO(p1.due,TODAY_STR):null;
+  const actual={
+    cycle:itemCycleFromRisk(item),
+    p1Due:p1?.due||null,
+    p1Measured:p1?.measured||null,
+    periodStatus:p1?normStatus(p1.status):null,
+    currentStatus:getCS(item),
+    dDay:dueDays,
+    daysOver:Number(p1?.daysOver||0),
+    referenceStatus:reference?normStatus(reference.status):null,
+    referenceMeasured:!!reference?.measured,
+    p1MeasurementCount:periodMeasurementIds(p1).length,
+    compactLabels:compactPeriods.map(period=>periodLabel(period)),
+    compactCount:compactPeriods.length,
+    allLabels:periods.map(period=>periodLabel(period)),
+    regularPeriodCount:periods.filter(period=>!(period?.isReference||Number(period?.num)===0)).length,
+    displayLabels:displayPeriods.map(period=>periodLabel(period)),
+    supplementalStatus:supplemental?normStatus(supplemental.status):null,
+    compactPotential30DayOverride:false,
+  };
+  const failedFields=[];
+  Object.entries(manifest.expected||{}).forEach(([key,expected])=>{
+    const value=actual[key];
+    if(Array.isArray(expected)){
+      if(JSON.stringify(value)!==JSON.stringify(expected)) failedFields.push(key);
+    }else if(value!==expected) failedFields.push(key);
+  });
+  return {
+    code:item.code,cycle:actual.cycle,p1Due:actual.p1Due,p1Measured:actual.p1Measured,
+    expectedPeriodStatus:manifest.expected?.periodStatus??"",actualPeriodStatus:actual.periodStatus,
+    expectedCurrentStatus:manifest.expected?.currentStatus??"",actualCurrentStatus:actual.currentStatus,
+    compactLabels:actual.compactLabels.join(", "),compactCount:actual.compactCount,
+    businessStatus:actual.periodStatus,
+    compactVisualExpected:actual.periodStatus,
+    compactVisualActual:actual.periodStatus,
+    compactPotential30DayOverride:actual.compactPotential30DayOverride,
+    PASS:failedFields.length===0,failedFields,expected:manifest.expected,actual
+  };
+}
+
+const VISUAL_UAT_COMPLIANCE_RENDER_PERIODS=Object.freeze([
+  {num:0,displayLabel:"R",isReference:true,referenceDate:TODAY_STR,measured:TODAY_STR,measuredDates:[TODAY_STR],status:"reference"},
+  {num:1,displayLabel:"P1",due:addDaysISO(TODAY_STR,-30),measured:addDaysISO(TODAY_STR,-35),measuredDates:[addDaysISO(TODAY_STR,-35)],status:"compliant"},
+  {num:2,displayLabel:"F1",measured:addDaysISO(TODAY_STR,-25),measuredDates:[addDaysISO(TODAY_STR,-25)],status:"measured",isSupplementalMeasurement:true},
+  {num:3,displayLabel:"P3",due:addDaysISO(TODAY_STR,20),measured:TODAY_STR,measuredDates:[TODAY_STR],status:"early"},
+  {num:4,displayLabel:"P4",due:addDaysISO(TODAY_STR,-10),measured:addDaysISO(TODAY_STR,-5),measuredDates:[addDaysISO(TODAY_STR,-5)],status:"late",daysOver:5},
+  {num:5,displayLabel:"P5",due:addDaysISO(TODAY_STR,-5),measured:null,status:"overdue",daysOver:5},
+  {num:6,displayLabel:"P6",due:addDaysISO(TODAY_STR,3),measured:null,status:"due_soon"},
+  {num:7,displayLabel:"P7",due:addDaysISO(TODAY_STR,40),measured:null,status:"upcoming"}
+]);
+
+const VISUAL_UAT_PRECISION_OVERRIDES=Object.freeze({
+  "VU-W07_R":{requestStatus:"REQUESTED",requestedAt:TODAY_STR,requestedBy:"visual-uat",uploadStatus:"WAITING"},
+  "VU-W08_P1":{requestStatus:"REQUESTED",uploadStatus:"UPLOADED",resultFileId:"VU-W08-precision.pdf",finalConfirm:"확인",elementResults:{Br:{presence:"함유",ppm:100,legalLimit:900}}},
+  "VU-W09_P1":{requestStatus:"REQUESTED",uploadStatus:"UPLOADED",resultFileId:"VU-W09-precision.pdf",finalConfirm:"확인",elementResults:{Br:{presence:"함유",ppm:1000,legalLimit:900}}},
+  "VU-W10_R":{requestStatus:"REQUESTED",uploadStatus:"UPLOADED",resultFileId:"VU-W10-precision.pdf",finalConfirm:"확인",elementResults:{Pb:{presence:"함유",ppm:600,legalLimit:1000}}}
+});
+
+const VISUAL_UAT_EXPECTATIONS=Object.freeze([
+  ...[
+    ["VU-X01","OK","L"],["VU-X02","OK","L"],["VU-X03","OK","L"],
+    ["VU-X04","확인 필요",null],["VU-X05","확인 필요",null],
+    ["VU-X06","재측정 필요",null],["VU-X07","재측정 필요",null],
+    ["VU-X08","OK","M"],["VU-X09","OK","M"],["VU-X10","NG","H"],
+    ["VU-X11","OK","M"],["VU-X12","NG","H"],["VU-X13","OK","M"],
+    ["VU-X14","NG","H"],["VU-X15","NG",null],["VU-X16","OK","L"],["VU-X17","OK","M"]
+  ].map(([code,xrfResult,xrfLevel])=>({code,group:"XRF",expected:{xrfResult,xrfLevel}})),
+  ...[
+    ["VU-R01","Not Allowed"],["VU-R02","Not Allowed"],["VU-R03","Not Allowed"],
+    ["VU-R04","H"],["VU-R05","M"],["VU-R06","M"],
+    ["VU-R07","M"],["VU-R08","M"],["VU-R09","L"]
+  ].map(([code,finalRisk])=>({code,group:"Risk",expected:{finalRisk}})),
+  ...[
+    ["VU-C01","H","Monthly",1,15],["VU-C02","M","Semiannual",6,30],
+    ["VU-C03","L","Annual",12,30],["VU-C04","Not Allowed","Not Available",null,null],
+    ["VU-C05","—","Not Available",null,null],["VU-C06","M","Not Available",null,null]
+  ].map(([code,finalRisk,cycle,cycleMonths,recommendDays])=>({code,group:"Cycle",expected:{finalRisk,cycle,cycleMonths,recommendDays}})),
+  {code:"VU-P01",group:"Period",expected:{periodStatus:"due_soon",dDay:3}},
+  {code:"VU-P02",group:"Period",expected:{periodStatus:"overdue",dDay:-3}},
+  {code:"VU-P03",group:"Period",expected:{periodStatus:"compliant"}},
+  {code:"VU-P04",group:"Period",expected:{periodStatus:"late"}},
+  {code:"VU-P05",group:"Period",expected:{periodStatus:"upcoming"}},
+  {code:"VU-P06",group:"Period",expected:{periodLabelsPrefix:["R","P1","P2"]}},
+  {code:"VU-P07",group:"Period",expected:{p1MeasurementCount:2}},
+  {code:"VU-W01",group:"Workflow",expected:{xrfResult:"—",approval:"보류",stage:"XRF_REQUIRED"}},
+  {code:"VU-W02",group:"Workflow",expected:{xrfResult:"OK",approval:"승인",stage:"APPROVED"}},
+  {code:"VU-W03",group:"Workflow",expected:{xrfResult:"재측정 필요",approval:"보류",stage:"XRF_REMEASURE_REQUIRED"}},
+  {code:"VU-W04",group:"Workflow",expected:{xrfResult:"OK",approval:"승인",stage:"APPROVED"}},
+  {code:"VU-W05",group:"Workflow",expected:{xrfResult:"재측정 필요",approval:"의뢰 필요",stage:"PRECISION_REQUEST_REQUIRED"}},
+  {code:"VU-W06",group:"Workflow",expected:{xrfResult:"NG",approval:"의뢰 필요",stage:"PRECISION_REQUEST_REQUIRED"}},
+  {code:"VU-W07",group:"Workflow",expected:{xrfResult:"NG",approval:"측정 진행중",stage:"PRECISION_RESULT_WAITING"}},
+  {code:"VU-W08",group:"Workflow",expected:{xrfResult:"NG",approval:"승인",stage:"APPROVED"}},
+  {code:"VU-W09",group:"Workflow",expected:{xrfResult:"NG",approval:"반려",stage:"PRECISION_NG_REVIEW"}},
+  {code:"VU-W10",group:"Workflow",expected:{finalRisk:"Not Allowed",approval:"반려",stage:"RISK_NOT_ALLOWED"}},
+  {code:"VU-L01",group:"Lifecycle",expected:{lifecycle:"NewItem",isCurrent:true}},
+  {code:"VU-L02",group:"Lifecycle",expected:{lifecycle:"NewReplacement",isCurrent:true,replacementOf:"VU-L03"}},
+  {code:"VU-L03",group:"Lifecycle",expected:{lifecycle:"ReplacedOld",isCurrent:false,replacedByIncludes:"VU-L02"}},
+  {code:"VU-L04",group:"Lifecycle",expected:{requestStatus:"Pending",approval:"단종 검토중"}},
+  {code:"VU-L05",group:"Lifecycle",expected:{lifecycle:"Discontinued",isCurrent:false}},
+  {code:"VU-L06",group:"Lifecycle",expected:{lifecycle:"ExistingActive",isCurrent:true,processStatus:"Reverted"}}
+]);
+
+function visualUatSelfCheckRow(item,manifest,approvalStatusOf){
+  const periods=itemAllPeriods(item);
+  const p1=periods.find(period=>Number(period?.num)===1)||null;
+  const workflow=workflowForItem(item);
+  const actual={
+    xrfResult:itemXrfResult(item),
+    xrfLevel:riskBasisXrfLevelOf(item)||itemLatestXrfLevel(item),
+    finalRisk:itemFinalRisk(item),
+    cycle:itemCycleFromRisk(item),
+    cycleMonths:cycleMonthsOf(item)||null,
+    recommendDays:itemCycleFromRisk(item)==="Not Available"?null:windowDaysOf(item),
+    approval:workflow?.approval?.status||approvalStatusOf(item),stage:workflow?.stage||null,
+    periodStatus:normStatus(p1?.status),
+    dDay:p1?.due?diffDaysISO(p1.due,TODAY_STR):null,
+    periodLabels:periods.map(period=>periodLabel(period)),
+    p1MeasurementCount:periodMeasurementIds(p1).length,
+    lifecycle:item.lifecycle,isCurrent:item.isCurrent,replacementOf:item.replacementOf||null,
+    replacedBy:String(item.replacedBy||""),requestStatus:item.requestStatus||null,
+    processStatus:item.processStatus||null
+  };
+  const failedFields=[];
+  Object.entries(manifest.expected||{}).forEach(([key,expected])=>{
+    if(key==="periodLabelsPrefix"){
+      if(!expected.every((label,index)=>actual.periodLabels[index]===label)) failedFields.push(key);
+    }else if(key==="replacedByIncludes"){
+      if(!String(actual.replacedBy).split(",").map(v=>v.trim()).includes(expected)) failedFields.push(key);
+    }else if(actual[key]!==expected){
+      failedFields.push(key);
+    }
+  });
+  return {
+    code:item.code,group:manifest.group,
+    expectedXrf:manifest.expected?.xrfResult??"",actualXrf:actual.xrfResult,
+    expectedRisk:manifest.expected?.finalRisk??"",actualRisk:actual.finalRisk,
+    expectedCycle:manifest.expected?.cycle??"",actualCycle:actual.cycle,
+    expectedApproval:manifest.expected?.approval??"",actualApproval:actual.approval,
+    expectedStage:manifest.expected?.stage??"",actualStage:actual.stage,
+    PASS:failedFields.length===0,failedFields,expected:manifest.expected,actual
+  };
+}
+
+function FilterPanel({column, pos, selected, values, onToggle, onClear, onClose}){
+  const safeValues = values||UNIQUE_VALS[column]||[];
   const labels = FILTER_LABELS[column]||{};
   const allSel = selected.length===0;
   const handleAll = ()=>{
-    if(allSel){ values.forEach(v=>onToggle(column,v)); }
+    if(allSel){ safeValues.forEach(v=>onToggle(column,v)); }
     else { onClear(column); }
   };
   return(
@@ -3399,10 +3984,10 @@ function FilterPanel({column, pos, selected, onToggle, onClear, onClose}){
           {!allSel&&selected.length>0&&<span style={{fontSize:9,color:C.charcoalMd}}>—</span>}
         </div>
         <span style={{fontSize:12,fontWeight:500,color:C.text2}}>전체 선택</span>
-        {!allSel&&<span style={{fontSize:10,color:C.text4,marginLeft:"auto"}}>{selected.length}/{values.length}</span>}
+        {!allSel&&<span style={{fontSize:10,color:C.text4,marginLeft:"auto"}}>{selected.length}/{safeValues.length}</span>}
       </div>
       <div style={{maxHeight:220,overflowY:"auto"}}>
-        {values.map(v=>{
+        {safeValues.map(v=>{
           const isSel=selected.includes(v);
           return(
             <div key={v} onClick={()=>onToggle(column,v)}
@@ -3412,7 +3997,7 @@ function FilterPanel({column, pos, selected, onToggle, onClear, onClose}){
                 background:isSel?C.charcoal:C.card,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
                 {isSel&&<span style={{fontSize:8,color:"#fff",fontWeight:700}}>●</span>}
               </div>
-              <span style={{fontSize:12,color:isSel?C.text1:C.text3}}>{labels[v]||v}</span>
+              <span style={{fontSize:12,color:isSel?C.text1:C.text3,overflowWrap:"anywhere",wordBreak:"keep-all"}}>{labels[v]||v}</span>
             </div>
           );
         })}
@@ -3486,8 +4071,7 @@ function DotCompact({periods, selectedPeriodNum, onSelectPeriod}){
         const isLast=i===periods.length-1;
         const isSel=selectedPeriodNum===p.num;
         const label=periodLabel(p);
-        const dueDays=(!p.isReference && !p.measured && p.due) ? daysUntil(p.due) : null;
-        const isDueWindow=dueDays!==null && dueDays>=0 && dueDays<=30;
+        const isDueWindow=st==="due_soon";
         return(
           <div key={i} style={{display:"flex",flexDirection:"column",alignItems:"flex-start",flexShrink:0}}>
             <div style={{display:"flex",alignItems:"center",height:10,marginBottom:2}}>
@@ -3620,7 +4204,7 @@ function PeriodTable({periods, selectedPeriodNum, onSelectPeriod, uploadTargetNu
   const td={padding:"7px 9px",borderBottom:`1px solid ${C.bd}`,fontSize:11,verticalAlign:"middle",textAlign:"center"};
   const inputOverlay={position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%"};
   return(
-    <div style={{overflowX:"hidden",width:"100%",maxWidth:"100%"}}>
+    <div className="responsive-table-scroll table-scroll-medium" role="region" aria-label="주기별 이행 현황 표" tabIndex={0}>
       <table style={{width:"100%",minWidth:0,maxWidth:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
         <colgroup>
           <col style={{width:"12%"}}/><col style={{width:"20%"}}/><col style={{width:"27%"}}/><col style={{width:"16%"}}/><col style={{width:"25%"}}/>
@@ -3632,7 +4216,8 @@ function PeriodTable({periods, selectedPeriodNum, onSelectPeriod, uploadTargetNu
             const meta=SR[st]||SR.upcoming;
             const isSel=selectedPeriodNum===p.num;
             const canClick=!!onSelectPeriod;
-            const isUploadTarget=Number(uploadTargetNum)===Number(p.num) && !(p?.isReference || Number(p?.num)===0);
+            // R의 1차 ??도 같은 R에 Retest로 연결할 수 있어야 합니다.
+            const isUploadTarget=Number(uploadTargetNum)===Number(p.num);
             const stateMatches=uploadState?.key && uploadState.key===uploadKey;
             const uploadTitle=stateMatches
               ? (uploadState.error || (uploadState.saved?`${uploadState.fileName} · 저장 완료`:uploadState.fileName))
@@ -3659,6 +4244,48 @@ function PeriodTable({periods, selectedPeriodNum, onSelectPeriod, uploadTargetNu
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function VisualUatComplianceRenderMatrix(){
+  const selectedPeriodNum=4;
+  const statusRows=["reference","compliant","measured","early","late","overdue","due_soon","upcoming"];
+  return(
+    <div data-i18n-skip="true" data-uat-compliance-render-matrix="1" style={{padding:"16px 18px",marginBottom:16,border:`1px solid ${A.purple.ln}`,borderRadius:12,background:A.purple.bg,boxShadow:"0 8px 22px rgba(26,32,32,.075)"}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:14}}>
+        <div>
+          <div style={{fontSize:13,fontWeight:800,color:A.purple.tx}}>[UAT] 이행 현황 렌더 매트릭스</div>
+          <div style={{fontSize:10.5,color:C.text3,lineHeight:1.6,marginTop:4}}>아래 데이터는 색상/도형 렌더링 확인용이며 업무 상태 산정 로직 검증에는 사용하지 않습니다.</div>
+        </div>
+        <span style={{fontSize:10,color:C.text4}}>선택 Ring: P4 · 기준일 {TODAY_STR}</span>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"minmax(180px,.65fr) minmax(0,1.35fr)",gap:12,marginBottom:12}}>
+        <div style={{padding:"12px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:8,minWidth:0}}>
+          <div style={{fontSize:10.5,fontWeight:750,color:C.text2,marginBottom:10}}>부자재 리스트형 / DotCompact</div>
+          <DotCompact periods={VISUAL_UAT_COMPLIANCE_RENDER_PERIODS} selectedPeriodNum={selectedPeriodNum}/>
+        </div>
+        <div style={{padding:"12px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:8,minWidth:0}}>
+          <div style={{fontSize:10.5,fontWeight:750,color:C.text2,marginBottom:4}}>XRF 상세형 / DotFull</div>
+          <DotFull periods={VISUAL_UAT_COMPLIANCE_RENDER_PERIODS} windowDays={30} selectedPeriodNum={selectedPeriodNum}/>
+        </div>
+      </div>
+
+      <div style={{padding:"12px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:8,marginBottom:12}}>
+        <div style={{fontSize:10.5,fontWeight:750,color:C.text2,marginBottom:9}}>상태 테이블형 / PeriodTable</div>
+        <PeriodTable periods={VISUAL_UAT_COMPLIANCE_RENDER_PERIODS} selectedPeriodNum={selectedPeriodNum}/>
+      </div>
+
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        {statusRows.map(status=>{
+          const meta=ST[status]||ST.upcoming;
+          return <span key={status} style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 7px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:6,fontSize:9.5,color:C.text3}}>
+            <span style={{width:11,height:11,borderRadius:"50%",background:meta.fill,border:`1.5px solid ${meta.border}`,boxSizing:"border-box"}}/>
+            {status} · {meta.fill} / {meta.border}
+          </span>;
+        })}
+      </div>
     </div>
   );
 }
@@ -3761,20 +4388,18 @@ function XrfResultSummary({measurement, item}){
   const final=itemFinalRisk(item)||"—";
   const basis=riskBasisMeasurementOf(item);
   const isReference=measurement?.id && basis?.id && measurement.id===basis.id;
-  const precisionElements=precisionRequiredElements(measurement);
-  const retestList=retestRequiredElements(measurement);
+  const followupInfo=measurementFollowupInfo(measurement);
+  const {precisionElements,remeasureElements,flaggedElements,hasFollowup}=followupInfo;
   const stepStyle={background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,padding:"10px 12px",minWidth:0,textAlign:"center",boxShadow:"0 2px 10px rgba(26,32,32,.08)",boxSizing:"border-box"};
-  const followup=precisionElements.length ? "정밀분석 필요" : retestList.length ? "XRF 재측정" : "후속조치 없음";
-  const hasFollowup=precisionElements.length>0 || retestList.length>0;
-  // 정기 측정 구간은 분수형 7/7 대신 원소별 상태를 한눈에 볼 수 있는 작은 상태 레일로 표현합니다.
+  const precisionSet=new Set(precisionElements);
+  const remeasureSet=new Set(remeasureElements);
+  const flaggedSet=new Set(flaggedElements);
+  const tone=hasFollowup?A.rose:A.green;
+  // R과 정기 측정 모두 원소별 후속조치를 같은 상태 레일로 표현합니다.
   // 정상 원소는 중립 셀, 후속 분석 대상만 강조합니다.
   // 후속 분석 대상이 없을 때는 "0"이나 빈 count badge를 따로 노출하지 않습니다.
-  if(!isReference){
-    const flaggedSet=new Set([...precisionElements,...retestList]);
-    const needsAction=flaggedSet.size>0;   // 숫자가 아닌 boolean이어야 0이 렌더링되지 않습니다.
-    const tone=needsAction?A.rose:A.green;
-    return(
-      <div style={{display:"grid",gridTemplateColumns:"1fr",justifyItems:"center",alignItems:"center",rowGap:12,
+  const followupRail=(
+    <div style={{display:"grid",gridTemplateColumns:"1fr",justifyItems:"center",alignItems:"center",rowGap:12,
         padding:"18px 20px",marginBottom:12,borderRadius:UI.r,border:`1px solid ${tone.ln}`,
         background:tone.bg,textAlign:"center",boxSizing:"border-box"}}>
 
@@ -3784,9 +4409,16 @@ function XrfResultSummary({measurement, item}){
             width:"fit-content",maxWidth:"100%",margin:"0 auto"}}>
           {ELEMENTS.map(el=>{
             const flagged=flaggedSet.has(el);
-            const title=el==="Cl+Br"
+            const action=precisionSet.has(el) && remeasureSet.has(el)
+              ? "정밀분석 및 XRF 재측정"
+              : precisionSet.has(el)
+                ? "정밀분석 필요"
+                : remeasureSet.has(el)
+                  ? "XRF 재측정"
+                  : "Internal Limit 이내";
+            const title=el==="Cl+Br" && !flagged
               ? `${el} · Cl Content + Br Content 합계 / Internal Limit 1,050 ppm`
-              : `${el} · ${flagged?"후속 분석 필요":"Internal Limit 이내"}`;
+              : `${el} · ${action}`;
             return <span key={el} title={title}
               style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:42,height:26,padding:"0 10px",
                 borderRadius:UI.pill,border:`1px solid ${flagged?A.rose.solid:A.green.ln}`,
@@ -3797,21 +4429,21 @@ function XrfResultSummary({measurement, item}){
 
         {/* 후속조치 값은 배지/버튼 없이 검정 텍스트로만 표시합니다. */}
         <div style={{display:"grid",justifyItems:"center",alignItems:"center",rowGap:5,width:"fit-content",maxWidth:"100%",margin:"0 auto"}}>
-          <span style={{fontFamily:FONT_SANS,fontSize:11,fontWeight:500,color:C.text1,lineHeight:1.45,letterSpacing:0,textAlign:"center"}}>{needsAction?followup:"후속조치 없음"}</span>
+          <span style={{fontFamily:FONT_SANS,fontSize:11,fontWeight:500,color:C.text1,lineHeight:1.45,letterSpacing:0,textAlign:"center"}}>{followupInfo.label}</span>
           <div style={{fontSize:11,color:C.text2,fontWeight:400,textAlign:"center",lineHeight:1.5,maxWidth:560}}>
-            {needsAction?"강조된 원소만 후속 분석 대상으로 전달됩니다.":"원본 보고서 Judgment 기준 후속조치 대상이 없습니다."}
+            {hasFollowup?followupInfo.detail:"원본 보고서 Judgment 기준 후속조치 대상이 없습니다."}
           </div>
         </div>
       </div>
-    );
-  }
+  );
+  if(!isReference) return followupRail;
   const summarySteps=[
     ["XRF Level", <Chip v={xrfLevel||"—"} small/>],
     ["C&R Level", <CRChip crLevel={item?.crLevel} crType={item?.crType} compact/>],
     ["Final Risk", <Chip v={final||"—"}/>],
     ["검사주기", <span style={{fontSize:11,fontWeight:700,color:C.text1}}>{CYCLE_KO[itemCycleFromRisk(item)]||itemCycleFromRisk(item)||"—"}</span>],
   ];
-  return(
+  return(<>
     <div style={{border:`1px solid ${C.bd}`,background:C.card,padding:"14px 16px",marginBottom:12,borderRadius:14,boxShadow:"0 8px 20px rgba(26,32,32,.08)"}}>
       <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start",marginBottom:12}}>
         <div>
@@ -3828,7 +4460,8 @@ function XrfResultSummary({measurement, item}){
         ))}
       </div>
     </div>
-  );
+    {followupRail}
+  </>);
 }
 
 function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeriodNum, selectedMeasurementId=null, onSelectPeriod, onSelectMeasurement=null}){
@@ -3856,11 +4489,10 @@ function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeri
           const xrfResult=m?measurementXrfResult(m):"—";
           const xrfLevel=m?measurementXrfLevel(m):null;
           const final=itemFinalRisk(item)||"—";
-          const precisionElements=m?precisionRequiredElements(m):[];
-          const retestList=retestRequiredElements(m);
-          const hasFollowup=precisionElements.length>0 || retestList.length>0;
-          const followup=m ? (precisionElements.length?"정밀분석 필요":retestList.length?"XRF 재측정":"후속조치 없음") : "측정 없음";
-          const followupDetail=m ? (precisionElements.length?`대상 원소: ${precisionElements.join(", ")}`:retestList.length?retestShortText(retestList):"추가 조치 없음") : "XRF 결과 업로드 대기";
+          const followupInfo=m?measurementFollowupInfo(m):null;
+          const hasFollowup=!!followupInfo?.hasFollowup;
+          const followup=m ? followupInfo.label : "측정 없음";
+          const followupDetail=m ? followupInfo.detail : "XRF 결과 업로드 대기";
           const st=ST[normStatus(p.status)]||ST.upcoming;
           const handleClick=()=>{
             if(m?.id && onSelectMeasurement) onSelectMeasurement(p.num,m.id);
@@ -3924,6 +4556,71 @@ function DDayText({dateStr}){
   return <span style={{color:C.text4,fontSize:12}}>D-{dd}</span>;
 }
 
+function listNextDueValue(item){
+  const cycleMuted=isDiscontinueRequestItem(item) || isDiscontinuedItem(item) || !isComplianceTarget(item);
+  return cycleMuted ? "—" : (nextDueOfItem(item)||"—");
+}
+function listDDayValue(item){
+  if(item?.lifecycle==="ReplacedOld") return "—";
+  const due=listNextDueValue(item);
+  const dd=due==="—" ? null : daysUntil(due);
+  if(dd===null) return "—";
+  return dd<0 ? `D+${Math.abs(dd)}` : `D-${dd}`;
+}
+function listColumnValue(item,column,approvalStatus=""){
+  if(!item) return "—";
+  if(column==="category") return item.category||"—";
+  if(column==="code") return item.code||"—";
+  if(column==="name") return [item.name,item.nameEn].filter(Boolean).join(" / ")||"—";
+  if(column==="dept") return item.dept||"—";
+  if(column==="cycle") return itemCycleFromRisk(item)||"Not Available";
+  if(column==="firstDate") return item.firstDate||"—";
+  if(column==="compliance") return getCS(item);
+  if(column==="xrf") return itemXrfResult(item)||"—";
+  if(column==="precision") return precisionAnalysisResultOf(item)||"—";
+  if(column==="approval") return approvalFilterKey(approvalStatus||approvalStatusOfItemFallback(item));
+  if(column==="nextDue") return listNextDueValue(item);
+  if(column==="dDay") return listDDayValue(item);
+  return "—";
+}
+
+function approvalStatusOfItemFallback(item){
+  return item?.approvalStatus||deriveInitialApprovalStatus(latestMeasurementOf(item));
+}
+
+function itemMatchesListColumnFilter(item,column,selected,approvalStatus=""){
+  const selectedValues=selected||[];
+  if(!selectedValues.length) return true;
+  if(column==="xrf"){
+    const result=itemXrfResult(item);
+    const level=riskBasisXrfLevelOf(item)||itemLatestXrfLevel(item);
+    return selectedValues.includes(result)||selectedValues.includes(level);
+  }
+  return selectedValues.includes(listColumnValue(item,column,approvalStatus));
+}
+
+function itemMatchesListSearch(item,search,approvalStatus=""){
+  const query=String(search||"").trim().toLocaleLowerCase("ko-KR");
+  if(!query) return true;
+  const searchableColumns=["category","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"];
+  const searchableValues=searchableColumns.flatMap(column=>{
+    const value=listColumnValue(item,column,approvalStatus);
+    const label=FILTER_LABELS[column]?.[value];
+    return [value,label];
+  }).concat([
+    item?.name,item?.nameEn,item?.manufacturer,item?.materialCategory,item?.materialState,
+    item?.crLevel,itemFinalRisk(item),item?.lifecycle,LIFECYCLE_KO[item?.lifecycle],
+    riskBasisXrfLevelOf(item),itemLatestXrfLevel(item),approvalStatus
+  ]);
+  return searchableValues.some(value=>String(value||"").toLocaleLowerCase("ko-KR").includes(query));
+}
+
+function isCancelledListItem(item,approvalStatus=""){
+  return item?.lifecycle==="Cancelled"
+    || approvalFilterKey(approvalStatus||approvalStatusOfItemFallback(item))==="cancelled"
+    || (isDiscontinueRequestItem(item) && String(item?.processStatus||"").trim().toLowerCase()==="reverted");
+}
+
 function RiskBadge({risk}){
   const label=risk==="Not Allowed"?"사용불가":(risk||"—");
   const t=(label==="사용불가"||label==="H")?A.rose:(label==="M"?A.amber:(label==="L"?A.green:A.slate));
@@ -3933,9 +4630,7 @@ function RetestBadge({required}){
   return <StatusPill tone={required?A.rose:A.green} label={required?"재측정":"재측정 불필요"} size="sm" fixedWidth={RESULT_LABEL_WIDTH}/>;
 }
 function XrfFollowupBadge({measurement}){
-  const precisionTargets=precisionRequiredElements(measurement);
-  const remeasure=XRF_REPORT_ELEMENTS.some(el=>isXrfRemeasureRequired(measurement?.elements?.[el]));
-  const label=precisionTargets.length>0 ? "정밀분석 필요" : remeasure ? "XRF 재측정" : "후속조치 없음";
+  const label=measurementFollowupInfo(measurement).label;
   // 후속조치 필드는 상태와 관계없이 배지/버튼을 사용하지 않고 검정 텍스트로 통일합니다.
   return <AutoFitText value={label} title={label} baseFontSize={10.5} minFontSize={7} align="center" style={{fontFamily:FONT_SANS,fontWeight:500,color:C.text1,lineHeight:1.4,letterSpacing:0}}/>;
 }
@@ -4024,9 +4719,15 @@ function WorkflowStrip({item}){
   const xrfRaw=attempts.length ? attempts[attempts.length-1].normalizedResult : itemXrfWorst(item);
   const xrfValue=xrfRaw==="REMEASURE"?"재측정 필요":(xrfRaw||"—");
   const precisionValue=wf.precision?.result
-    || (["PRECISION_FOLLOWUP_REQUIRED","PRECISION_REQUEST_REQUIRED"].includes(wf.stage)?"인계 필요"
-      :wf.stage==="PRECISION_RESULT_WAITING"?"결과 대기":"");
+    || (wf.precision?.requestStatus==="REQUESTED"
+      ? (wf.precision?.uploadStatus==="UPLOADED"?"결과 확인":"결과 대기")
+      : wf.precision?.required
+        ? "인계 필요"
+        : (["PRECISION_FOLLOWUP_REQUIRED","PRECISION_REQUEST_REQUIRED"].includes(wf.stage)?"인계 필요"
+          :wf.stage==="PRECISION_RESULT_WAITING"?"결과 대기":""));
   const approvalValue=wf.approval?.status || (wf.stage==="APPROVED"?"승인":"측정 진행중");
+  const latest=latestMeasurementOf(item);
+  const remeasureTargets=pendingXrfRemeasureElements(latest);
 
   const precisionSkipped=xrfValue==="OK" && !wf.precision?.result;
   const precisionStages=new Set(["PRECISION_FOLLOWUP_REQUIRED","PRECISION_REQUEST_REQUIRED","PRECISION_RESULT_WAITING","PRECISION_NG_REVIEW"]);
@@ -4051,7 +4752,9 @@ function WorkflowStrip({item}){
     {
       label:"XRF",
       value:xrfValue,
-      sub:attempts.length?`${attempts.length}차 · ${attempts[attempts.length-1]?.measuredDate||""}`:"",
+      sub:remeasureTargets.length
+        ? `재측정: ${remeasureTargets.join(", ")}`
+        : attempts.length?`${attempts.length}차 · ${attempts[attempts.length-1]?.measuredDate||""}`:"",
       muted:false
     },
     {
@@ -4320,7 +5023,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
               {derivedResult?<AnalysisResultBadge value={derivedResult}/>:<span style={{fontSize:12,color:C.text4}}>—</span>}
             </div>
           </div>
-          <div style={{overflowX:"hidden",width:"100%",maxWidth:"100%"}}>
+          <div className="responsive-table-scroll table-scroll-medium" role="region" aria-label="정밀분석 원소별 결과 표" tabIndex={0}>
             <table style={{width:"100%",minWidth:0,maxWidth:"100%",borderCollapse:"collapse",tableLayout:"fixed",fontSize:11}}>
               <colgroup>
                 <col style={{width:"13%"}}/><col style={{width:"25%"}}/><col style={{width:"22%"}}/><col style={{width:"22%"}}/><col style={{width:"18%"}}/>
@@ -4358,7 +5061,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
   </div>;
 }
 
-function EBar({el, d, last=false}){
+function EBar({el, d, measurement, last=false}){
   if(!d) return null;
   const EL_KO={Pb:"납",Hg:"수은",Cr:"크롬",Cd:"카드뮴",Cl:"염소",Br:"브롬","Cl+Br":"염소+브롬"};
   const rawPpm=sourcePpmValue(d);
@@ -4388,7 +5091,12 @@ function EBar({el, d, last=false}){
   const barTop=44;
   const markerTop=36;
   const markerHeight=31;
-  const followupText=judgement==="NG"?"정밀분석 필요":(remeasureRequired?"XRF 재측정":"없음");
+  const followupInfo=measurementFollowupInfo(measurement);
+  const followupText=followupInfo.precisionElements.includes(el)
+    ? "정밀분석 필요"
+    : followupInfo.remeasureElements.includes(el)
+      ? "XRF 재측정"
+      : "없음";
   const info=el==="Cl+Br"
     ? [
         ["Content", displayValue, "Cl Content + Br Content 합계"],
@@ -4502,14 +5210,16 @@ function RiskMatrix(){
   const RS={"Not Allowed":{bg:C.charcoalDk,c:"#fff",l:"사용 불허"},"H":{bg:C.redBg,c:C.redDk,l:"사용 자제\n월 1회"},"M":{bg:C.charcoalBg,c:C.charcoalMd,l:"관리 필요\n반기 1회"},"L":{bg:C.charcoalBg,c:C.charcoal,l:"정상\n연 1회"}};
   const th={padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,fontSize:11,fontWeight:600,color:C.text3,textAlign:"center"};
   return(
-    <table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}>
-      <thead><tr><th style={{...th,textAlign:"center"}}>XRF ╲ C&R</th>{["H — 직접접촉+잔류","M — 직접접촉+비잔류","L — 비접촉"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
-      <tbody>{["H","M","L"].map(x=>(
-        <tr key={x}><td style={{padding:"8px 12px",border:`1px solid ${C.bd}`,fontWeight:500,color:C.text2,background:C.bg,fontSize:11}}>{x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>
-          {["H","M","L"].map(c=>{const r=MX[x][c];const s=RS[r];return <td key={c} style={{padding:"10px 12px",border:`1px solid ${C.bd}`,background:s.bg,color:s.c,fontWeight:700,textAlign:"center",whiteSpace:"pre-line",fontSize:11,lineHeight:1.6}}>{s.l}</td>;})}
-        </tr>
-      ))}</tbody>
-    </table>
+    <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 기준표" tabIndex={0}>
+      <table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}>
+        <thead><tr><th style={{...th,textAlign:"center"}}>XRF ╲ C&R</th>{["H — 직접접촉+잔류","M — 직접접촉+비잔류","L — 비접촉"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+        <tbody>{["H","M","L"].map(x=>(
+          <tr key={x}><td style={{padding:"8px 12px",border:`1px solid ${C.bd}`,fontWeight:500,color:C.text2,background:C.bg,fontSize:11}}>{x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>
+            {["H","M","L"].map(c=>{const r=MX[x][c];const s=RS[r];return <td key={c} style={{padding:"10px 12px",border:`1px solid ${C.bd}`,background:s.bg,color:s.c,fontWeight:700,textAlign:"center",whiteSpace:"pre-line",fontSize:11,lineHeight:1.6}}>{s.l}</td>;})}
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
   );
 }
 
@@ -4635,16 +5345,20 @@ function DeptRiskChart({rows, riskMeta}){
   );
 }
 
+const MATERIAL_LIST_PAGE_SIZE=100;
+
 export default function App(){
   const appRootRef=useRef(null);
   const [lang,setLang]=useState(()=>{
     try{ return localStorage.getItem("xrf-ui-language")==="en"?"en":"ko"; }catch{return "ko";}
   });
   const [tab,setTab]=useState("list");
-  const [fs,setFs]=useState({category:[],dept:[],cycle:[],xrf:[],compliance:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],dueMonth:[]});
+  const [fs,setFs]=useState({category:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[]});
   const [openFilter,setOpenFilter]=useState(null);
   const [fPos,setFPos]=useState({top:0,left:0});
   const [search,setSearch]=useState("");
+  const [listPage,setListPage]=useState(0);
+  const [visualUatOnly,setVisualUatOnly]=useState(false);
   const [selKey,setSelKey]=useState(null);
   const [rowSel,setRowSel]=useState(null);
   const [selPeriodNum,setSelPeriodNum]=useState(null);
@@ -4667,6 +5381,7 @@ export default function App(){
   const [itemEditOpen,setItemEditOpen]=useState(false);
   const [itemEditForm,setItemEditForm]=useState(null);
   const [itemEditAuth,setItemEditAuth]=useState({open:false,item:null,password:"",error:""});
+  const [discontinueDecisionAuth,setDiscontinueDecisionAuth]=useState({open:false,item:null,password:"",error:"",verified:false,pending:false});
   const [regMode,setRegMode]=useState("requester");
   const [reqXrfMode,setReqXrfMode]=useState("request");
   const [reqUploadResult,setReqUploadResult]=useState(emptyUploadedXrfResult());
@@ -4674,6 +5389,8 @@ export default function App(){
   const [adminUploadFileNameByCode,setAdminUploadFileNameByCode]=useState({});
   const [adminUploadResultByCode,setAdminUploadResultByCode]=useState({});
   const [periodUploadState,setPeriodUploadState]=useState({key:"",fileName:"",error:"",saved:false});
+  const measurementSavePendingRef=useRef(false);
+  const [measurementSavePending,setMeasurementSavePending]=useState(false);
   const [reqForm,setReqForm]=useState({
     partNumber:"", itemName:"", type:"Auxiliary Materials", handlingDept:"Assembly", materialCategory:REQUESTER_MATERIAL_CATEGORY_OPTIONS[0],
     materialState:"", manufacturer:"", useDate:TODAY_STR,
@@ -4719,6 +5436,10 @@ export default function App(){
   },[reloadSharePointDb]);
 
   const persistSharePointAction=useCallback(async(action,payload,{reload=true,silent=false}={})=>{
+    if(VISUAL_UAT_MUTATION_ACTIONS.has(action) && containsVisualUatReference(payload)){
+      if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return null;
+    }
     try{
       const result=await mutateSharePoint(action,payload);
       if(reload) await reloadSharePointDb();
@@ -4785,10 +5506,11 @@ export default function App(){
     setItemEditOpen(false);
     setItemEditForm(null);
     setItemEditAuth({open:false,item:null,password:"",error:""});
+    setDiscontinueDecisionAuth({open:false,item:null,password:"",error:"",verified:false,pending:false});
   },[selKey]);
   // 탭별로 따로 계산하지 않고, 모든 탭이 같은 runtime workflow를 읽도록 단일 연결 구조를 구성합니다.
   // XRF 업로드(itemOverrides) → 정밀분석 입력(precisionOverrides) → Workflow/Approval 파생 → 목록/XRF/정밀분석/Risk 탭이 일괄 갱신됩니다.
-  const baseItems=useMemo(()=>applyPeriodBasedCategories(deriveReplacementRelations([
+  const realBaseItems=useMemo(()=>applyPeriodBasedCategories(deriveReplacementRelations([
     ...requestItems,
     ...sharePointItems.map(item=>{
       const key=itemStateKey(item);
@@ -4796,11 +5518,19 @@ export default function App(){
     }),
     ...(ENABLE_WORKFLOW_MOCK_DATA ? MOCK_WORKFLOW_ITEMS : [])
   ]).map(applyCurrentRiskPolicy)),[requestItems,sharePointItems,itemOverrides]);
+  const visualUatBaseItems=useMemo(()=>VISUAL_UAT_MODE
+    ? applyPeriodBasedCategories(deriveReplacementRelations(VISUAL_UAT_ALL_ITEMS).map(applyCurrentRiskPolicy))
+    : [],[]);
+  const baseItems=useMemo(()=>[...realBaseItems,...visualUatBaseItems],[realBaseItems,visualUatBaseItems]);
+  const runtimePrecisionOverrides=useMemo(()=>VISUAL_UAT_MODE
+    ? {...precisionOverrides,...VISUAL_UAT_PRECISION_OVERRIDES}
+    : precisionOverrides,[precisionOverrides]);
   const allItems=useMemo(()=>baseItems.map(item=>({
     ...item,
-    __workflow:deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides)
-  })),[baseItems,precisionOverrides,approvalOverrides]);
-  const currentPortfolioPeriodNo=useMemo(()=>derivePortfolioCurrentPeriodNo(baseItems),[baseItems]);
+    __workflow:deriveRuntimeWorkflow(item,runtimePrecisionOverrides,approvalOverrides)
+  })),[baseItems,runtimePrecisionOverrides,approvalOverrides]);
+  const realItems=useMemo(()=>allItems.filter(item=>!item.__visualUat),[allItems]);
+  const currentPortfolioPeriodNo=useMemo(()=>derivePortfolioCurrentPeriodNo(realBaseItems),[realBaseItems]);
   const replacementChains=useMemo(()=>buildReplacementRelationGroups(allItems),[allItems]);
   const approvalStatusOf=useCallback((item)=>{
     const workflowStatus=workflowForItem(item)?.approval?.status;
@@ -4816,9 +5546,55 @@ export default function App(){
     return overrideStatus || baseStatus || "측정 진행중";
   },[approvalOverrides]);
   const selectableExistingItems=useMemo(
-    ()=>allItems.filter(item=>!isDiscontinueRequestItem(item) && item.isCurrent!==false && item.lifecycle!=="ReplacedOld" && item.lifecycle!=="Discontinued"),
-    [allItems]
+    ()=>realBaseItems.filter(item=>!item.__visualUat && !isDiscontinueRequestItem(item) && item.isCurrent!==false && item.lifecycle!=="ReplacedOld" && item.lifecycle!=="Discontinued"),
+    [realBaseItems]
   );
+  useEffect(()=>{
+    if(!VISUAL_UAT_MODE || typeof window==="undefined") return;
+    const byCode=new Map(allItems.filter(item=>item.__visualUat).map(item=>[item.code,item]));
+    const rows=VISUAL_UAT_EXPECTATIONS.map(manifest=>{
+      const item=byCode.get(manifest.code);
+      return item
+        ? visualUatSelfCheckRow(item,manifest,approvalStatusOf)
+        : {code:manifest.code,group:manifest.group,PASS:false,failedFields:["fixture missing"],expected:manifest.expected,actual:null};
+    });
+    window.__VISUAL_UAT_SELF_CHECK__=rows;
+    window.__VISUAL_UAT_FIXTURE_COUNT__=byCode.size;
+    console.groupCollapsed(`[Visual UAT] ${rows.filter(row=>row.PASS).length}/${rows.length} expectations passed`);
+    console.table(rows.map(row=>({
+      code:row.code,group:row.group,expectedXrf:row.expectedXrf||"",actualXrf:row.actualXrf||"",
+      expectedRisk:row.expectedRisk||"",actualRisk:row.actualRisk||"",expectedCycle:row.expectedCycle||"",
+      actualCycle:row.actualCycle||"",expectedApproval:row.expectedApproval||"",actualApproval:row.actualApproval||"",
+      expectedStage:row.expectedStage||"",actualStage:row.actualStage||"",PASS:row.PASS,
+      failedFields:(row.failedFields||[]).join(", ")
+    })));
+    console.groupEnd();
+    const complianceRows=VISUAL_UAT_COMPLIANCE_EXPECTATIONS.map(manifest=>{
+      const item=byCode.get(manifest.code);
+      return item
+        ? visualUatComplianceSelfCheckRow(item,manifest)
+        : {code:manifest.code,PASS:false,failedFields:["fixture missing"],expected:manifest.expected,actual:null};
+    });
+    window.__VISUAL_UAT_COMPLIANCE_SELF_CHECK__=complianceRows;
+    window.__VISUAL_UAT_COMPLIANCE_COMPACT_WINDOW_MISMATCH__=complianceRows.some(row=>
+      row.code==="VU-CMP-L12"
+      && row.actual?.periodStatus==="upcoming"
+      && row.actual?.compactPotential30DayOverride===true
+    );
+    console.groupCollapsed(`[Compliance Visual UAT] ${complianceRows.filter(row=>row.PASS).length}/${complianceRows.length} logic expectations passed`);
+    console.table(complianceRows.map(row=>({
+      code:row.code,cycle:row.cycle||"",p1Due:row.p1Due||"",p1Measured:row.p1Measured||"",
+      expectedPeriodStatus:row.expectedPeriodStatus||"",actualPeriodStatus:row.actualPeriodStatus||"",
+      expectedCurrentStatus:row.expectedCurrentStatus||"",actualCurrentStatus:row.actualCurrentStatus||"",
+      compactLabels:row.compactLabels||"",compactCount:row.compactCount??"",
+      businessStatus:row.businessStatus||"",compactVisualExpected:row.compactVisualExpected||"",
+      compactVisualActual:row.compactVisualActual||"",
+      compactPotential30DayOverride:row.compactPotential30DayOverride??false,
+      PASS:row.PASS,failedFields:(row.failedFields||[]).join(", ")
+    })));
+    console.info("COMPACT_WINDOW_MISMATCH =",window.__VISUAL_UAT_COMPLIANCE_COMPACT_WINDOW_MISMATCH__?"FOUND":"NOT FOUND");
+    console.groupEnd();
+  },[allItems,approvalStatusOf]);
   const precisionRows=useMemo(()=>{
     const precisionStages=new Set([
       "PRECISION_TRANSFER_REQUEST_REQUIRED","PRECISION_TRANSFER_RESULT_WAITING",
@@ -4846,7 +5622,7 @@ export default function App(){
       if(!needsPrecision) return [];
       const key=workflowOverrideKey(item,wf);
       if(!key) return [];
-      const ov=precisionOverrides[key]||{};
+      const ov=runtimePrecisionOverrides[key]||{};
       const precision=wf.precision || {required:true,targetElements:targets,requestStatus:"NOT_REQUESTED",uploadStatus:"WAITING",result:""};
       const triggerLabel=precisionTriggerReason(measurement)!=="대상 아님"
         ? precisionTriggerReason(measurement)
@@ -4860,8 +5636,13 @@ export default function App(){
         elementResults:precision.elementResults||ov.elementResults||{},
       }];
     }).sort((a,b)=>String(b.measurement?.date||b.measurement?.measuredDate||b.precision?.requestedAt||"").localeCompare(String(a.measurement?.date||a.measurement?.measuredDate||a.precision?.requestedAt||"")));
-  },[allItems,precisionOverrides]);
+  },[allItems,runtimePrecisionOverrides]);
   const updatePrecisionOverride=useCallback((key,patch)=>{
+    const fixtureOwner=allItems.find(item=>item.__visualUat && !!measurementById(item,key));
+    if(fixtureOwner){
+      if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return;
+    }
     setPrecisionOverrides(prev=>{
       const nextCase={...(prev[key]||{}),...patch};
       const next={...prev,[key]:nextCase};
@@ -4931,8 +5712,12 @@ export default function App(){
     setReqUploadResult(result);
     e.target.value="";
   },[]);
-  const commitParsedMeasurement=useCallback((targetItem,result,targetPeriod=null,sourceLabel="XRF 결과 업로드")=>{
+  const commitParsedMeasurement=useCallback(async(targetItem,result,targetPeriod=null,sourceLabel="XRF 결과 업로드")=>{
     if(!targetItem || !result?.parsed) return null;
+    if(targetItem.__readOnlyFixture){
+      if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return null;
+    }
     const measuredDate=result.measuredDate || TODAY_STR;
     const historyRows=Array.isArray(targetItem.history)?targetItem.history:[];
     const sameDateCount=historyRows.filter(h=>dateOnly(h?.date)===measuredDate).length;
@@ -4947,11 +5732,12 @@ export default function App(){
       : null;
     const resolvedPeriod=isInitial ? null : (annualPeriodForMeasuredYear || targetPeriod || fallbackPeriod);
     const periodNo=isInitial ? 0 : Number(resolvedPeriod?.num || 1);
+    const isReferenceRetest=!isInitial && (resolvedPeriod?.isReference || periodNo===0);
     const periodAttempts=isInitial ? [] : measurementAttemptsForPeriod(targetItem,resolvedPeriod);
     const latestPeriodRow=periodAttempts[periodAttempts.length-1]||null;
     const latestPeriodId=latestPeriodRow?.id||latestPeriodRow?.measurementId||null;
     const latestPeriodMeasurement=latestPeriodId?measurementById(targetItem,latestPeriodId):null;
-    const latestPeriodResult=latestPeriodMeasurement?measurementXrfResult(latestPeriodMeasurement):"";
+    const latestPeriodNeedsRemeasure=pendingXrfRemeasureElements(latestPeriodMeasurement).length>0;
     const latestPeriodRole=String(latestPeriodRow?.measurementRole||latestPeriodRow?.role||latestPeriodMeasurement?.role||"");
     let role="Initial";
     let attemptNo=1;
@@ -4961,7 +5747,7 @@ export default function App(){
       if(!latestPeriodRow){
         role="Periodic";
         attemptNo=1;
-      }else if(latestPeriodResult==="재측정 필요"){
+      }else if(latestPeriodNeedsRemeasure){
         // 같은 측정건의 ?? 보완은 Retest 1회만 허용합니다.
         if(latestPeriodRole==="Retest" || Number(latestPeriodRow?.attemptNo||latestPeriodMeasurement?.attemptNo||1)>=2){
           if(typeof window!=="undefined") window.alert("XRF 재측정은 1회까지만 가능합니다. 이후에는 정밀분석 단계에서 처리하세요.");
@@ -5022,6 +5808,7 @@ export default function App(){
       sourceFileName:result.fileName||"",
       sourceSheet:result.sourceSheet||"",
     };
+    const measurementFollowup=measurementFollowupInfo(measurement);
 
     let periods=itemAllPeriods(targetItem).map(p=>({...p}));
     if(isInitial){
@@ -5030,10 +5817,32 @@ export default function App(){
         referenceDate:measuredDate,date:measuredDate,start:null,due:null,targetDate:null,windowStart:null,
         measured:measuredDate,measuredDates:[measuredDate],status:"reference",statusLabel:"등록완료",daysOver:0,
           measurementId,measurementIds:[measurementId],closeType:"registered",finalRisk,isDisplayTarget:false,
-          sourceBasis:`${sourceLabel} · 최초 등록 기준 R`,cycleMonths:cycleMonths||null,windowDays:cycle==="Monthly"?7:30,
+          sourceBasis:`${sourceLabel} · 최초 등록 기준 R`,cycleMonths:cycleMonths||null,windowDays:cycle==="Monthly"?15:30,
           prevDue:null,nextDue:null,cycleVersion:1,isCurrentCycle:true,measurementRole:role,
           xrfLevel,cycle,riskAssessment:true,riskAssessmentType:"Initial"
       }];
+    }else if(isReferenceRetest){
+      // R Retest는 새로운 P0를 만들거나 R 위험도 기준 ID를 교체하지 않습니다.
+      // 최초 Initial ID는 measurementId로 유지하고, Retest는 measurementIds에 이력으로 연결합니다.
+      periods=periods.map(p=>{
+        if(!(p?.isReference || Number(p?.num)===0)) return p;
+        const ids=periodMeasurementIds(p);
+        if(!ids.includes(measurementId)) ids.push(measurementId);
+        const dates=periodMeasuredDates(p);
+        if(measuredDate && !dates.includes(measuredDate)) dates.push(measuredDate);
+        dates.sort();
+        return {
+          ...p,
+          measurementId:p.measurementId||targetItem.firstMeasurementId||latestPeriodId,
+          measurementIds:ids,
+          measured:measuredDate,
+          measuredDates:dates,
+          status:"reference",
+          statusLabel:"R 재측정 완료",
+          measurementRole:"Initial",
+          sourceBasis:`${sourceLabel} · R Retest 연결`
+        };
+      });
     }else{
       const targetNum=Number(resolvedPeriod?.num||periodNo);
       let found=false;
@@ -5071,7 +5880,7 @@ export default function App(){
     }
 
     const historyEntry={
-      date:measuredDate,id:measurementId,periodNo,label:isInitial?"R":`P${periodNo}`,measurementRole:role,attemptNo,
+      date:measuredDate,id:measurementId,periodNo,label:(isInitial||isReferenceRetest)?"R":`P${periodNo}`,measurementRole:role,attemptNo,
       xrf_worst:xrfResult,xrfWorst:xrfResult,xrfResult,xrfLevel,finalRisk,approvalStatus:policyApproval,
       retestRequired:xrfRemeasureRequired,retestRequiredElements:result.retestRequiredElements||"",
       exceededElements,precisionRequired,precisionRequiredElements:precisionElements,
@@ -5084,10 +5893,17 @@ export default function App(){
     const updatedItem={
       ...targetItem,
       approvalStatus:policyApproval,
-      approvalDetail:(result.reviewRequiredElements||[]).length?`Judgment 확인 필요: ${(result.reviewRequiredElements||[]).join(", ")}`:(result.dataMissingElements||[]).length?`데이터 확인 필요: ${(result.dataMissingElements||[]).join(", ")}`:(precisionRequired?`정밀분석 필요: ${precisionElements.join(", ")}`:(xrfRemeasureRequired?`XRF 재측정 필요: ${result.retestRequiredElements||"판정 불가"}`:"")),
+      approvalDetail:(result.reviewRequiredElements||[]).length
+        ? `Judgment 확인 필요: ${(result.reviewRequiredElements||[]).join(", ")}`
+        : (result.dataMissingElements||[]).length
+          ? `데이터 확인 필요: ${(result.dataMissingElements||[]).join(", ")}`
+          : measurementFollowup.hasFollowup
+            ? measurementFollowup.detail
+            : "",
       approvalCompletedAt:policyApproval==="승인"?measuredDate:null,
       approvalCompletedBy:policyApproval==="승인"?"admin":null,
-      actionNote:`${targetItem.actionNote||""}${targetItem.actionNote?"\n":""}${sourceLabel}: ${result.fileName||"파일"} (${measuredDate})`,
+      // Action_Note에는 사용자가 작성한 업무 메모만 유지하고 업로드 상태 문구는 저장하지 않습니다.
+      actionNote:withoutGeneratedItemActionNote(targetItem.actionNote),
       latestXrfResult:xrfResult,
       latestXrfLevel:xrfLevel,
       xrfWorst:xrfResult,
@@ -5120,58 +5936,68 @@ export default function App(){
       latest:measurement,
     };
 
+    // SharePoint가 source-of-truth가 되도록 Measurement header + 6개 원소 Raw 결과를 영구 저장합니다.
+    // 저장 성공 전에는 화면의 Item/측정 이력을 변경하지 않아 DB 실패가 성공처럼 보이지 않게 합니다.
+    if(measurementSavePendingRef.current) return null;
+    measurementSavePendingRef.current=true;
+    setMeasurementSavePending(true);
+    let saved=null;
+    try{
+      saved=await persistSharePointAction("saveMeasurement",{
+        itemId:targetItem.itemId,
+        itemSpItemId:targetItem._spItemId||null,
+        requestSpItemId:targetItem._spRequestItemId||null,
+        requestStatus:requestStatusFromApproval(policyApproval),
+        partNumber:targetItem.code,
+        measuredDate,
+        role,
+        attemptNo,
+        parentMeasurementId,
+        sourceFileName:result.fileName||"",
+        sourceSheet:result.sourceSheet||"",
+        elements:result.elements||{},
+        actor:"admin",
+        itemPatch:{
+          actionNote:updatedItem.actionNote,
+          registrationPeriodNo:updatedItem.registrationPeriodNo
+        }
+      });
+    }finally{
+      measurementSavePendingRef.current=false;
+      setMeasurementSavePending(false);
+    }
+    if(!saved) return null;
+
     const targetStateKey=itemStateKey(targetItem);
     setRequestItems(prev=>prev.map(item=>itemStateKey(item)===targetStateKey?{...updatedItem,_sourceCode:itemStateKey(item)}:item));
     setItemOverrides(prev=>({...prev,[targetStateKey]:{...(prev[targetStateKey]||{}),...updatedItem,_sourceCode:targetStateKey}}));
     setApprovalOverrides(prev=>({...prev,[targetItem.code]:policyApproval}));
-
-    // SharePoint가 source-of-truth가 되도록 Measurement header + 6개 원소 Raw 결과를 영구 저장합니다.
-    // UI는 기존처럼 즉시 갱신하고, 저장 성공/실패 후 SharePoint를 다시 읽어 최종 상태를 맞춥니다.
-    void persistSharePointAction("saveMeasurement",{
-      itemId:targetItem.itemId,
-      itemSpItemId:targetItem._spItemId||null,
-      requestSpItemId:targetItem._spRequestItemId||null,
-      requestStatus:requestStatusFromApproval(policyApproval),
-      partNumber:targetItem.code,
-      measuredDate,
-      role,
-      attemptNo,
-      parentMeasurementId,
-      sourceFileName:result.fileName||"",
-      sourceSheet:result.sourceSheet||"",
-      elements:result.elements||{},
-      actor:"admin",
-      itemPatch:{
-        actionNote:updatedItem.actionNote,
-        registrationPeriodNo:updatedItem.registrationPeriodNo
-      }
-    });
     return {updatedItem,measurementId,periodNo};
   },[currentPortfolioPeriodNo,persistSharePointAction]);
 
   const buildRequesterPartNumber=useCallback((handlingDept)=>{
     const prefix=((handlingDept||"").trim().charAt(0)||"X").toUpperCase();
-    const maxForPrefix=allItems.reduce((max,item)=>{
+    const maxForPrefix=realBaseItems.reduce((max,item)=>{
       const m=String(item?.code||"").match(/^([A-Za-z])[-_]?(\d+)/);
       if(!m || m[1].toUpperCase()!==prefix) return max;
       const n=Number.parseInt(m[2],10);
       return Number.isFinite(n) ? Math.max(max,n) : max;
     },0);
     return `${prefix}-${String(maxForPrefix+1).padStart(2,"0")}`;
-  },[allItems]);
+  },[realBaseItems]);
   const buildReplacementPartNumber=useCallback((targetCode)=>{
     const base=String(targetCode||"").trim();
     if(!base) return buildRequesterPartNumber(reqForm.handlingDept);
     const escapedBase=base.replace(/[.*+?^${}()|[\\]\\\\]/g,"\\$&");
     const rx=new RegExp(`^${escapedBase}-(\\d{2})$`);
-    const maxSuffix=allItems.reduce((max,item)=>{
+    const maxSuffix=realBaseItems.reduce((max,item)=>{
       const m=String(item?.code||"").match(rx);
       if(!m) return max;
       const n=Number.parseInt(m[1],10);
       return Number.isFinite(n)?Math.max(max,n):max;
     },0);
     return `${base}-${String(maxSuffix+1).padStart(2,"0")}`;
-  },[allItems,buildRequesterPartNumber,reqForm.handlingDept]);
+  },[realBaseItems,buildRequesterPartNumber,reqForm.handlingDept]);
   const submitRequesterNewItem=useCallback(()=>{
     const adminDirect=String(regType||"").startsWith("admin-");
     const requestType=regType==="admin-new"?"new":regType==="admin-replace"?"replacement":regType==="admin-discontinue"?"discontinue":(regType||"new");
@@ -5246,7 +6072,7 @@ export default function App(){
         actionNote:`의뢰자 등록 · 기존 품목 단종/사용 중지 요청\\n대상 품목: ${target.code||reqForm.discontinueTargetCode||"미선택"} · ${target.name||""}\\n사유: ${discontinueReasonFinal}\\n재고 처리: ${reqForm.stockDisposition}${reqForm.note?`\\n비고: ${reqForm.note}`:""}`,
         category:"changed",
         categoryLabel:"변경·대체",
-        lifecycle:"Discontinued",
+        lifecycle:adminDirect?"Discontinued":(target.lifecycle||"ExistingActive"),
         isCurrent:!adminDirect,
         requestType:"discontinue",
         processStatus:adminDirect?"Applied":"Pending",
@@ -5402,15 +6228,17 @@ export default function App(){
       type:reqForm.type,
       materialCategory:reqForm.materialCategory, materialState:reqForm.materialState||"", manufacturer:reqForm.manufacturer,
       useDate:reqForm.useDate, crType:reqForm.crType, crLevel, approvalStatus,
-      actionNote:[
-        isReplacement?(adminDirect?"관리자 직접 등록 · 기존 품목 대체 등록":"의뢰자 등록 · 기존 품목 대체 등록"):(adminDirect?"관리자 직접 등록 · 완전 신규 도입":"의뢰자 등록 · 완전 신규 도입"),
+      // 신규 Item의 Action_Note는 시스템 상태 문구로 자동 채우지 않습니다.
+      // 요청 사유와 사용자 Note는 XRF_Requests의 전용 필드에 별도로 저장됩니다.
+      actionNote:isReplacement?[
+        isReplacement?(adminDirect?"관리자 직접 등록 · 기존 품목 대체 등록":"의뢰자 등록 · 기존 품목 대체 등록"):(adminDirect?"관리자 직접 등록 · 신규 도입":"의뢰자 등록 · 신규 도입"),
         effectiveXrfMode==="request"?"XRF 측정 의뢰 상태":"XRF 원본 업로드 완료",
         isReplacement?`대체 대상: ${selectedReplacementItem?.code||reqForm.replacementTargetCode||"미선택"} · ${selectedReplacementItem?.name||""}`:"",
         isReplacement?`대체 사유: ${replacementReasonFinal}`:"",
         isReplacement?`기존 품목 처리: ${reqForm.oldItemDisposition}`:"",
         reqForm.requestReason?`요청 사유: ${reqForm.requestReason}`:"",
         reqForm.note?`비고: ${reqForm.note}`:""
-      ].filter(Boolean).join("\\n"),
+      ].filter(Boolean).join("\n"):"",
       // 신규 대체품도 새로 등록되는 품목이므로 분류는 "신규 등록"입니다.
       // 기존 대체 대상 품목만 "변경·대체" 및 ReplacedOld로 전환합니다.
       originCategory:"new",
@@ -5519,8 +6347,8 @@ export default function App(){
   },[openFilter]);
 
   const stats=useMemo(()=>{
-    const c={existing:0,new:0,changed:0,overdue:0,late:0,dueSoon:0,active:0,history:0,replaced:0,retestRequired:0,precisionRequired:0,xrfRemeasureRequired:0,ng:0,measuring:0,pendingApproval:0,total:0,rawTotal:allItems.length};
-    allItems.forEach(i=>{
+    const c={existing:0,new:0,changed:0,overdue:0,late:0,dueSoon:0,active:0,history:0,replaced:0,retestRequired:0,precisionRequired:0,xrfRemeasureRequired:0,ng:0,measuring:0,pendingApproval:0,total:0,rawTotal:realItems.length};
+    realItems.forEach(i=>{
       const isHistory=isHistoryRecordItem(i);
       const isOperational=isOperationalManagedItem(i);
       if(isHistory) c.history++;
@@ -5540,11 +6368,11 @@ export default function App(){
       if(isOperational && cs==="dueSoon") c.dueSoon++;
     });
     return c;
-  },[allItems,approvalStatusOf]);
+  },[realItems,approvalStatusOf]);
 
   // 대시보드 차트 데이터 — 전부 실제 품목에서 집계 (추정/더미값 없음)
   const dash=useMemo(()=>{
-    const ops=allItems.filter(i=>isOperationalManagedItem(i));
+    const ops=realItems.filter(i=>isOperationalManagedItem(i));
 
     // ① 향후 6개월 측정 도래 예정 + 기한 초과
     const buckets=[];
@@ -5591,30 +6419,45 @@ export default function App(){
     });
 
     return {buckets,segments,csTotal:ops.length,riskMeta,deptRows:deptRows.filter(r=>r.total>0)};
-  },[allItems]);
+  },[realItems]);
 
-  const filtered=useMemo(()=>allItems.filter(item=>{
-    const cs=getCS(item);
-    if(fs.category.length>0&&!fs.category.includes(item.category)) return false;
-    if(fs.dept.length>0&&!fs.dept.includes(item.dept)) return false;
-    if(fs.cycle.length>0&&!fs.cycle.includes(itemCycleFromRisk(item))) return false;
-    if(fs.xrf.length>0){
-      const result=itemXrfResult(item);
-      const level=riskBasisXrfLevelOf(item) || itemLatestXrfLevel(item);
-      if(!fs.xrf.includes(result) && !fs.xrf.includes(level)) return false;
+  const listItems=useMemo(
+    ()=>allItems.filter(item=>!isCancelledListItem(item,approvalStatusOf(item))),
+    [allItems,approvalStatusOf]
+  );
+
+  const listFilterValues=useMemo(()=>{
+    const uniqueSorted=values=>[...new Set(values.map(value=>String(value||"—")).filter(Boolean))]
+      .sort((a,b)=>a.localeCompare(b,"ko",{numeric:true,sensitivity:"base"}));
+    return {
+      ...UNIQUE_VALS,
+      code:uniqueSorted(listItems.map(item=>listColumnValue(item,"code",approvalStatusOf(item)))),
+      name:uniqueSorted(listItems.map(item=>listColumnValue(item,"name",approvalStatusOf(item)))),
+      dept:uniqueSorted(listItems.map(item=>listColumnValue(item,"dept",approvalStatusOf(item)))),
+      cycle:uniqueSorted(listItems.map(item=>listColumnValue(item,"cycle",approvalStatusOf(item)))),
+      firstDate:uniqueSorted(listItems.map(item=>listColumnValue(item,"firstDate",approvalStatusOf(item)))),
+      precision:uniqueSorted(listItems.map(item=>listColumnValue(item,"precision",approvalStatusOf(item)))),
+      nextDue:uniqueSorted(listItems.map(item=>listColumnValue(item,"nextDue",approvalStatusOf(item)))),
+      dDay:uniqueSorted(listItems.map(item=>listColumnValue(item,"dDay",approvalStatusOf(item)))),
+    };
+  },[listItems,approvalStatusOf]);
+
+  const filtered=useMemo(()=>listItems.filter(item=>{
+    if(VISUAL_UAT_MODE && visualUatOnly && !item.__visualUat) return false;
+    const approvalStatus=approvalStatusOf(item);
+    for(const column of ["category","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"]){
+      if(!itemMatchesListColumnFilter(item,column,fs[column],approvalStatus)) return false;
     }
-    if(fs.compliance.length>0&&!fs.compliance.includes(cs)) return false;
     if(fs.crLevel.length>0&&!fs.crLevel.includes(item.crLevel)) return false;
     if(fs.risk.length>0&&!fs.risk.includes(itemFinalRisk(item))) return false;
     if(fs.retest.length>0&&!fs.retest.includes(itemRetestRequired(item)?"review":"trusted")) return false;
-    if(fs.approval.length>0&&!fs.approval.includes(approvalFilterKey(approvalStatusOf(item)))) return false;
     if(fs.lifecycle.length>0&&!fs.lifecycle.includes(item.lifecycle)) return false;
     if((fs.dueMonth||[]).length>0){
       const due=nextDueOfItem(item);
       const dueMonth=due ? String(due).slice(0,7) : "";
       if(!fs.dueMonth.includes(dueMonth)) return false;
     }
-    if(search&&!item.name.toLowerCase().includes(search.toLowerCase())&&!(item.nameEn||"").toLowerCase().includes(search.toLowerCase())&&!item.code.toLowerCase().includes(search.toLowerCase())) return false;
+    if(!itemMatchesListSearch(item,search,approvalStatus)) return false;
     return true;
   }).map((item,idx)=>({item,idx})).sort((a,b)=>{
     const closedRank=item=>{
@@ -5628,7 +6471,15 @@ export default function App(){
     const ra=closedRank(a.item), rb=closedRank(b.item);
     if(ra!==rb) return ra-rb;
     return a.idx-b.idx;
-  }).map(({item})=>item),[allItems,fs,search,approvalStatusOf]);
+  }).map(({item})=>item),[listItems,fs,search,visualUatOnly,approvalStatusOf]);
+
+  const listTotalPages=Math.max(1,Math.ceil(filtered.length/MATERIAL_LIST_PAGE_SIZE));
+  useEffect(()=>setListPage(0),[fs,search,visualUatOnly]);
+  useEffect(()=>setListPage(page=>Math.min(page,listTotalPages-1)),[listTotalPages]);
+  const pagedFiltered=useMemo(()=>{
+    const start=listPage*MATERIAL_LIST_PAGE_SIZE;
+    return filtered.slice(start,start+MATERIAL_LIST_PAGE_SIZE);
+  },[filtered,listPage]);
 
   const sel=allItems.find(i=>i.code===selKey);
   const selTimelinePeriods=useMemo(()=>itemTimelinePeriods(sel),[sel]);
@@ -5692,6 +6543,16 @@ export default function App(){
     const selected=selPeriodNum!==null && selPeriodNum!==undefined
       ? selAllPeriods.find(p=>Number(p?.num)===Number(selPeriodNum))
       : null;
+    const pendingRemeasurePeriod=selAllPeriods.find(period=>{
+      if(period?.isSupplementalMeasurement) return false;
+      const attempts=measurementAttemptsForPeriod(sel,period);
+      const latestAttempt=attempts[attempts.length-1]||null;
+      const measurement=latestAttempt?measurementById(sel,latestAttempt.id||latestAttempt.measurementId):null;
+      return pendingXrfRemeasureElements(measurement).length>0;
+    }) || null;
+    // 선택한 R/Pn에 1차 ??가 있으면 다른 주기보다 해당 측정의 Retest를 우선합니다.
+    if(selected && pendingRemeasurePeriod && Number(selected.num)===Number(pendingRemeasurePeriod.num)) return selected;
+    if(pendingRemeasurePeriod) return pendingRemeasurePeriod;
     if(selected && !selected?.isSupplementalMeasurement && !(selected?.isReference || Number(selected?.num)===0)) return selected;
     return currentCompliancePeriod(sel)
       || selAllPeriods.find(p=>!(p?.isReference||Number(p?.num)===0)&&!p?.measurementId&&!p?.measured)
@@ -5712,13 +6573,19 @@ export default function App(){
     }).sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")) || Number(a.attemptNo)-Number(b.attemptNo));
   },[sel,periodUploadTarget,selPeriodNum,currentPeriodMeta,selAllPeriods]);
   const latestSelectedAttempt=selectedPeriodAttempts[selectedPeriodAttempts.length-1]||null;
+  const latestSelectedMeasurement=latestSelectedAttempt && sel
+    ? measurementById(sel,latestSelectedAttempt.id||latestSelectedAttempt.measurementId)
+    : null;
+  const selectedPendingRemeasure=pendingXrfRemeasureElements(latestSelectedMeasurement);
   const latestIsSecondRemeasure=latestSelectedAttempt?.result==="재측정 필요"
     && (String(latestSelectedAttempt?.role||"")==="Retest" || Number(latestSelectedAttempt?.attemptNo||1)>=2);
   const selectedIsAnnual=!!sel && cycleMonthsOf(sel)===12;
+  const uploadTargetIsReference=!!periodUploadTarget && (periodUploadTarget?.isReference || Number(periodUploadTarget?.num)===0);
   // 연 1회는 같은 연도·동일 Pn의 별도 측정을 계속 추가할 수 있습니다.
   // 월/반기는 기존 규칙을 유지해 미측정 또는 1차 ??의 재측정일 때만 추가 업로드가 가능합니다.
   const periodUploadAllowed=!!periodUploadTarget && !latestIsSecondRemeasure
-    && (selectedIsAnnual || selectedPeriodAttempts.length===0 || latestSelectedAttempt?.result==="재측정 필요");
+    && (selectedPendingRemeasure.length>0
+      || (!uploadTargetIsReference && (selectedIsAnnual || selectedPeriodAttempts.length===0)));
   const handleSelectPeriod=useCallback((num)=>{ setSelPeriodNum(num); setSelMeasurementId(null); },[]);
   const handleSelectPeriodMeasurement=useCallback((num,measurementId)=>{ setSelPeriodNum(num); setSelMeasurementId(measurementId||null); },[]);
 
@@ -5770,6 +6637,12 @@ export default function App(){
     }),
     [allItems,approvalStatusOf,discontinueRequestItems]
   );
+  // 처리 완료된 단종 요청 이력은 대상 품목 상세에 표시하므로 XRF 품목 선택 목록에 중복 노출하지 않습니다.
+  // 관리자 결정이 필요한 미처리 요청만 요청 행 자체를 선택할 수 있도록 유지합니다.
+  const xrfSelectableItems=useMemo(()=>{
+    const pendingCodes=new Set(pendingDiscontinueRequestItems.map(item=>item.code));
+    return allItems.filter(item=>!isDiscontinueRequestItem(item) || pendingCodes.has(item.code));
+  },[allItems,pendingDiscontinueRequestItems]);
   const canUndoDiscontinueRequest=useCallback((item)=>{
     if(!item || !hasDiscontinueRequestMetadata(item)) return false;
     const approvalKey=approvalFilterKey(approvalStatusOf(item));
@@ -5790,7 +6663,7 @@ export default function App(){
 
   const handleAdminXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
-    if(!file || !sel || !isAdminUser) return;
+    if(!file || !sel || !isAdminUser || measurementSavePendingRef.current) return;
     // 신규 품목은 XRF 결과가 없어 Approval이 보류여도 XRF_REQUIRED 단계에서 최초 측정을 업로드할 수 있습니다.
     if(!selectedIsMeasuring || isDiscontinueRequestItem(sel)) return;
     setAdminUploadFileNameByCode(prev=>({...prev,[sel.code]:file.name}));
@@ -5807,18 +6680,20 @@ export default function App(){
       e.target.value="";
       return;
     }
-    const committed=commitParsedMeasurement(sel,result,null,"관리자 최초 XRF 업로드");
+    const committed=await commitParsedMeasurement(sel,result,null,"관리자 최초 XRF 업로드");
     if(committed){
       setSelPeriodNum(committed.periodNo);
       setSelMeasurementId(committed.measurementId);
       setTab("xrf");
+    }else{
+      setAdminUploadResultByCode(prev=>({...prev,[sel.code]:{...result,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."}}));
     }
     e.target.value="";
   },[commitParsedMeasurement,isAdminUser,sel,selectedIsMeasuring]);
 
   const handlePeriodXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
-    if(!file || !sel || !periodUploadTarget || !isAdminUser || !periodUploadAllowed) return;
+    if(!file || !sel || !periodUploadTarget || !isAdminUser || !periodUploadAllowed || measurementSavePendingRef.current) return;
     const key=`${sel.code}|${periodUploadTarget.num}`;
     setPeriodUploadState({key,fileName:file.name,error:"",saved:false});
     const result=await parseUploadedXrfFile(file);
@@ -5832,19 +6707,21 @@ export default function App(){
       e.target.value="";
       return;
     }
-    const committed=commitParsedMeasurement(sel,result,periodUploadTarget,`관리자 주기 ${periodLabel(periodUploadTarget)} XRF 업로드`);
+    const committed=await commitParsedMeasurement(sel,result,periodUploadTarget,`관리자 주기 ${periodLabel(periodUploadTarget)} XRF 업로드`);
     if(committed){
       setPeriodUploadState({key,fileName:file.name,error:"",saved:true});
       setSelPeriodNum(committed.periodNo);
       setSelMeasurementId(committed.measurementId);
       setTab("xrf");
+    }else{
+      setPeriodUploadState({key,fileName:file.name,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다.",saved:false});
     }
     e.target.value="";
   },[commitParsedMeasurement,isAdminUser,periodUploadAllowed,periodUploadTarget,sel]);
 
   const handleAdminDirectXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
-    if(!file) return;
+    if(!file || measurementSavePendingRef.current) return;
     setReqUploadFileName(file.name);
     setReqUploadResult(emptyUploadedXrfResult(file.name,{pending:true}));
     const result=await parseUploadedXrfFile(file);
@@ -5880,7 +6757,7 @@ export default function App(){
       return;
     }
 
-    const committed=commitParsedMeasurement(target,result,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`);
+    const committed=await commitParsedMeasurement(target,result,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`);
     if(committed){
       setSelKey(target.code);
       setSelPeriodNum(committed.periodNo);
@@ -5888,6 +6765,8 @@ export default function App(){
       setRegType(null);
       setReqUploadResult(emptyUploadedXrfResult());
       setReqUploadFileName("");
+    }else{
+      setReqUploadResult({...result,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."});
     }
     e.target.value="";
   },[allItems,commitParsedMeasurement,regType,reqForm.replacementTargetCode]);
@@ -5901,7 +6780,7 @@ export default function App(){
     }
   },[regType,reqForm,reqUploadResult]);
 
-  const handleAdminDirectSubmit=useCallback(()=>{
+  const handleAdminDirectSubmit=useCallback(async()=>{
     if(regType==="admin-period"){
       const target=allItems.find(item=>item.code===reqForm.replacementTargetCode);
       if(!target){
@@ -5922,7 +6801,7 @@ export default function App(){
         window.alert("측정 결과를 연결할 주기를 찾지 못했습니다.");
         return;
       }
-      const committed=commitParsedMeasurement(target,reqUploadResult,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`);
+      const committed=await commitParsedMeasurement(target,reqUploadResult,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`);
       if(committed){
         setSelKey(target.code);
         setSelPeriodNum(committed.periodNo);
@@ -5930,15 +6809,51 @@ export default function App(){
         setRegType(null);
         setReqUploadResult(emptyUploadedXrfResult());
         setReqUploadFileName("");
+      }else{
+        setReqUploadResult({...reqUploadResult,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."});
       }
       return;
     }
     submitRequesterNewItem();
   },[allItems,commitParsedMeasurement,regType,reqForm.replacementTargetCode,reqUploadResult,submitRequesterNewItem]);
 
-  const handleDiscontinueApproval=useCallback((status)=>{
+  const openDiscontinueDecisionAuth=useCallback(()=>{
     if(!sel || !isAdminUser || !isDiscontinueRequestItem(sel)) return;
-    const targetCode=sel.discontinueTargetCode;
+    if(sel.__readOnlyFixture){
+      window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return;
+    }
+    setDiscontinueDecisionAuth({open:true,item:sel,password:"",error:"",verified:false,pending:false});
+  },[isAdminUser,sel]);
+
+  const closeDiscontinueDecisionAuth=useCallback(()=>{
+    setDiscontinueDecisionAuth({open:false,item:null,password:"",error:"",verified:false,pending:false});
+  },[]);
+
+  const submitDiscontinueDecisionAuth=useCallback((event)=>{
+    event?.preventDefault?.();
+    if(!discontinueDecisionAuth.item) return closeDiscontinueDecisionAuth();
+    if(discontinueDecisionAuth.password!==ADMIN_ITEM_EDIT_PASSWORD){
+      setDiscontinueDecisionAuth(prev=>({...prev,error:"관리자 비밀번호가 올바르지 않습니다."}));
+      return;
+    }
+    setDiscontinueDecisionAuth(prev=>({...prev,password:"",error:"",verified:true}));
+  },[closeDiscontinueDecisionAuth,discontinueDecisionAuth.item,discontinueDecisionAuth.password]);
+
+  const handleDiscontinueApproval=useCallback(async(status,candidate)=>{
+    const requestItem=candidate || sel;
+    const authenticatedItem=discontinueDecisionAuth.item;
+    const authenticated=discontinueDecisionAuth.open
+      && discontinueDecisionAuth.verified
+      && authenticatedItem
+      && requestItem
+      && authenticatedItem.code===requestItem.code;
+    if(!authenticated || !requestItem || !isAdminUser || !isDiscontinueRequestItem(requestItem)) return;
+    if(requestItem.__readOnlyFixture){
+      window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return;
+    }
+    const targetCode=requestItem.discontinueTargetCode;
     const targetBefore=allItems.find(item=>item.code===targetCode) || null;
 
     if(status==="승인"){
@@ -5968,8 +6883,23 @@ export default function App(){
       discontinueApprovalNote:targetBefore.discontinueApprovalNote||""
     } : null;
 
+    setDiscontinueDecisionAuth(prev=>({...prev,pending:true,error:""}));
+    const saved=await persistSharePointAction("processDiscontinue",{
+      requestSpItemId:requestItem._spRequestItemId||null,
+      targetSpItemId:targetBefore?._spItemId||null,
+      status:status==="승인"?"Applied":"Rejected",
+      processedAt:new Date().toISOString(),
+      actor:"admin",
+      finalUseDate:requestItem.finalUseDate||null,
+      beforeTargetSnapshot:status==="승인"?(requestItem.beforeTargetSnapshot||beforeTargetSnapshot):null
+    });
+    if(!saved){
+      setDiscontinueDecisionAuth(prev=>({...prev,pending:false,error:"처리 결과를 SharePoint에 저장하지 못했습니다. 다시 시도하기 전에 현재 DB 상태를 확인하세요."}));
+      return;
+    }
+
     setRequestItems(prev=>prev.map(item=>{
-      if(item.code!==sel.code) return item;
+      if(item.code!==requestItem.code) return item;
       return {
         ...item,
         approvalStatus:status,
@@ -5979,7 +6909,7 @@ export default function App(){
         processedAt:TODAY_STR,
         processedBy:"admin",
         beforeTargetSnapshot:status==="승인" ? (item.beforeTargetSnapshot||beforeTargetSnapshot) : item.beforeTargetSnapshot||null,
-        lifecycle:status==="승인" ? "Discontinued" : item.lifecycle,
+        lifecycle:status==="승인" ? "Discontinued" : "Cancelled",
         isCurrent:false,
         xrfWorst:"—",
         finalRisk:"—",
@@ -5996,41 +6926,42 @@ export default function App(){
         actionNote:`${item.actionNote||""}\n관리자 처리: ${status} (${TODAY_STR})`
       };
     }));
-    setApprovalOverrides(prev=>({...prev,[sel.code]:status}));
+    setApprovalOverrides(prev=>({...prev,[requestItem.code]:status}));
     if(status==="승인" && targetCode){
       const targetItem=allItems.find(item=>item.code===targetCode);
       const targetStateKey=itemStateKey(targetItem)||targetCode;
       const terminalPatch={
         lifecycle:"Discontinued",isCurrent:false,nextDue:null,dDay:null,complianceStatus:"notAvailable",
-        discontinuedByRequestCode:sel.code,discontinueReason:sel.discontinueReason,finalUseDate:sel.finalUseDate,
-        replacementDate:sel.finalUseDate||TODAY_STR,
-        discontinueApprovalNote:[`관리자 단종 승인: ${TODAY_STR}`,`단종 요청 번호: ${sel.code}`].filter(Boolean).join("\n")
+        discontinuedByRequestCode:requestItem.code,discontinueReason:requestItem.discontinueReason,finalUseDate:requestItem.finalUseDate,
+        replacementDate:requestItem.finalUseDate||TODAY_STR,
+        discontinueApprovalNote:[`관리자 단종 승인: ${TODAY_STR}`,`단종 요청 번호: ${requestItem.code}`].filter(Boolean).join("\n")
       };
       setItemOverrides(prev=>({
         ...prev,
         [targetStateKey]:{...(prev[targetStateKey]||{}),...terminalPatch,_sourceCode:targetStateKey}
       }));
       setRequestItems(prev=>prev.map(item=>itemStateKey(item)===targetStateKey?{...item,...terminalPatch}:item));
+    }
+    // 승인/반려 후에는 요청용 가상 행이 아니라 실제 대상 품목으로 이동합니다.
+    // 반려된 경우 대상 Master는 수정되지 않았으므로 기존 상태와 모든 XRF 이력이 그대로 보입니다.
+    closeDiscontinueDecisionAuth();
+    if(targetCode){
       setSelKey(targetCode);
       setSelPeriodNum(null);
+      setSelMeasurementId(null);
+      setTab("xrf");
     }
-
-    void persistSharePointAction("processDiscontinue",{
-      requestSpItemId:sel._spRequestItemId||null,
-      targetSpItemId:targetBefore?._spItemId||null,
-      status:status==="승인"?"Applied":"Rejected",
-      processedAt:new Date().toISOString(),
-      actor:"admin",
-      finalUseDate:sel.finalUseDate||null,
-      beforeTargetSnapshot:status==="승인"?(sel.beforeTargetSnapshot||beforeTargetSnapshot):null
-    });
-  },[allItems,isAdminUser,sel,persistSharePointAction]);
+  },[allItems,closeDiscontinueDecisionAuth,discontinueDecisionAuth,isAdminUser,sel,persistSharePointAction]);
 
   const handleUndoDiscontinue=useCallback((candidate)=>{
     const requestItem=hasDiscontinueRequestMetadata(candidate)
       ? candidate
       : (hasDiscontinueRequestMetadata(sel)?sel:null);
     if(!requestItem || !isAdminUser || !canUndoDiscontinueRequest(requestItem)) return;
+    if(requestItem.__readOnlyFixture || candidate?.__readOnlyFixture || sel?.__readOnlyFixture){
+      window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return;
+    }
     const targetCode=requestItem.discontinueTargetCode
       || (!isDiscontinueRequestItem(requestItem)?requestItem.code:"");
     const baseTarget=allItems.find(item=>item.code===targetCode) || sharePointItems.find(item=>item.code===targetCode) || null;
@@ -6156,6 +7087,10 @@ export default function App(){
   const handleClear=useCallback((col)=>setFs(prev=>({...prev,[col]:[]})),[]);
   const openAdminItemEditor=useCallback((item)=>{
     if(!item || isDiscontinueRequestItem(item)) return;
+    if(item.__readOnlyFixture){
+      window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return;
+    }
     if(!isAdminUser){
       window.alert("품목 정보 편집은 관리자만 가능합니다.");
       return;
@@ -6193,6 +7128,11 @@ export default function App(){
 
   const saveAdminItemEditor=useCallback(()=>{
     if(!isAdminUser || !itemEditForm) return;
+    const fixtureSource=allItems.find(item=>itemStateKey(item)===itemEditForm.sourceKey || item.code===itemEditForm.originalCode);
+    if(fixtureSource?.__readOnlyFixture){
+      window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return;
+    }
     const oldCode=String(itemEditForm.originalCode||"").trim();
     const newCode=String(itemEditForm.code||"").trim();
     const newName=String(itemEditForm.name||"").trim();
@@ -6280,12 +7220,59 @@ export default function App(){
     setItemEditForm(null);
   },[allItems,sharePointItems,isAdminUser,itemEditForm,rowSel,persistSharePointAction]);
 
-  const handleClearAll=()=>setFs({category:[],dept:[],cycle:[],xrf:[],compliance:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],dueMonth:[]});
+  const handleClearAll=()=>setFs({category:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[]});
+  const positionFilterPanel=useCallback((column)=>{
+    if(!column || typeof window==="undefined") return;
+    const anchor=appRootRef.current?.querySelector(`[data-filter-header="${column}"]`);
+    if(!anchor) return;
+    const rect=anchor.getBoundingClientRect();
+    if(rect.bottom<=0 || rect.top>=window.innerHeight){
+      setOpenFilter(current=>current===column?null:current);
+      return;
+    }
+    const left=Math.max(8,Math.min(rect.left,window.innerWidth-288));
+    setFPos({top:rect.bottom+4,left});
+  },[]);
   const handleOpen=(col,e)=>{
-    const r=e.currentTarget.getBoundingClientRect();
-    setFPos({top:r.bottom+4,left:Math.min(r.left,window.innerWidth-230)});
-    setOpenFilter(openFilter===col?null:col);
+    const next=openFilter===col?null:col;
+    if(next){
+      const rect=e.currentTarget.getBoundingClientRect();
+      setFPos({top:rect.bottom+4,left:Math.max(8,Math.min(rect.left,window.innerWidth-288))});
+    }
+    setOpenFilter(next);
   };
+  useLayoutEffect(()=>{
+    if(!openFilter) return undefined;
+    let frame=0;
+    const syncPosition=()=>{
+      window.cancelAnimationFrame(frame);
+      frame=window.requestAnimationFrame(()=>positionFilterPanel(openFilter));
+    };
+    syncPosition();
+    document.addEventListener("scroll",syncPosition,true);
+    window.addEventListener("scroll",syncPosition,{passive:true});
+    window.addEventListener("resize",syncPosition);
+    return ()=>{
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("scroll",syncPosition,true);
+      window.removeEventListener("scroll",syncPosition);
+      window.removeEventListener("resize",syncPosition);
+    };
+  },[openFilter,positionFilterPanel]);
+  useEffect(()=>{
+    if(!openFilter) return undefined;
+    const closeOnOutsidePointer=event=>{
+      const target=event.target;
+      if(target instanceof Element && (
+        target.closest('[data-filter-panel="1"]')
+        || target.closest(".material-list-table")
+        || target.closest(`[data-filter-header="${openFilter}"]`)
+      )) return;
+      setOpenFilter(null);
+    };
+    document.addEventListener("pointerdown",closeOnOutsidePointer,true);
+    return ()=>document.removeEventListener("pointerdown",closeOnOutsidePointer,true);
+  },[openFilter]);
   const gotoXrf=(code)=>{ setSelKey(code); setSelPeriodNum(null); setSelMeasurementId(null); setTab("xrf"); };
   const gotoPrecisionDetail=(item)=>{
     if(!item) return;
@@ -6308,7 +7295,7 @@ export default function App(){
   const gotoDueMonthList=(monthKey)=>{
     if(!monthKey) return;
     setSearch("");
-    setFs({category:[],dept:[],cycle:[],xrf:[],compliance:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],dueMonth:[monthKey]});
+    setFs({category:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[monthKey]});
     setTab("list");
   };
   const hasFilters=Object.values(fs).some(v=>v.length>0);
@@ -6320,26 +7307,22 @@ export default function App(){
   const uploadBoxStyle={position:"relative",display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:`1px dashed ${C.bd2}`,background:C.card,color:C.text3,fontSize:12,fontWeight:600,cursor:"pointer",overflow:"hidden",textAlign:"center",padding:"0 12px",boxSizing:"border-box"};
   const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 등록·변경"}];
   const fhp={filterState:fs,openFilter,onOpen:handleOpen};
-  // 리스트 헤더는 sticky offset을 중첩하지 않습니다.
-  // <th>에 top 값을 주면 스크롤 시 원래 행 자리와 이동된 셀이 동시에 보여
-  // 빈 헤더 행처럼 보일 수 있으므로 툴바와 헤더를 일반 흐름으로 고정합니다.
-  // 넓은 화면에서는 표가 컨테이너 폭에 맞춰 확장되어 모든 열이 한 화면에 보입니다.
-  // 화면이 좁아져 14개 열의 최소 가독 폭(listTableWeight)보다 작아지면 표 폭은 더 줄이지 않고
-  // 바깥 컨테이너에서 가로 스크롤로 확인합니다. 긴 품번/품목명 말줄임 규칙은 그대로 유지합니다.
+  // 세로 방향은 페이지 자체가 스크롤하고, 14개 열의 최소 가독 폭보다 화면이 좁을 때만
+  // 표 컨테이너가 가로로 스크롤됩니다. 품목명은 축소하지 않고 셀 안에서 줄바꿈합니다.
   const listColumns=[
     {key:"cat", el:<FH label="분류" col="category" {...fhp}/>, w:80},
-    {key:"code",el:<PlainH label="품번"/>, w:112},
-    {key:"name",el:<PlainH label="품목명" align="left"/>, w:150},
+    {key:"code",el:<FH label="품번" col="code" {...fhp}/>, w:112},
+    {key:"name",el:<FH label="품목명" col="name" {...fhp}/>, w:180},
     {key:"dept",el:<FH label="부서" col="dept" {...fhp}/>, w:84},
     {key:"cyc",el:<FH label="주기" col="cycle" {...fhp}/>, w:62},
-    {key:"first",el:<PlainH label="최초 등록"/>, w:84},
+    {key:"first",el:<FH label="최초 등록" col="firstDate" {...fhp}/>, w:84},
     {key:"dot",el:<div style={{display:"flex",alignItems:"center",justifyContent:"center",width:"100%"}}><PlainH label="이행 현황"/></div>, w:118},
     {key:"comp",el:<FH label="현재 상태" col="compliance" {...fhp}/>, w:78},
     {key:"xrf",el:<FH label="XRF" col="xrf" {...fhp}/>, w:84},
-    {key:"precision",el:<PlainH label="정밀분석"/>, w:100},
+    {key:"precision",el:<FH label="정밀분석" col="precision" {...fhp}/>, w:100},
     {key:"approval",el:<FH label="승인 상태" col="approval" {...fhp}/>, w:92},
-    {key:"nd",el:<PlainH label="다음 마감"/>, w:90},
-    {key:"dd",el:<PlainH label="D-DAY"/>, w:60},
+    {key:"nd",el:<FH label="다음 마감" col="nextDue" {...fhp}/>, w:90},
+    {key:"dd",el:<FH label="D-DAY" col="dDay" {...fhp}/>, w:60},
     {key:"btn",el:null, w:34},
   ];
   const listTableWeight=listColumns.reduce((sum,c)=>sum+c.w,0);
@@ -6368,7 +7351,7 @@ export default function App(){
   }
 
   return(
-    <div ref={appRootRef} className="app-root" data-lang={lang} data-db-items={dbCounts?.items??0} style={root}>
+    <div ref={appRootRef} className="app-root" data-lang={lang} data-db-items={dbCounts?.items??0} data-visual-uat-mode={VISUAL_UAT_MODE?"1":"0"} style={root}>
       <style>{`
         @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css');
 
@@ -6427,6 +7410,19 @@ export default function App(){
           word-break:normal !important;
         }
         .app-root table { font-variant-numeric:tabular-nums; }
+        .responsive-table-scroll{
+          width:100%;
+          max-width:100%;
+          overflow-x:auto !important;
+          overflow-y:visible;
+          -webkit-overflow-scrolling:touch;
+          overscroll-behavior-x:contain;
+          scrollbar-width:thin;
+          box-sizing:border-box;
+        }
+        .responsive-table-scroll > table{
+          max-width:none !important;
+        }
         .app-root ::placeholder { color:${C.text4}; opacity:1; }
         .num { font-family:${FONT_NUM}; font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
 
@@ -6603,6 +7599,24 @@ export default function App(){
         @media (max-width: 760px){
           .xrf-element-row{grid-template-columns:1fr !important;}
           .xrf-element-row > div{border-left:0 !important;padding-left:0 !important;}
+          .responsive-table-scroll > table{
+            width:100% !important;
+            min-width:720px !important;
+          }
+          .responsive-table-scroll.table-scroll-wide > table{
+            min-width:1280px !important;
+          }
+          .responsive-table-scroll.table-scroll-medium > table{
+            min-width:820px !important;
+          }
+          .responsive-table-scroll.table-scroll-compact > table{
+            min-width:520px !important;
+          }
+          .responsive-table-scroll th,
+          .responsive-table-scroll td{
+            overflow-wrap:break-word;
+            word-break:keep-all;
+          }
         }
         @media (max-width: 1180px){
           .stat-grid{grid-template-columns:repeat(3,1fr) !important;}
@@ -6655,8 +7669,39 @@ export default function App(){
           }
         }
       `}</style>
-      {openFilter&&<div style={{position:"fixed",inset:0,zIndex:9998}} onClick={()=>setOpenFilter(null)}/>}
-      {openFilter&&<FilterPanel column={openFilter} pos={fPos} selected={fs[openFilter]||[]} onToggle={handleToggle} onClear={handleClear} onClose={()=>setOpenFilter(null)}/>}
+      {openFilter&&<FilterPanel column={openFilter} pos={fPos} selected={fs[openFilter]||[]} values={listFilterValues[openFilter]||[]} onToggle={handleToggle} onClear={handleClear} onClose={()=>setOpenFilter(null)}/>}
+      {discontinueDecisionAuth.open&&(
+        <div role="presentation" onMouseDown={()=>{if(!discontinueDecisionAuth.pending) closeDiscontinueDecisionAuth();}} style={{position:"fixed",inset:0,zIndex:10001,display:"flex",alignItems:"center",justifyContent:"center",padding:18,background:"rgba(10,16,16,.58)",boxSizing:"border-box"}}>
+          <form role="dialog" aria-modal="true" aria-labelledby="admin-discontinue-auth-title" onSubmit={submitDiscontinueDecisionAuth} onMouseDown={event=>event.stopPropagation()} onKeyDown={event=>{if(event.key==="Escape"&&!discontinueDecisionAuth.pending) closeDiscontinueDecisionAuth();}} style={{width:"min(430px,100%)",padding:"20px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
+            <div id="admin-discontinue-auth-title" style={{fontSize:15,fontWeight:750,color:C.text1}}>{discontinueDecisionAuth.verified?"단종 요청 승인 여부 결정":"관리자 인증"}</div>
+            <div style={{marginTop:6,fontSize:11,color:C.text3,lineHeight:1.65}}>
+              요청 번호 {discontinueDecisionAuth.item?.code||"—"}<br/>
+              대상 품목 {discontinueDecisionAuth.item?.discontinueTargetCode||"—"}
+            </div>
+            {!discontinueDecisionAuth.verified?(
+              <>
+                <div style={{marginTop:10,fontSize:11,color:C.text3,lineHeight:1.55}}>단종 요청을 승인하거나 반려하려면 관리자 비밀번호를 입력하세요.</div>
+                <input type="password" value={discontinueDecisionAuth.password} onChange={event=>setDiscontinueDecisionAuth(prev=>({...prev,password:event.target.value,error:""}))} autoFocus autoComplete="current-password" aria-label="관리자 비밀번호" style={{...inp,width:"100%",marginTop:14,boxSizing:"border-box"}}/>
+                {discontinueDecisionAuth.error&&<div role="alert" style={{marginTop:7,fontSize:11,color:C.redDk}}>{discontinueDecisionAuth.error}</div>}
+                <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+                  <button type="button" onClick={closeDiscontinueDecisionAuth} style={{padding:"7px 13px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,fontWeight:600,cursor:"pointer"}}>취소</button>
+                  <button type="submit" style={{padding:"7px 15px",border:`1px solid ${C.charcoal}`,borderRadius:7,background:C.charcoal,color:"#fff",fontSize:11,fontWeight:650,cursor:"pointer"}}>인증</button>
+                </div>
+              </>
+            ):(
+              <>
+                <div style={{marginTop:12,padding:"11px 12px",background:C.alt,border:`1px solid ${C.bd}`,borderRadius:7,fontSize:11,color:C.text2,lineHeight:1.65}}>관리자 인증이 완료되었습니다. 승인하면 대상 품목이 단종 상태로 전환되고, 반려하면 대상 품목의 현재 상태와 기존 XRF 이력이 그대로 유지됩니다.</div>
+                {discontinueDecisionAuth.error&&<div role="alert" style={{marginTop:9,fontSize:11,color:C.redDk,lineHeight:1.55}}>{discontinueDecisionAuth.error}</div>}
+                <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16,flexWrap:"wrap"}}>
+                  <button type="button" disabled={discontinueDecisionAuth.pending} onClick={closeDiscontinueDecisionAuth} style={{padding:"7px 13px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,fontWeight:600,cursor:discontinueDecisionAuth.pending?"not-allowed":"pointer",opacity:discontinueDecisionAuth.pending?0.6:1}}>취소</button>
+                  <button type="button" disabled={discontinueDecisionAuth.pending} onClick={()=>handleDiscontinueApproval("반려",discontinueDecisionAuth.item)} style={{padding:"7px 15px",border:`1px solid ${A.rose.ln}`,borderRadius:7,background:A.rose.bg,color:A.rose.tx,fontSize:11,fontWeight:650,cursor:discontinueDecisionAuth.pending?"not-allowed":"pointer",opacity:discontinueDecisionAuth.pending?0.6:1}}>반려</button>
+                  <button type="button" disabled={discontinueDecisionAuth.pending} onClick={()=>handleDiscontinueApproval("승인",discontinueDecisionAuth.item)} style={{padding:"7px 15px",border:`1px solid ${C.charcoal}`,borderRadius:7,background:C.charcoal,color:"#fff",fontSize:11,fontWeight:650,cursor:discontinueDecisionAuth.pending?"not-allowed":"pointer",opacity:discontinueDecisionAuth.pending?0.6:1}}>{discontinueDecisionAuth.pending?"SharePoint 처리 중...":"단종 승인"}</button>
+                </div>
+              </>
+            )}
+          </form>
+        </div>
+      )}
       {itemEditAuth.open&&(
         <div role="presentation" onMouseDown={closeItemEditAuth} style={{position:"fixed",inset:0,zIndex:10000,display:"flex",alignItems:"center",justifyContent:"center",padding:18,background:"rgba(10,16,16,.58)",boxSizing:"border-box"}}>
           <form role="dialog" aria-modal="true" aria-labelledby="admin-item-auth-title" onSubmit={submitItemEditAuth} onMouseDown={event=>event.stopPropagation()} onKeyDown={event=>{if(event.key==="Escape") closeItemEditAuth();}} style={{width:"min(380px,100%)",padding:"20px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
@@ -6693,6 +7738,17 @@ export default function App(){
         </div>
       </div>
 
+      {VISUAL_UAT_MODE&&(
+        <div data-i18n-skip="true" data-visual-uat-banner="1" style={{background:A.purple.bg,borderBottom:`1px solid ${A.purple.ln}`}}>
+          <div className="app-shell" style={{paddingTop:9,paddingBottom:9,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+            <strong style={{fontSize:11,color:A.purple.tx,letterSpacing:".35px"}}>VISUAL UAT MODE</strong>
+            <span style={{fontSize:11,color:C.text2}}>로컬 테스트 데이터가 실제 SharePoint 데이터와 함께 표시됩니다.</span>
+            <span style={{fontSize:11,color:A.purple.tx,fontWeight:650}}>테스트 데이터는 SharePoint에 저장되지 않습니다.</span>
+            <span style={{marginLeft:"auto",fontSize:10,color:C.text4}}>Fixtures {VISUAL_UAT_ALL_ITEMS.length} · Compliance {VISUAL_UAT_COMPLIANCE_ITEMS.length}</span>
+          </div>
+        </div>
+      )}
+
       <div className="app-shell app-main">
 
         {tab==="list"&&(
@@ -6725,6 +7781,8 @@ export default function App(){
               </ChartCard>
             </div>
 
+            {VISUAL_UAT_MODE&&<VisualUatComplianceRenderMatrix/>}
+
             <div style={{position:"relative",zIndex:2,padding:"0 0 12px"}}>
               <div style={{minHeight:34,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:hasFilters?8:0}}>
                 <div style={{position:"relative",flex:"0 0 auto"}}>
@@ -6732,9 +7790,10 @@ export default function App(){
                     style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",pointerEvents:"none"}}>
                     <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/>
                   </svg>
-                  <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="품번 · 품목명 검색"
+                  <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="전체 열 검색"
                     style={{height:34,width:220,boxSizing:"border-box",padding:"0 12px 0 32px",border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:12,outline:"none",background:C.card,color:C.text1}}/>
                 </div>
+                {VISUAL_UAT_MODE&&<button type="button" data-i18n-skip="true" aria-pressed={visualUatOnly} onClick={()=>setVisualUatOnly(value=>!value)} className="pill-btn" style={{height:30,padding:"0 12px",border:`1px solid ${visualUatOnly?A.purple.solid:A.purple.ln}`,background:visualUatOnly?A.purple.solid:A.purple.bg,color:visualUatOnly?"#fff":A.purple.tx,fontSize:11,fontWeight:650,cursor:"pointer"}}>UAT 테스트만 보기</button>}
                 <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filtered.length}</strong>건 · 운영 {stats.total}건 · 이력 {stats.history}건</span>
                 {hasFilters&&<button onClick={handleClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
                 <div style={{marginLeft:"auto"}}/>
@@ -6746,8 +7805,8 @@ export default function App(){
               <FilterChips filterState={fs} onClear={handleClear} onClearAll={handleClearAll}/>
             </div>
 
-            <div style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,overflowX:"hidden",overflowY:"visible",width:"100%",maxWidth:"100%"}}>
-              <table style={{width:"100%",minWidth:0,maxWidth:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
+            <div className="responsive-table-scroll table-scroll-wide material-list-table" role="region" aria-label="부자재 목록 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
+              <table style={{width:"100%",minWidth:listTableWeight,maxWidth:"none",borderCollapse:"collapse",tableLayout:"fixed"}}>
                 <colgroup>
                   {listColumns.map(c=><col key={c.key} style={{width:`${(c.w/listTableWeight)*100}%`}}/>)}
                 </colgroup>
@@ -6764,7 +7823,7 @@ export default function App(){
                       조건에 맞는 품목이 없습니다.
                       <button onClick={handleClearAll} style={{marginLeft:10,padding:"4px 10px",background:"none",border:`1px solid ${C.bd}`,borderRadius:0,fontSize:11,cursor:"pointer",color:C.text3}}>초기화</button>
                     </td></tr>
-                  ):filtered.map((item,idx)=>{
+                  ):pagedFiltered.map((item,idx)=>{
                     const isReplaced=item.lifecycle==="ReplacedOld";
                     const isDiscontinueItem=isDiscontinueRequestItem(item);
                     const isDiscontinuedExisting=isDiscontinuedItem(item) && !isDiscontinueItem;
@@ -6795,9 +7854,13 @@ export default function App(){
                         <td style={{...tdS,color:C.text3,fontSize:11,fontWeight:600,overflow:"hidden"}}>
                           <AutoFitText value={item.code} title={item.code} baseFontSize={11} minFontSize={7} align="center" style={{fontWeight:600,color:C.text3}}/>
                         </td>
-                        <td data-i18n-skip="true" style={{...tdS,textAlign:"left",overflow:"hidden",padding:"0 8px"}}>
-                          <AutoFitText value={lang==="en"?(item.nameEn||item.name||"—"):(item.name||"—")} title={lang==="en"?(item.nameEn||item.name||"—"):(item.name||"—")} baseFontSize={12} minFontSize={7} align="left" style={{fontWeight:600,color:C.text1,textAlign:"left"}}/>
-                          <AutoFitText value={lang==="en"?(item.name||"—"):(item.nameEn||"—")} title={lang==="en"?(item.name||"—"):(item.nameEn||"—")} baseFontSize={10} minFontSize={7} align="left" style={{color:C.text2,marginTop:2,textAlign:"left"}}/>
+                        <td data-i18n-skip="true" style={{...tdS,textAlign:"left",overflow:"visible",padding:"7px 10px"}}>
+                          <div title={lang==="en"?(item.nameEn||item.name||"—"):(item.name||"—")} style={{fontSize:12,fontWeight:600,color:C.text1,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
+                            {lang==="en"?(item.nameEn||item.name||"—"):(item.name||"—")}
+                          </div>
+                          <div title={lang==="en"?(item.name||"—"):(item.nameEn||"—")} style={{fontSize:10,color:C.text2,marginTop:3,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
+                            {lang==="en"?(item.name||"—"):(item.nameEn||"—")}
+                          </div>
                         </td>
                         <td style={{...tdS,color:C.text3,fontSize:11}}><AutoFitText value={item.dept} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
                         <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={isCycleMuted||isEquipmentItem(item)?"—":(CYCLE_KO[itemCycleFromRisk(item)]||"—")} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
@@ -6820,6 +7883,17 @@ export default function App(){
                 </tbody>
               </table>
             </div>
+            {listTotalPages>1&&(
+              <div data-material-list-pagination="1" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,marginTop:12,flexWrap:"wrap"}}>
+                <button type="button" disabled={listPage===0} onClick={()=>setListPage(page=>Math.max(0,page-1))}
+                  style={{padding:"6px 10px",border:`1px solid ${C.bd}`,borderRadius:6,background:C.card,color:C.text2,fontSize:11,cursor:listPage===0?"default":"pointer",opacity:listPage===0?.45:1}}>이전</button>
+                {Array.from({length:listTotalPages},(_,page)=><button key={page} type="button" aria-current={page===listPage?"page":undefined} onClick={()=>setListPage(page)}
+                  style={{minWidth:30,padding:"6px 8px",border:`1px solid ${page===listPage?C.charcoalDk:C.bd}`,borderRadius:6,background:page===listPage?C.charcoalDk:C.card,color:page===listPage?"#fff":C.text2,fontSize:11,fontWeight:page===listPage?750:500,cursor:"pointer"}}>{page+1}</button>)}
+                <button type="button" disabled={listPage>=listTotalPages-1} onClick={()=>setListPage(page=>Math.min(listTotalPages-1,page+1))}
+                  style={{padding:"6px 10px",border:`1px solid ${C.bd}`,borderRadius:6,background:C.card,color:C.text2,fontSize:11,cursor:listPage>=listTotalPages-1?"default":"pointer",opacity:listPage>=listTotalPages-1?.45:1}}>다음</button>
+                <span style={{marginLeft:4,fontSize:10.5,color:C.text4}}>{listPage*MATERIAL_LIST_PAGE_SIZE+1}–{Math.min(filtered.length,(listPage+1)*MATERIAL_LIST_PAGE_SIZE)} / {filtered.length}건</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -6829,7 +7903,7 @@ export default function App(){
               <span style={{...T.section}}>품목 선택</span>
               <select data-i18n-skip="true" value={selKey||""} onChange={e=>{setSelKey(e.target.value);setSelPeriodNum(null);}} style={{...inp,minWidth:220,width:"min(100%, 420px)",maxWidth:"100%"}}>
                 <option value="">{lang==="en"?"-- Select --":"-- 선택하세요 --"}</option>
-                {allItems.map(i=><option key={i.code} value={i.code}>{i.code}  |  {i.dept}  |  {displayItemName(i,lang)}</option>)}
+                {xrfSelectableItems.map(i=><option key={i.code} value={i.code}>{i.code}  |  {i.dept}  |  {displayItemName(i,lang)}</option>)}
               </select>
             </div>
             {pendingDiscontinueRequestItems.length>0&&<div style={{...card,padding:"12px 14px",marginBottom:14,background:C.alt}}>
@@ -6940,8 +8014,7 @@ export default function App(){
                       </div>
                       {isAdminUser && selectedApprovalKey==="hold"?(
                         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                          <button onClick={()=>handleDiscontinueApproval("승인")} style={{padding:"8px 15px",border:"none",borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>단종 승인</button>
-                          <button onClick={()=>handleDiscontinueApproval("반려")} className="pill-btn" style={{padding:"8px 15px",border:`1px solid ${A.rose.ln}`,background:A.rose.bg,color:A.rose.tx,fontSize:11,fontWeight:600}}>반려</button>
+                          <button onClick={openDiscontinueDecisionAuth} style={{padding:"8px 15px",border:"none",borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>관리자 인증 후 승인 여부 결정</button>
                         </div>
                       ):(
                         <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11,color:C.text3,flexWrap:"wrap"}}>
@@ -6961,8 +8034,8 @@ export default function App(){
                       <div style={{fontSize:11,color:C.text3,lineHeight:1.6,marginBottom:10}}>의뢰자가 XRF 측정을 요청했지만 아직 판정 지표가 없어 보류 상태입니다. XRF 결과 업로드 후 R 위험도 평가와 주기별 이행현황이 생성됩니다.</div>
                       {isAdminUser?<div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                         <label style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center",minHeight:34,padding:"0 14px",border:`1px dashed ${C.bd2}`,background:C.card,color:C.text2,fontSize:11,fontWeight:700,cursor:"pointer",overflow:"hidden"}}>
-                          관리자 XRF 결과 업로드 (.xlsx)
-                          <input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json" onChange={handleAdminXrfUpload} style={fileInputOverlay}/>
+                          {measurementSavePending?"SharePoint 저장 중...":"관리자 XRF 결과 업로드 (.xlsx)"}
+                          <input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json" onChange={handleAdminXrfUpload} disabled={measurementSavePending} style={fileInputOverlay}/>
                         </label>
                         <span style={{fontSize:10,color:C.text3}}>
                           {adminUploadFileNameByCode[sel.code] ? `최근 업로드: ${adminUploadFileNameByCode[sel.code]}` : "업로드 후 XRF 결과, 재측정 여부, Approval_Status가 자동 반영됩니다."}
@@ -6987,7 +8060,7 @@ export default function App(){
                         selectedPeriodNum={selPeriodNum}
                         onSelectPeriod={handleSelectPeriod}
                         uploadTargetNum={isAdminUser?periodUploadTarget?.num:null}
-                        uploadAllowed={isAdminUser&&periodUploadAllowed}
+                        uploadAllowed={isAdminUser&&periodUploadAllowed&&!measurementSavePending}
                         uploadState={periodUploadState}
                         onUpload={handlePeriodXrfUpload}
                         uploadKey={periodUploadTarget?`${sel.code}|${periodUploadTarget.num}`:""}
@@ -7061,31 +8134,33 @@ export default function App(){
                         <span style={{...T.section}}>XRF 내부 판정 기준</span>
                         <span data-i18n-skip="true" style={{fontSize:10,color:C.text2,fontWeight:400}}>{lang==="en"?"Internal Limit = 70% of Legal Limit":"Internal Limit = Legal Limit의 70%"}</span>
                       </summary>
-                      <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed",fontSize:11,background:C.card,marginTop:8}}>
-                        <thead>
-                          <tr>
-                            {["내부 판정 조건", "처리 기준"].map(h=><th key={h} style={{padding:"7px 8px",border:`1px solid ${C.bd}`,background:C.alt,color:C.text3,fontWeight:800,textAlign:"center"}}>{h}</th>)}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {[
-                            [<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><Chip v="OK" small result/><span style={{fontSize:10,color:C.text3}}>Content ≤ Internal Limit 또는 N.D.</span></div>, "사용 가능"],
-                            [<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><Chip v="NG" small result/><span style={{fontSize:10,color:C.text3}}>Content &gt; Internal Limit</span></div>, "정밀분석 인계"],
-                            [<Chip v="??" small result/>, lang==="en"?"One XRF remeasurement\n* If the remeasurement result is ?? / NG, proceed to Precision Analysis":"XRF 1회 재측정\n* 재측정 결과가 ?? / NG이면 정밀분석"],
-                          ].map(([judgement,action],idx)=>(
-                            <tr key={idx}>
-                              <td style={{padding:"7px 8px",border:`1px solid ${C.bd}`,textAlign:"center",fontWeight:700,color:C.text1}}>{judgement}</td>
-                              <td style={{padding:"7px 8px",border:`1px solid ${C.bd}`,textAlign:"center",color:C.text2,fontWeight:400,whiteSpace:"pre-line",lineHeight:1.7}}>{action}</td>
+                      <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="XRF 내부 판정 기준표" tabIndex={0}>
+                        <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed",fontSize:11,background:C.card,marginTop:8}}>
+                          <thead>
+                            <tr>
+                              {["내부 판정 조건", "처리 기준"].map(h=><th key={h} style={{padding:"7px 8px",border:`1px solid ${C.bd}`,background:C.alt,color:C.text3,fontWeight:800,textAlign:"center"}}>{h}</th>)}
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {[
+                              [<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><Chip v="OK" small result/><span style={{fontSize:10,color:C.text3}}>Content ≤ Internal Limit 또는 N.D.</span></div>, "사용 가능"],
+                              [<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><Chip v="NG" small result/><span style={{fontSize:10,color:C.text3}}>Content &gt; Internal Limit</span></div>, "정밀분석 인계"],
+                              [<Chip v="??" small result/>, lang==="en"?"One XRF remeasurement\n* If the remeasurement result is ?? / NG, proceed to Precision Analysis":"XRF 1회 재측정\n* 재측정 결과가 ?? / NG이면 정밀분석"],
+                            ].map(([judgement,action],idx)=>(
+                              <tr key={idx}>
+                                <td style={{padding:"7px 8px",border:`1px solid ${C.bd}`,textAlign:"center",fontWeight:700,color:C.text1}}>{judgement}</td>
+                                <td style={{padding:"7px 8px",border:`1px solid ${C.bd}`,textAlign:"center",color:C.text2,fontWeight:400,whiteSpace:"pre-line",lineHeight:1.7}}>{action}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </details>
 
                     {/* 원소 바 */}
                     <div style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:14,overflow:"hidden",boxShadow:"0 10px 24px rgba(26,32,32,.10)"}}>
                       {currentMeasurement
-                        ? ELEMENTS.map((el,idx)=><EBar key={el} el={el} d={currentMeasurement.elements?.[el]} last={idx===ELEMENTS.length-1}/>)
+                        ? ELEMENTS.map((el,idx)=><EBar key={el} el={el} d={currentMeasurement.elements?.[el]} measurement={currentMeasurement} last={idx===ELEMENTS.length-1}/>)
                         : <div style={{padding:"38px 18px",textAlign:"center",fontSize:12,color:C.text3,fontWeight:600}}>선택한 주기에 연결된 XRF 측정 이력이 없습니다.</div>
                       }
                     </div>
@@ -7246,16 +8321,16 @@ export default function App(){
                 <DeptRiskChart rows={dash.deptRows} riskMeta={dash.riskMeta}/>
               </ChartCard>
             </div>
-            <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접+잔류`],["M",`${crCounts.M}건 · 직접+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
+            <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 현황표" tabIndex={0} style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접+잔류`],["M",`${crCounts.M}건 · 직접+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-              <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>주기 관리 현황</div>{[["월 1회",cycleCounts.Monthly],["반기 1회",cycleCounts.Semiannual],["연 1회",cycleCounts.Annual],["미이행",stats.overdue],["측정권장 D-30",stats.dueSoon],["현재 이행",active.filter(i=>getCS(i)==="ok").length]].map(([l,n])=><div key={l} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11}}><span style={{color:C.text2}}>{l}</span><strong style={{color:l==="미이행"?C.red:C.charcoal}}>{n}건</strong></div>)}</div>
+              <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>주기 관리 현황</div>{[["월 1회",cycleCounts.Monthly],["반기 1회",cycleCounts.Semiannual],["연 1회",cycleCounts.Annual],["미이행",stats.overdue],["측정권장 (월 D-15 / 반기·연 D-30)",stats.dueSoon],["현재 이행",active.filter(i=>getCS(i)==="ok").length]].map(([l,n])=><div key={l} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11}}><span style={{color:C.text2}}>{l}</span><strong style={{color:l==="미이행"?C.red:C.charcoal}}>{n}건</strong></div>)}</div>
               <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>분석 Workflow 현황</div>{[["XRF 재측정",workflowCounts.XRF_REMEASURE_REQUIRED,"xrf"],["정밀분석 인계 필요",workflowCounts.PRECISION_TRANSFER_REQUEST_REQUIRED,"precision"],["정밀분석 결과 대기",workflowCounts.PRECISION_TRANSFER_RESULT_WAITING+workflowCounts.PRECISION_RESULT_WAITING,"precision"],["정밀분석 후속조치 필요",workflowCounts.PRECISION_FOLLOWUP_REQUIRED,"precision"],["정밀분석 NG · 반려",workflowCounts.PRECISION_NG_REVIEW,"precision"]].map(([l,n,target])=><div key={l} onClick={()=>{if(n){setTab(target);}}} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11,cursor:n?"pointer":"default",background:n?C.alt:"transparent"}}><span style={{color:n?C.text2:C.text4}}>{l}</span><strong style={{color:n?C.orange:C.text4}}>{n}건</strong></div>)}</div>
             </div>
             <div style={{...card,padding:"18px 20px"}}>
               <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:12,marginBottom:5,flexWrap:"wrap"}}>
                 <div style={{...T.cardTitle}}>고위험 / 후속분석 대상 품목</div>
               </div>
-              <div style={{overflowX:"hidden",width:"100%",maxWidth:"100%"}}>
+              <div className="responsive-table-scroll table-scroll-medium" role="region" aria-label="고위험 및 후속분석 대상 품목 표" tabIndex={0}>
                 <table style={{width:"100%",minWidth:0,maxWidth:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
                   <colgroup>
                     <col style={{width:"11%"}}/><col style={{width:"18%"}}/><col style={{width:"11%"}}/><col style={{width:"11%"}}/><col style={{width:"10%"}}/><col style={{width:"11%"}}/><col style={{width:"18%"}}/><col style={{width:"10%"}}/>
@@ -7344,7 +8419,6 @@ export default function App(){
               <div style={{padding:"18px 22px",borderBottom:`1px solid ${C.bd}`,display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
                 <div>
                   <div style={{...T.pageTitle,marginBottom:5}}>품목 등록·변경 관리</div>
-                  <div style={{fontSize:11,color:C.text4,lineHeight:1.6}}>신규 도입, 기존 품목 대체, 단종·사용 중지 요청을 한 화면에서 관리합니다. 관리자는 Approval_Status와 처리 이력을 확인하고 잘못 처리한 단종 승인을 원복할 수 있습니다.</div>
                 </div>
                 <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
                   {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
@@ -7372,7 +8446,7 @@ export default function App(){
                     <div style={{fontSize:10,fontWeight:700,color:C.charcoalLt,letterSpacing:.6,textTransform:"uppercase",marginBottom:12}}>요청 유형 선택</div>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:12}}>
                       {[
-                        ["new","완전 신규 도입","기존 관리 품목과 관계없이 새로운 부자재/공정부자재를 등록합니다.","Lifecycle = NewItem"],
+                        ["new","신규 도입","기존 관리 품목과 관계없이 새로운 부자재/공정부자재를 등록합니다.","Lifecycle = NewItem"],
                         ["replacement","기존 품목 대체 등록","현재 사용 중인 품목을 새로운 품목으로 변경하거나 대체합니다.","Lifecycle = NewReplacement"],
                         ["discontinue","기존 품목 단종 / 사용 중지","신규 품목 추가 없이 기존 품목의 사용 중지 또는 단종을 요청합니다.","Lifecycle = Discontinued"]
                       ].map(([key,title,desc,meta])=>(
@@ -7391,7 +8465,7 @@ export default function App(){
 
                   {regStep===2&&regType!=="discontinue"&&<div>
                     <div style={{fontSize:10,fontWeight:700,color:C.charcoalLt,letterSpacing:.6,textTransform:"uppercase",marginBottom:12}}>
-                      {regType==="replacement"?"대체 대상 및 신규 대체품 기본정보":"완전 신규 도입 기본정보"}
+                      {regType==="replacement"?"대체 대상 및 신규 대체품 기본정보":"신규 도입 기본정보"}
                     </div>
 
                     {regType==="replacement"&&<div style={{padding:"12px",background:C.bg,border:`1px solid ${C.bd}`,borderRadius:8,marginBottom:14}}>
@@ -7448,9 +8522,6 @@ export default function App(){
                       <div><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>CR_Type <span style={{color:C.red}}>*</span></div><select value={reqForm.crType} onChange={e=>updateRequestField("crType",e.target.value)} style={{...inp,width:"100%",boxSizing:"border-box"}}><option>직접접촉+잔류</option><option>직접접촉+비잔류</option><option>비접촉</option></select></div>
                       <div style={{gridColumn:"1 / -1"}}><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>요청 사유 / 비고</div><textarea value={reqForm.requestReason} onChange={e=>updateRequestField("requestReason",e.target.value)} placeholder="신규 도입 또는 대체 등록 사유를 입력하세요" style={{...inp,width:"100%",boxSizing:"border-box",minHeight:74,resize:"vertical"}}/></div>
                     </div>
-                    <div style={{marginTop:14,padding:"10px 12px",background:C.charcoalBg,borderLeft:`2px solid ${C.bd2}`,fontSize:11,color:C.charcoal,lineHeight:1.7}}>
-                      Part Number는 Handling_Dept 첫 글자 + 내부 품번 오름차순 다음 번호로 자동 발번됩니다. XRF 결과가 승인되기 전까지 주기, Risk, 이행현황은 리스트에서 —로 표시됩니다.
-                    </div>
                   </div>}
 
                   {regStep===2&&regType==="discontinue"&&<div>
@@ -7480,9 +8551,6 @@ export default function App(){
                       <div><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>잔여 재고 처리 방식</div><select value={reqForm.stockDisposition} onChange={e=>updateRequestField("stockDisposition",e.target.value)} style={{...inp,width:"100%",boxSizing:"border-box"}}><option>재고 소진 후 사용 중지</option><option>폐기</option><option>반품</option><option>별도 보관</option><option>기타</option></select></div>
                       <div><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>요청 부서</div><select value={reqForm.handlingDept} onChange={e=>updateRequestField("handlingDept",e.target.value)} style={{...inp,width:"100%",boxSizing:"border-box"}}>{DEPTS.map(d=><option key={d}>{d}</option>)}</select></div>
                       <div style={{gridColumn:"1 / -1"}}><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>비고</div><textarea value={reqForm.note} onChange={e=>updateRequestField("note",e.target.value)} placeholder="단종/사용 중지 관련 특이사항을 입력하세요" style={{...inp,width:"100%",boxSizing:"border-box",minHeight:74,resize:"vertical"}}/></div>
-                    </div>
-                    <div style={{marginTop:14,padding:"10px 12px",background:C.xWarnBg,borderLeft:`2px solid ${C.xWarn}`,fontSize:11,color:C.text2,lineHeight:1.7}}>
-                      단종/사용 중지 요청은 신규 품목을 만들지 않는 상태 변경 요청입니다. 제출 후 Approval_Status는 보류로 표시되며, 관리자가 승인하면 기존 품목의 Lifecycle을 Discontinued로 전환합니다. 승인 전 상태는 Before_Snapshot_JSON에 저장하고, 잘못 승인한 경우 Reverted_At·Reverted_By·Revert_Reason을 남긴 뒤 원복합니다.
                     </div>
                   </div>}
 
@@ -7539,9 +8607,9 @@ export default function App(){
                         ["잔여 재고 처리",reqForm.stockDisposition],
                         ["예상 Approval_Status","보류"]
                       ]:[
-                        ["요청 유형",regType==="replacement"?"기존 품목 대체 등록":"완전 신규 도입"],
+                        ["요청 유형",regType==="replacement"?"기존 품목 대체 등록":"신규 도입"],
                         ...(regType==="replacement"?[["대체 대상",selectedReplacementTarget?`${selectedReplacementTarget.code} · ${displayItemName(selectedReplacementTarget,lang)}`:"미선택"],["대체 사유",reqForm.replacementReason==="기타"?(reqForm.replacementReasonOther||"기타 상세 미입력"):reqForm.replacementReason],["기존 품목 처리",reqForm.oldItemDisposition],["전환 예정일",reqForm.replacementDate]]:[]),
-                        ["Part Number",reqForm.partNumber||"자동 발번"],["Item_Name",reqForm.itemName||"—"],["Type",`${ITEM_TYPE_KO[reqForm.type]||reqForm.type} (${reqForm.type})`],["Handling_Dept",reqForm.handlingDept],["Material_Category",reqForm.materialCategory],["Material_State",reqForm.materialState||"—"],["제조사",reqForm.manufacturer||"—"],["사용 예정 일자",reqForm.useDate],["CR_Type",reqForm.crType],["XRF 방식",reqXrfMode==="upload"?"XRF 원본 업로드":"XRF 측정 의뢰"],["업로드 파일",reqXrfMode==="upload"?(reqUploadFileName||"미선택"):"—"],["XRF Result",reqXrfMode==="upload"?(reqUploadResult.parsed?(reqUploadResult.xrfResult||reqUploadResult.xrfWorst):"파싱 대기"):"측정 후 산출"],["Judgment",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementJudgementSummary({elements:reqUploadResult.elements||{}}):"파싱 대기"):"측정 후 산출"],["후속조치",reqXrfMode==="upload"?(reqUploadResult.parsed?(precisionRequiredElements({elements:reqUploadResult.elements||{}}).length?"정밀분석 필요":reqUploadResult.retestRequired?"XRF 재측정":"후속조치 없음"):"파싱 대기"):"측정 후 산출"],["예상 Approval_Status",reqXrfMode==="request"||!reqUploadResult.parsed?"보류":(reqUploadResult.approvalStatus||deriveXrfApprovalStatus(reqUploadResult.xrfResult||reqUploadResult.xrfWorst))]
+                        ["Part Number",reqForm.partNumber||"자동 발번"],["Item_Name",reqForm.itemName||"—"],["Type",`${ITEM_TYPE_KO[reqForm.type]||reqForm.type} (${reqForm.type})`],["Handling_Dept",reqForm.handlingDept],["Material_Category",reqForm.materialCategory],["Material_State",reqForm.materialState||"—"],["제조사",reqForm.manufacturer||"—"],["사용 예정 일자",reqForm.useDate],["CR_Type",reqForm.crType],["XRF 방식",reqXrfMode==="upload"?"XRF 원본 업로드":"XRF 측정 의뢰"],["업로드 파일",reqXrfMode==="upload"?(reqUploadFileName||"미선택"):"—"],["XRF Result",reqXrfMode==="upload"?(reqUploadResult.parsed?(reqUploadResult.xrfResult||reqUploadResult.xrfWorst):"파싱 대기"):"측정 후 산출"],["Judgment",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementJudgementSummary({elements:reqUploadResult.elements||{}}):"파싱 대기"):"측정 후 산출"],["후속조치",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementFollowupInfo({elements:reqUploadResult.elements||{},role:"Initial",attemptNo:1}).label:"파싱 대기"):"측정 후 산출"],["예상 Approval_Status",reqXrfMode==="request"||!reqUploadResult.parsed?"보류":(reqUploadResult.approvalStatus||deriveXrfApprovalStatus(reqUploadResult.xrfResult||reqUploadResult.xrfWorst))]
                       ]).map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.bd}`,fontSize:12}}><span style={{color:C.text4}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right"}}>{v}</span></div>)}
                     </div>
                     <button onClick={submitRequesterNewItem} style={{width:"100%",padding:"12px 0",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:13,fontWeight:600,cursor:"pointer"}}>
@@ -7561,7 +8629,7 @@ export default function App(){
                     <div style={{fontSize:11,color:C.text4,lineHeight:1.7,marginBottom:14}}>관리자가 수동으로 신규 도입, 기존 주기 측정 추가, 변경·대체, 단종 처리를 직접 선택합니다.</div>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:12}}>
                       {[
-                        ["admin-new","완전 신규 도입","새 품목을 즉시 등록하고 XRF 결과까지 반영"],
+                        ["admin-new","신규 도입","새 품목을 즉시 등록하고 XRF 결과까지 반영"],
                         ["admin-period","기존 주기 도래 · 측정 추가","기존 품목의 정기 XRF 결과를 추가 등록"],
                         ["admin-replace","변경 · 대체 등록","기존 품목과 신규 대체품을 연결"],
                         ["admin-discontinue","단종 처리","기존 품목의 사용 중지 또는 이력 전환"]
@@ -7579,7 +8647,7 @@ export default function App(){
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:14}}>
                       <div>
                         <div style={{fontSize:14,fontWeight:800,color:C.text1}}>
-                          {regType==="admin-new"?"관리자 직접 등록 · 완전 신규 도입":regType==="admin-period"?"관리자 직접 등록 · 기존 주기 측정 추가":regType==="admin-replace"?"관리자 직접 등록 · 변경·대체 등록":"관리자 직접 등록 · 단종 처리"}
+                          {regType==="admin-new"?"관리자 직접 등록 · 신규 도입":regType==="admin-period"?"관리자 직접 등록 · 기존 주기 측정 추가":regType==="admin-replace"?"관리자 직접 등록 · 변경·대체 등록":"관리자 직접 등록 · 단종 처리"}
                         </div>
                         <div style={{fontSize:11,color:C.text4,lineHeight:1.6,marginTop:3}}>기본 정보, C&R 등급, XRF 결과, 위험도 산정, 승인 상태를 관리자가 직접 확인합니다.</div>
                       </div>
@@ -7640,7 +8708,7 @@ export default function App(){
                           <div style={{fontSize:11,fontWeight:600,marginBottom:6}}>XRF 결과 Excel 업로드</div>
                           <label style={uploadBoxStyle}>
                             {reqUploadFileName || "XRF 결과 파일 선택 (.xlsx)"}
-                            <input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json" onChange={regType==="admin-period"?handleAdminDirectXrfUpload:handleRequesterXrfUpload} style={fileInputOverlay}/>
+                            <input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json" onChange={regType==="admin-period"?handleAdminDirectXrfUpload:handleRequesterXrfUpload} disabled={measurementSavePending} style={fileInputOverlay}/>
                           </label>
                           <div style={{fontSize:10,color:C.text4,lineHeight:1.55,marginTop:6}}>
                             {regType==="admin-period"
@@ -7659,7 +8727,7 @@ export default function App(){
 
                     <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16,paddingTop:14,borderTop:`1px solid ${C.bd}`}}>
                       <button onClick={handleAdminDraftSave} className="pill-btn" style={{padding:"9px 16px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:12,color:C.text3}}>임시 저장</button>
-                      <button onClick={handleAdminDirectSubmit} style={{padding:"9px 20px",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:"pointer"}}>승인 · 등록</button>
+                      <button onClick={handleAdminDirectSubmit} disabled={measurementSavePending} style={{padding:"9px 20px",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:measurementSavePending?"wait":"pointer",opacity:measurementSavePending?0.65:1}}>{measurementSavePending?"SharePoint 저장 중...":"승인 · 등록"}</button>
                     </div>
                   </div>}
                 </div>

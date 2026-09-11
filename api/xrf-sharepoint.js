@@ -1,4 +1,4 @@
-// Vercel Serverless Function
+// Node.js SharePoint API Handler
 // SharePoint XRF DB READ + WRITE gateway
 // Client secret must exist only in server-side environment variables.
 
@@ -48,28 +48,40 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-async function fetchWithRetry(url, options = {}) {
+async function fetchWithRetry(url, options = {}, policy = {}) {
+  const method = String(options?.method || "GET").toUpperCase();
+  const isRead = method === "GET" || method === "HEAD" || method === "OPTIONS";
+  const retry429 = policy.retry429 ?? true;
+  const retry5xx = policy.retry5xx ?? isRead;
+  const retryNetwork = policy.retryNetwork ?? isRead;
   let lastError = null;
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    let response;
     try {
-      const response = await fetch(url, options);
-      if (response.ok) return response;
-      const retryable = response.status === 429 || response.status >= 500;
-      const text = await response.text();
-      if (!retryable || attempt === MAX_RETRIES) {
-        const error = new Error(`Graph HTTP ${response.status}: ${text.slice(0, 1800)}`);
-        error.status = response.status;
-        throw error;
-      }
-      const retryAfter = Number(response.headers.get("retry-after"));
-      await sleep(Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter * 1000
-        : RETRY_BASE_MS * Math.pow(2, attempt));
+      response = await fetch(url, options);
     } catch (error) {
       lastError = error;
-      if (attempt === MAX_RETRIES) throw error;
+      if (!retryNetwork || attempt === MAX_RETRIES) throw error;
       await sleep(RETRY_BASE_MS * Math.pow(2, attempt));
+      continue;
     }
+
+    if (response.ok) return response;
+
+    const text = await response.text();
+    const retryable = (response.status === 429 && retry429)
+      || (response.status >= 500 && retry5xx);
+    if (!retryable || attempt === MAX_RETRIES) {
+      const error = new Error(`Graph HTTP ${response.status}: ${text.slice(0, 1800)}`);
+      error.status = response.status;
+      throw error;
+    }
+
+    const retryAfter = Number(response.headers.get("retry-after"));
+    await sleep(Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : RETRY_BASE_MS * Math.pow(2, attempt));
   }
   throw lastError || new Error("Graph request failed");
 }
@@ -78,7 +90,7 @@ async function acquireGraphToken() {
   const tenant = process.env.MXKPCS_TENANT || DEFAULT_TENANT;
   const clientId = process.env.MXKPCS_CLIENT_ID || DEFAULT_CLIENT_ID;
   const clientSecret = process.env.MXKPCS_CLIENT_SECRET;
-  if (!clientSecret) throw new Error("Vercel 환경변수 MXKPCS_CLIENT_SECRET가 설정되어 있지 않습니다.");
+  if (!clientSecret) throw new Error("서버 환경변수 MXKPCS_CLIENT_SECRET가 설정되어 있지 않습니다.");
 
   const body = new URLSearchParams({
     client_id: clientId,
@@ -88,7 +100,8 @@ async function acquireGraphToken() {
   });
   const response = await fetchWithRetry(
     `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/token`,
-    { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }
+    { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body },
+    { retry429: true, retry5xx: true, retryNetwork: true }
   );
   const payload = await response.json();
   if (!payload?.access_token) throw new Error("Microsoft Graph access token을 받지 못했습니다.");
@@ -134,25 +147,40 @@ async function readList(siteId, listName, accessToken) {
   return (await graphGetAll(url, accessToken)).map(compactListItem);
 }
 
+function graphOperationError(context, error) {
+  const wrapped = new Error(`[${context}] ${error?.message || String(error)}`);
+  wrapped.status = error?.status;
+  wrapped.cause = error;
+  return wrapped;
+}
+
 async function createListItem(siteId, listName, fields, accessToken) {
   if (!WRITABLE_LISTS.has(listName)) throw new Error(`쓰기 허용되지 않은 List: ${listName}`);
-  const response = await fetchWithRetry(`${listUrl(siteId, listName)}/items`, {
-    method: "POST",
-    headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ fields: createFields(fields) }),
-  });
-  return compactListItem(await response.json());
+  try {
+    const response = await fetchWithRetry(`${listUrl(siteId, listName)}/items`, {
+      method: "POST",
+      headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ fields: createFields(fields) }),
+    });
+    return compactListItem(await response.json());
+  } catch (error) {
+    throw graphOperationError(`${listName} CREATE`, error);
+  }
 }
 
 async function patchListItem(siteId, listName, itemId, fields, accessToken) {
   if (!WRITABLE_LISTS.has(listName)) throw new Error(`쓰기 허용되지 않은 List: ${listName}`);
   if (!itemId) throw new Error(`${listName} patch itemId가 없습니다.`);
-  const response = await fetchWithRetry(`${listUrl(siteId, listName)}/items/${encodeURIComponent(itemId)}/fields`, {
-    method: "PATCH",
-    headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
-    body: JSON.stringify(fields),
-  });
-  return await response.json();
+  try {
+    const response = await fetchWithRetry(`${listUrl(siteId, listName)}/items/${encodeURIComponent(itemId)}/fields`, {
+      method: "PATCH",
+      headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify(fields),
+    });
+    return await response.json();
+  } catch (error) {
+    throw graphOperationError(`${listName} PATCH id=${itemId}`, error);
+  }
 }
 
 async function deleteListItem(siteId, listName, itemId, accessToken) {
@@ -217,9 +245,10 @@ function rawElementFields(measurementId, element, row) {
   return {
     Title: measurementId,
     field_1: element,
-    field_2: row?.rawPpm ?? row?.ppm ?? "",
-    field_3: row?.rawSigma ?? row?.sigma ?? "",
-    field_4: row?.rawJudgement ?? row?.sourceJudgement ?? row?.judge ?? "",
+    // SharePoint의 Raw_* 컬럼은 모두 Text이므로 XLS/XLSX 숫자 셀도 문자열로 저장합니다.
+    field_2: cleanText(row?.rawPpm ?? row?.ppm),
+    field_3: cleanText(row?.rawSigma ?? row?.sigma),
+    field_4: cleanText(row?.rawJudgement ?? row?.sourceJudgement ?? row?.judge),
   };
 }
 
@@ -234,6 +263,7 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
   const measurements = await readList(siteId, "XRF_Measurements", accessToken);
   const measurementId = nextMeasurementId(measurements, itemId, partNumber, measuredDate);
   const created = [];
+  let writeStage = "XRF_Measurements Header CREATE";
   try {
     const header = await createListItem(siteId, "XRF_Measurements", {
       Title: measurementId,
@@ -242,10 +272,13 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
       field_3: role,
       field_4: Number(payload?.attemptNo || 1),
       field_5: nonEmpty(payload?.parentMeasurementId),
+      field_6: nonEmpty(payload?.sourceFileName),
+      field_7: nonEmpty(payload?.sourceSheet),
     }, accessToken);
     created.push(["XRF_Measurements", header.id]);
 
     for (const element of XRF_SOURCE_ELEMENTS) {
+      writeStage = `XRF_ElementResults ${element} CREATE`;
       const row = payload?.elements?.[element] || {};
       const elementItem = await createListItem(siteId, "XRF_ElementResults", rawElementFields(measurementId, element, row), accessToken);
       created.push(["XRF_ElementResults", elementItem.id]);
@@ -256,7 +289,9 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
     for (const [listName, itemSpId] of created.reverse()) {
       try { await deleteListItem(siteId, listName, itemSpId, accessToken); } catch {}
     }
-    throw error;
+    const stagedError = new Error(`${writeStage} 실패: ${error?.message || String(error)}`);
+    stagedError.status = error?.status;
+    throw stagedError;
   }
 }
 
