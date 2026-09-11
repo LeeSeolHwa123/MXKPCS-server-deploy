@@ -4713,7 +4713,7 @@ function FollowUpCompact({item}){
   const complete=p.done===p.total;
   return <span title={`B/S + 고객 사전 신고 ${p.done}/${p.total} 완료`} style={{fontSize:11,color:complete?C.charcoal:C.orange,fontWeight:700,whiteSpace:"nowrap"}}>{p.done}/{p.total} 완료</span>;
 }
-function WorkflowStrip({item}){
+function WorkflowStrip({item, lang="ko"}){
   const wf=workflowForItem(item);
   const attempts=wf.xrfAttempts||[];
   const xrfRaw=attempts.length ? attempts[attempts.length-1].normalizedResult : itemXrfWorst(item);
@@ -4780,7 +4780,8 @@ function WorkflowStrip({item}){
         fixedWidth={APPROVAL_LABEL_WIDTH} fixedHeight={APPROVAL_LABEL_HEIGHT} fixedFontSize={APPROVAL_LABEL_FONT_SIZE}/>;
     }
     if(nd.value==="재측정 필요"){
-      return <span title={nd.value} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:RESULT_LABEL_WIDTH,height:RESULT_LABEL_HEIGHT,padding:"0 10px",background:tone.bg,border:`1px solid ${tone.ln}`,borderRadius:UI.pill,color:tone.tx,fontSize:RESULT_LABEL_FONT_SIZE,fontWeight:600,whiteSpace:"nowrap",boxSizing:"border-box",lineHeight:1}}>{nd.value}</span>;
+      const remeasureLabel=lang==="en" ? "Remeasurement Required" : nd.value;
+      return <span data-i18n-skip="true" className="workflow-remeasure-pill" title={remeasureLabel} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:"fit-content",minWidth:lang==="en"?"max-content":RESULT_LABEL_WIDTH,maxWidth:"none",height:RESULT_LABEL_HEIGHT,padding:"0 10px",background:tone.bg,border:`1px solid ${tone.ln}`,borderRadius:UI.pill,color:tone.tx,fontSize:RESULT_LABEL_FONT_SIZE,fontWeight:600,whiteSpace:"nowrap",boxSizing:"border-box",lineHeight:1,flex:"0 0 auto",position:"relative",zIndex:2}}>{remeasureLabel}</span>;
     }
     return <StatusPill tone={tone} label={nd.value} size="sm"
       fixedWidth={RESULT_LABEL_WIDTH} fixedHeight={RESULT_LABEL_HEIGHT} fixedFontSize={RESULT_LABEL_FONT_SIZE}/>;
@@ -7390,7 +7391,7 @@ export default function App(){
           text-overflow:clip !important;
           text-align:center !important;
         }
-        .app-root[data-lang="en"] .workflow-stage-status-row > div:nth-child(-n+2) > span {
+        .app-root[data-lang="en"] .workflow-stage-status-row > div:nth-child(-n+2) > span:not(.workflow-remeasure-pill) {
           width:${RESULT_LABEL_WIDTH}px !important;
           min-width:${RESULT_LABEL_WIDTH}px !important;
           max-width:${RESULT_LABEL_WIDTH}px !important;
@@ -7399,6 +7400,20 @@ export default function App(){
           width:${APPROVAL_LABEL_WIDTH}px !important;
           min-width:${APPROVAL_LABEL_WIDTH}px !important;
           max-width:${APPROVAL_LABEL_WIDTH}px !important;
+        }
+        /* Remeasurement Required는 고정 폭을 해제해 배경이 영문 문구 전체를 감싸도록 합니다. */
+        .app-root[data-lang="en"] .workflow-stage-status-row > div > .workflow-remeasure-pill {
+          display:inline-flex !important;
+          width:fit-content !important;
+          min-width:max-content !important;
+          max-width:none !important;
+          height:${RESULT_LABEL_HEIGHT}px !important;
+          min-height:${RESULT_LABEL_HEIGHT}px !important;
+          padding:0 10px !important;
+          white-space:nowrap !important;
+          line-height:1 !important;
+          overflow:visible !important;
+          flex:0 0 auto !important;
         }
         .app-root[data-lang="en"] .workflow-stage-status-row > div > span > span {
           font-size:${RESULT_LABEL_FONT_SIZE}px !important;
@@ -7989,7 +8004,7 @@ export default function App(){
                     </div>
                   </div>
                 )}
-                {!selectedIsDiscontinue&&<WorkflowStrip item={sel}/>}
+                {!selectedIsDiscontinue&&<WorkflowStrip item={sel} lang={lang}/>}
                 {selectedDiscontinueRequestForTarget&&(
                    <div style={{padding:"12px clamp(14px, 2.4vw, 32px)",borderBottom:`1px solid ${C.bd}`,background:C.charcoalBg,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                     <span style={{fontSize:11,color:C.text2,fontWeight:700}}>이 품목은 단종 승인 처리됨</span>
