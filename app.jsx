@@ -1456,6 +1456,11 @@ const UI_EN_MAP = {
   "이행 상세":"Compliance Details","주기별 산정 요약":"Assessment Summary by Period",
   "산정 요약":"Assessment Summary","산정 기준":"Basis","최근 측정으로":"Latest Measurement",
   "원소별 XRF 분석":"XRF Analysis by Element","최신 XRF":"Latest XRF","현재 XRF":"Current XRF",
+  "원소별 XRF 트렌드":"XRF Trend by Element","원소별 트렌드 확인":"View Element Trends",
+  "XRF 분석으로 돌아가기":"Back to XRF Analysis","주기별 XRF 추세":"XRF Trend by Period",
+  "기준 포함":"Full Scale","측정값 확대":"Zoom to Measurements","전체":"All",
+  "측정값":"Measured Values","현재 선택 Measurement 기준":"Based on Selected Measurement",
+  "전체 측정 이력":"Complete Measurement History","추세를 그릴 관리주기가 아직 없습니다.":"No measurement history is available for the trend.",
   "정기 XRF 결과":"Periodic XRF Result","최초 위험도 평가":"Initial Risk Assessment",
   "적용 Risk":"Applied Risk","라이프사이클":"Lifecycle","C&R 등급":"C&R Level","도래월":"Due Month",
   "기준·도래일":"Reference / Due Date","주기 측정 필요":"Cycle Measurement Required",
@@ -1515,6 +1520,7 @@ const UI_EN_MAP = {
 
   // ── 문장 ──
   "조건에 맞는 품목이 없습니다.":"No items match the current filters.",
+  "모든 실제 XRF 측정값을 관리주기와 측정일 순서로 표시합니다. 점을 선택하면 해당 관리주기와 Measurement가 함께 선택되며, 데이터가 많아지면 차트가 가로로 확장되어 스크롤할 수 있습니다.":"All actual XRF measurements are shown by management period and measurement date. Selecting a point selects its management period and Measurement. When the history grows, the chart expands horizontally and can be scrolled.",
   "품목을 선택하면 XRF 분석 결과가 표시됩니다.":"Select an item to view its XRF analysis.",
   "정밀분석 대상이 없습니다.":"There are no precision analysis targets.",
   "선택된 정밀분석 항목이 없습니다.":"No precision analysis case is selected.",
@@ -2963,9 +2969,9 @@ function periodMeasuredShortText(p){
   return dates.map(d=>d.slice(5)).join(", ");
 }
 function periodMeasurementsOf(item,p){
-  return periodMeasurementIds(p)
-    .map(id=>measurementById(item,id))
-    .filter(Boolean)
+  return measurementAttemptsForPeriod(item,p)
+    .map(row=>measurementById(item,row?.id||row?.measurementId)||row)
+    .filter(row=>row && (row.id||row.measurementId))
     .sort((a,b)=>String(a?.date||"").localeCompare(String(b?.date||"")));
 }
 function appendPeriodMeasurementLink(period,measurementId,measuredDate){
@@ -5062,6 +5068,533 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
   </div>;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   원소별 XRF 추세 차트 (XRF Trend Chart)
+
+   - 가로축: 관리주기(R / P1 / P2 ... / F1)와 실제 Measurement 전체.
+     같은 주기의 복수 측정과 Retest도 #1, #2로 구분해 빠짐없이 표시합니다.
+   - 세로축: Content(ppm). Legal Limit(법적 규제)과 Internal Limit(법적 × 70%)
+     두 기준선을 항상 함께 그립니다.
+   - 상세 화면의 대표값은 마지막 시도를 사용하되, 트렌드에는 모든 시도를 개별 점으로 표시합니다.
+   - N.D.는 0 ppm 위치에 속이 빈 마커, 결측/재측정(??)은 선을 끊어서 표시합니다.
+
+   의존: ELEMENTS, XRF_ELEMENT_LIMITS, XRF_INTERNAL_LIMITS, XRF_INTERNAL_LIMIT_RATIO,
+        C, T, A, UI, FONT_SANS, xrfNumber, sourcePpmValue, elementDataMissing,
+        isXrfContentND, isXrfRemeasureRequired, xrfJudgementDecision,
+        xrfLegalLimitFromData, xrfInternalLimitFromData, periodLabel,
+        periodMeasuredDates, periodMeasurementIds, measurementById,
+        measurementAttemptsForPeriod
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+const XRF_TREND_ELEMENTS = ELEMENTS;                 // Pb, Hg, Cr, Cd, Cl, Br, Cl+Br
+const XRF_TREND_EL_KO = {Pb:"납",Hg:"수은",Cr:"크롬",Cd:"카드뮴",Cl:"염소",Br:"브롬","Cl+Br":"염소+브롬"};
+
+// 기준선 색: Legal = 실선 red(법적 상한), Internal = 파선 amber(사내 판정선)
+const XRF_TREND_LEGAL_COLOR    = C.red;
+const XRF_TREND_INTERNAL_COLOR = C.xWarn;
+const XRF_TREND_LINE_COLOR     = C.blue;
+
+function xrfTrendFmt(v){
+  return v==null ? "—" : Number(v).toLocaleString(undefined,{maximumFractionDigits:1});
+}
+
+// 한 주기의 대표 측정 = 그 주기에 연결된 마지막 시도(Retest 포함).
+// 상세 화면과 트렌드가 반드시 같은 Measurement를 읽도록 공용으로 사용합니다.
+function xrfTrendMeasurement(item, period){
+  if(!item || !period) return null;
+  const attempts=measurementAttemptsForPeriod(item,period);
+  const last=attempts[attempts.length-1]||null;
+  const id=String(
+    last?.id || last?.measurementId
+    || period?.measurementId
+    || periodMeasurementIds(period).slice(-1)[0]
+    || ""
+  ).trim();
+  return id ? measurementById(item,id) : null;
+}
+
+// 트렌드는 한 주기를 한 점으로 축약하지 않고, 지금까지 저장된 모든 실제 Measurement를
+// 주기별/측정일별로 펼칩니다. 같은 Pn에 여러 측정이나 Retest가 있으면 Pn #1, #2로 구분합니다.
+function xrfTrendMeasurementEntries(item, periods){
+  if(!item) return [];
+  const rows=[];
+  const seen=new Set();
+  const safePeriods=periods||[];
+  const add=(measurement,period)=>{
+    if(!measurement) return;
+    const id=String(measurement?.id||measurement?.measurementId||"").trim();
+    if(!id || seen.has(id)) return;
+    seen.add(id);
+    rows.push({measurement,period:period||null});
+  };
+
+  safePeriods.forEach(period=>{
+    measurementAttemptsForPeriod(item,period).forEach(attempt=>{
+      const id=attempt?.id||attempt?.measurementId;
+      add(measurementById(item,id)||attempt,period);
+    });
+  });
+
+  // 과거 마이그레이션 데이터처럼 Pn 연결 정보가 불완전한 Measurement도 누락하지 않습니다.
+  itemMeasurementRecords(item).forEach(measurement=>{
+    const storedPeriod=Number(measurement?.periodNo);
+    const linkedPeriod=safePeriods.find(period=>
+      periodMeasurementIds(period).includes(measurement?.id||measurement?.measurementId)
+      || (Number.isFinite(storedPeriod) && Number(period?.num)===storedPeriod)
+    ) || null;
+    add(measurement,linkedPeriod);
+  });
+
+  rows.sort((a,b)=>{
+    const periodA=Number.isFinite(Number(a.period?.displaySeq))?Number(a.period.displaySeq):Number(a.period?.num??999999);
+    const periodB=Number.isFinite(Number(b.period?.displaySeq))?Number(b.period.displaySeq):Number(b.period?.num??999999);
+    return periodA-periodB
+      || String(a.measurement?.date||"").localeCompare(String(b.measurement?.date||""))
+      || Number(a.measurement?.attemptNo||1)-Number(b.measurement?.attemptNo||1);
+  });
+
+  const counts=new Map();
+  rows.forEach(row=>{
+    const key=row.period ? String(row.period.num) : "unlinked";
+    counts.set(key,(counts.get(key)||0)+1);
+  });
+  const sequence=new Map();
+  return rows.map((row,index)=>{
+    const key=row.period ? String(row.period.num) : "unlinked";
+    const order=(sequence.get(key)||0)+1;
+    sequence.set(key,order);
+    const total=counts.get(key)||1;
+    const baseLabel=row.period ? periodLabel(row.period) : `M${index+1}`;
+    return {
+      ...row,
+      num:row.period ? Number(row.period.num) : null,
+      baseLabel,
+      label:total>1?`${baseLabel} #${order}`:baseLabel,
+      order,total,
+    };
+  });
+}
+
+// 실제 Measurement 하나 → 원소 하나의 추세 포인트
+function xrfTrendPoint(entry, element){
+  const measurement=entry?.measurement||null;
+  const period=entry?.period||null;
+  const d=measurement?.elements?.[element] || null;
+  const rawPpm=d ? sourcePpmValue(d) : null;
+  const remeasure=d ? isXrfRemeasureRequired(d) : false;
+  const missing=!d || elementDataMissing(d);
+  const isND=d ? (isXrfContentND(rawPpm) || !!d.isND) : false;
+  // xrfNumber()는 N.D.를 0으로 환산합니다. 결측(----, 공백)은 null로 남깁니다.
+  const ppm=missing ? null : xrfNumber(rawPpm);
+  // EBar와 동일하게, 한도를 해석해 넣은 뒤 판정합니다(구형 데이터 호환).
+  const legalLimit=(d ? xrfLegalLimitFromData(d) : null) ?? XRF_ELEMENT_LIMITS[element] ?? null;
+  const internalLimit=(d ? xrfInternalLimitFromData(d) : null) ?? XRF_INTERNAL_LIMITS[element] ?? null;
+  const judgement=d ? xrfJudgementDecision({...d,legalLimit,internalLimit}) : null;
+  return {
+    num:entry?.num,
+    label:entry?.label||periodLabel(period),
+    baseLabel:entry?.baseLabel||periodLabel(period),
+    // 날짜와 값은 동일한 Measurement 객체에서만 읽어 서로 어긋날 수 없게 합니다.
+    date:dateOnly(measurement?.date||measurement?.measuredDate)||null,
+    measurementId:measurement?.id||measurement?.measurementId||null,
+    role:measurement?.role || null,
+    attemptNo:Number(measurement?.attemptNo||1),
+    rawPpm,
+    ppm,
+    isND,
+    missing,
+    remeasure,
+    judgement,
+    legalLimit,
+    internalLimit,
+    hasValue:!missing && ppm!=null,
+  };
+}
+
+function xrfTrendSeries(item, periods, element, entries=null){
+  const source=entries||xrfTrendMeasurementEntries(item,periods);
+  return source.map(entry=>xrfTrendPoint(entry,element));
+}
+
+// 축 눈금을 1 / 2 / 5 × 10ⁿ 로 정돈합니다.
+function xrfTrendNiceStep(range, target=4){
+  if(!(range>0)) return 1;
+  const rough=range/Math.max(1,target);
+  const mag=Math.pow(10,Math.floor(Math.log10(rough)));
+  const norm=rough/mag;
+  const unit=norm<1.5?1:norm<3?2:norm<7?5:10;
+  return unit*mag;
+}
+function xrfTrendTicks(max, target=4){
+  const step=xrfTrendNiceStep(max,target);
+  const out=[];
+  for(let v=0; v<=max+step*0.001; v+=step) out.push(Math.round(v*1000)/1000);
+  return out.length>1 ? out : [0,max];
+}
+
+// scaleMode:
+//   "limit" → Legal Limit까지 모두 보이는 축 (기본값, 사용자가 요청한 "두 기준선이 모두 보이는" 축)
+//   "data"  → 측정값 기준 확대. 기준선이 축을 벗어나면 상단에 ↑ 표시로 알립니다.
+function xrfTrendAxisMax(series, element, scaleMode){
+  const legal=series.find(p=>p.legalLimit!=null)?.legalLimit ?? XRF_ELEMENT_LIMITS[element] ?? 100;
+  const internal=series.find(p=>p.internalLimit!=null)?.internalLimit ?? XRF_INTERNAL_LIMITS[element] ?? legal*XRF_INTERNAL_LIMIT_RATIO;
+  const dataMax=series.reduce((mx,p)=>p.hasValue && p.ppm>mx ? p.ppm : mx, 0);
+  if(scaleMode==="data"){
+    // 전부 N.D.(0)이면 확대할 대상이 없으므로 사내 기준선 기준 축으로 되돌립니다.
+    const base=dataMax>0 ? dataMax*1.35 : internal*1.15;
+    return {max:Math.max(base,1), legal, internal};
+  }
+  return {max:Math.max(legal*1.14, dataMax*1.15, 1), legal, internal};
+}
+
+function xrfTrendPointColor(p){
+  if(p.remeasure) return C.xWarn;
+  if(p.judgement==="NG") return C.red;
+  if(p.judgement==="OK") return C.xOk;
+  return C.text4;
+}
+
+/* ── 플롯 본체 (소형 멀티플/확대 보기 공용) ───────────────────────────────── */
+function XrfTrendPlot({
+  element, series, scaleMode="limit", compact=false,
+  selectedPeriodNum=null, selectedMeasurementId=null,
+  onSelectPeriod=null, onSelectMeasurement=null,
+}){
+  const [hoverIdx,setHoverIdx]=useState(null);
+
+  const n=series.length;
+  const baseWidth=compact?330:780;
+  const pointWidth=compact?58:84;
+  const H=compact?196:366;
+  const PAD=compact?{t:24,r:14,b:30,l:46}:{t:30,r:20,b:74,l:66};
+  const inset=compact?10:18;
+  // 측정 수가 많아져도 점과 라벨을 압축하거나 생략하지 않고 차트 자체를 넓혀 가로 스크롤합니다.
+  const W=Math.max(baseWidth,PAD.l+PAD.r+inset*2+Math.max(0,n-1)*pointWidth);
+
+  const plotL=PAD.l, plotR=W-PAD.r, plotT=PAD.t, plotB=H-PAD.b;
+  const plotW=plotR-plotL, plotH=plotB-plotT;
+
+  const {max:axisMax,legal,internal}=useMemo(
+    ()=>xrfTrendAxisMax(series,element,scaleMode),[series,element,scaleMode]);
+
+  const xAt=i=>{
+    if(n<=1) return plotL+plotW/2;
+    const left=plotL+inset, right=plotR-inset;
+    return left+(right-left)*(i/(n-1));
+  };
+  const yAt=v=>plotB-(Math.max(0,Math.min(v,axisMax))/axisMax)*plotH;
+  const ticks=useMemo(()=>xrfTrendTicks(axisMax,compact?3:4),[axisMax,compact]);
+
+  // 값이 있는 주기만 이어 하나의 선으로 그립니다.
+  // 결측/재측정(??) 주기는 점을 찍지 않고 건너뛰되, 선은 끊지 않고 연결합니다.
+  const linePoints=useMemo(()=>(
+    series.map((p,i)=>p.hasValue?[xAt(i),yAt(p.ppm)]:null).filter(Boolean)
+  ),[series,axisMax,W,H,compact]);
+
+  const legalY=legal!=null?yAt(legal):null;
+  const internalY=internal!=null?yAt(internal):null;
+  const legalOff=legal!=null && legal>axisMax;       // 확대 보기에서 축을 벗어난 경우
+  const internalOff=internal!=null && internal>axisMax;
+
+  const measuredCount=series.filter(p=>p.hasValue).length;
+  const hovered=hoverIdx!=null?series[hoverIdx]:null;
+
+  const axisFont=compact?9:11;
+
+  // 선 두께는 얇게 유지하고, 색 블록 대신 선과 점만으로 상태를 읽히게 합니다.
+  const gridW=0.6;
+  const limitW=compact?0.9:1;
+  const lineW=compact?1.2:1.5;
+  const dotR=compact?2.6:3.2;
+
+  return (
+    <div className="xrf-trend-scroll" style={{width:"100%",overflowX:"auto",overflowY:"visible",paddingBottom:4,scrollbarWidth:"thin"}} data-i18n-skip="true">
+      <div style={{position:"relative",width:`max(100%, ${W}px)`,minWidth:W}}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="auto"
+        role="img" aria-label={`${element} 주기별 XRF 추세`}
+        style={{display:"block",overflow:"visible",fontFamily:FONT_SANS}}>
+
+        {/* 가로 그리드 */}
+        {ticks.map(t=>(
+          <g key={`t-${t}`}>
+            <line x1={plotL} x2={plotR} y1={yAt(t)} y2={yAt(t)}
+              stroke={C.bd} strokeWidth={gridW}/>
+            <text x={plotL-7} y={yAt(t)+3} textAnchor="end"
+              fontSize={axisFont} fontWeight={400} fill={C.text4}>{xrfTrendFmt(t)}</text>
+          </g>
+        ))}
+
+        {/* 기준선 바닥 */}
+        <line x1={plotL} x2={plotR} y1={plotB} y2={plotB} stroke={C.bd2} strokeWidth={gridW}/>
+
+        {/* 선택된 주기 */}
+        {series.map((p,i)=>(
+          (selectedMeasurementId
+            ? String(p.measurementId)===String(selectedMeasurementId)
+            : selectedPeriodNum!=null && Number(p.num)===Number(selectedPeriodNum))
+            ? <line key={`sel-${i}`} x1={xAt(i)} x2={xAt(i)} y1={plotT} y2={plotB}
+                stroke={C.bd2} strokeWidth={0.8} strokeDasharray="2 3"/>
+            : null
+        ))}
+
+        {/* Legal Limit */}
+        {legalY!=null&&!legalOff&&(
+          <g>
+            <line x1={plotL} x2={plotR} y1={legalY} y2={legalY}
+              stroke={XRF_TREND_LEGAL_COLOR} strokeWidth={limitW} opacity={.85}/>
+            <text x={plotR} y={Math.max(plotT+9,legalY-5)} textAnchor="end"
+              fontSize={axisFont} fontWeight={500} fill={XRF_TREND_LEGAL_COLOR}
+              stroke={C.card} strokeWidth={3} paintOrder="stroke">
+              Legal {xrfTrendFmt(legal)}
+            </text>
+          </g>
+        )}
+        {/* Internal Limit */}
+        {internalY!=null&&!internalOff&&(
+          <g>
+            <line x1={plotL} x2={plotR} y1={internalY} y2={internalY}
+              stroke={XRF_TREND_INTERNAL_COLOR} strokeWidth={limitW}
+              strokeDasharray="4 4" opacity={.85}/>
+            <text x={plotR} y={Math.max(plotT+9,internalY-5)} textAnchor="end"
+              fontSize={axisFont} fontWeight={500} fill={XRF_TREND_INTERNAL_COLOR}
+              stroke={C.card} strokeWidth={3} paintOrder="stroke">
+              Internal {xrfTrendFmt(internal)}
+            </text>
+          </g>
+        )}
+        {/* 확대 보기에서 축을 벗어난 기준선 안내 */}
+        {(legalOff||internalOff)&&(
+          <text x={plotR} y={plotT-8} textAnchor="end" fontSize={axisFont} fill={C.text4}>
+            {internalOff?`↑ Internal ${xrfTrendFmt(internal)}`:""}
+            {internalOff&&legalOff?" · ":""}
+            {legalOff?`↑ Legal ${xrfTrendFmt(legal)}`:""}
+          </text>
+        )}
+
+        {/* 추세선 */}
+        {linePoints.length>1&&(
+          <polyline fill="none" stroke={XRF_TREND_LINE_COLOR}
+            strokeWidth={lineW} strokeLinecap="round" strokeLinejoin="round"
+            points={linePoints.map(([x,y])=>`${x},${y}`).join(" ")}/>
+        )}
+
+        {/* 데이터 마커 + X축 라벨 + 히트 영역 */}
+        {series.map((p,i)=>{
+          const x=xAt(i);
+          const color=xrfTrendPointColor(p);
+          const selected=selectedMeasurementId
+            ? String(p.measurementId)===String(selectedMeasurementId)
+            : selectedPeriodNum!=null&&Number(p.num)===Number(selectedPeriodNum);
+          return (
+            <g key={`p-${p.measurementId||i}`}>
+              {p.hasValue&&selected&&(
+                <circle cx={x} cy={yAt(p.ppm)} r={dotR+3} fill="none"
+                  stroke={color} strokeWidth={0.9} opacity={.45}/>
+              )}
+              {p.hasValue&&(
+                p.isND
+                  ? <circle cx={x} cy={yAt(p.ppm)} r={dotR} fill={C.card} stroke={color} strokeWidth={1.2}/>
+                  : <circle cx={x} cy={yAt(p.ppm)} r={dotR} fill={color} stroke={C.card} strokeWidth={1}/>
+              )}
+              {!p.hasValue&&p.remeasure&&(
+                <text x={x} y={plotB-4} textAnchor="middle" fontSize={axisFont}
+                  fontWeight={500} fill={C.xWarn}>??</text>
+              )}
+              <text x={x} y={plotB+(compact?13:16)} textAnchor="middle" fontSize={axisFont}
+                fontWeight={selected?600:400}
+                fill={selected?C.text1:(p.hasValue?C.text3:C.text4)}>{p.label}</text>
+              {!compact&&p.date&&(
+                <text x={x} y={plotB+30} textAnchor="middle" fontSize={9.5} fill={C.text4}>
+                  {String(p.date)}
+                </text>
+              )}
+              <rect x={x-(compact?9:13)} y={plotT} width={compact?18:26} height={plotH}
+                fill="transparent" style={{cursor:onSelectMeasurement||onSelectPeriod?"pointer":"default"}}
+                onMouseEnter={()=>setHoverIdx(i)}
+                onMouseLeave={()=>setHoverIdx(null)}
+                onClick={()=>{
+                  if(onSelectMeasurement && p.measurementId) onSelectMeasurement(p.num,p.measurementId);
+                  else if(onSelectPeriod && Number.isFinite(p.num)) onSelectPeriod(p.num);
+                }}/>
+            </g>
+          );
+        })}
+
+        {/* 축 제목 */}
+        {!compact&&(
+          <>
+            <text x={plotL-52} y={plotT-12} fontSize={10} fill={C.text4}>Content (ppm)</text>
+            <text x={plotR} y={plotB+62} textAnchor="end" fontSize={10} fill={C.text4}>관리주기</text>
+          </>
+        )}
+      </svg>
+
+      {/* 측정 이력이 아직 없을 때 */}
+      {measuredCount===0&&(
+        <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
+          justifyContent:"center",pointerEvents:"none"}}>
+          <span style={{fontSize:compact?10:11,color:C.text4,background:"rgba(255,255,255,.86)",
+            border:`1px solid ${C.bd}`,borderRadius:UI.pill,padding:"3px 10px"}}>
+            측정 이력 없음
+          </span>
+        </div>
+      )}
+
+      {/* 툴팁 */}
+      {hovered&&(
+        <div style={{
+          position:"absolute",
+          left:`${(xAt(hoverIdx)/W)*100}%`,
+          top:`${((hovered.hasValue?yAt(hovered.ppm):plotT+plotH/2)/H)*100}%`,
+          transform:`translate(${xAt(hoverIdx)>W*0.72?"-100%":"-50%"}, calc(-100% - 10px))`,
+          background:C.charcoalDk,color:"#fff",borderRadius:8,padding:"7px 10px",
+          fontSize:10.5,lineHeight:1.55,whiteSpace:"nowrap",pointerEvents:"none",zIndex:6,
+          boxShadow:"0 6px 18px rgba(26,32,32,.28)"}}>
+          <div style={{fontWeight:700,fontSize:11}}>
+            {element} · {hovered.label}
+          </div>
+          <div style={{opacity:.78}}>{hovered.date||"측정일 —"}</div>
+          <div style={{marginTop:3,fontWeight:700}}>
+            {hovered.missing
+              ? (hovered.remeasure?"?? 재측정 대상":"데이터 없음")
+              : (hovered.isND?"N.D.":`${xrfTrendFmt(hovered.ppm)} ppm`)}
+            {hovered.judgement?`  ·  ${hovered.judgement}`:""}
+          </div>
+          <div style={{opacity:.7,marginTop:2}}>
+            Internal {xrfTrendFmt(hovered.internalLimit)} / Legal {xrfTrendFmt(hovered.legalLimit)} ppm
+          </div>
+        </div>
+      )}
+      </div>
+    </div>
+  );
+}
+
+/* ── 카드 (원소 선택 · 축 모드 · 범례 포함) ──────────────────────────────── */
+function XrfTrendChart({
+  item, periods, selectedPeriodNum=null, selectedMeasurementId=null,
+  onSelectPeriod=null, onSelectMeasurement=null,
+}){
+  const [element,setElement]=useState("ALL");          // "ALL" = 전 원소 소형 멀티플
+  const [scaleMode,setScaleMode]=useState("limit");
+
+  const safePeriods=useMemo(()=>(periods||[]).filter(Boolean),[periods]);
+  const measurementEntries=useMemo(()=>xrfTrendMeasurementEntries(item,safePeriods),[item,safePeriods]);
+
+  const seriesByElement=useMemo(()=>{
+    const out={};
+    XRF_TREND_ELEMENTS.forEach(el=>{ out[el]=xrfTrendSeries(item,safePeriods,el,measurementEntries); });
+    return out;
+  },[item,safePeriods,measurementEntries]);
+
+  const totalMeasured=useMemo(
+    ()=>XRF_TREND_ELEMENTS.reduce((mx,el)=>Math.max(mx,seriesByElement[el].filter(p=>p.hasValue).length),0),
+    [seriesByElement]
+  );
+
+  if(!measurementEntries.length){
+    return (
+      <div style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:14,padding:"28px 18px",
+        textAlign:"center",fontSize:12,color:C.text3,marginTop:12}}>
+        추세를 그릴 관리주기가 아직 없습니다.
+      </div>
+    );
+  }
+
+  const chipStyle=(active)=>({
+    height:26,padding:"0 11px",borderRadius:UI.pill,fontSize:11,
+    fontWeight:active?700:500,cursor:"pointer",whiteSpace:"nowrap",
+    border:`1px solid ${active?C.charcoalDk:C.bd2}`,
+    background:active?C.charcoalDk:C.card,
+    color:active?"#fff":C.text2,
+  });
+
+  return (
+    <div style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:14,
+      overflow:"hidden",boxShadow:"0 10px 24px rgba(26,32,32,.10)",marginTop:12}}>
+
+      {/* 헤더 */}
+      <div style={{padding:"13px 14px",borderBottom:`1px solid ${C.bd}`,background:C.alt,
+        display:"flex",flexWrap:"wrap",alignItems:"center",gap:10,justifyContent:"space-between"}}>
+        <div style={{minWidth:0}}>
+          <div style={{...T.section}}>주기별 XRF 추세</div>
+          <div data-i18n-skip="true" style={{...T.micro,marginTop:3}}>
+            {`전체 측정 이력 ${measurementEntries.length}건 · 측정값 ${totalMeasured}건`}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          {[["limit","기준 포함"],["data","측정값 확대"]].map(([key,label])=>(
+            <button key={key} type="button" className="pill-btn"
+              onClick={()=>setScaleMode(key)} aria-pressed={scaleMode===key}
+              style={chipStyle(scaleMode===key)}>{label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* 원소 선택 */}
+      <div style={{padding:"10px 14px",borderBottom:`1px solid ${C.bd}`,
+        display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+        <button type="button" className="pill-btn" onClick={()=>setElement("ALL")}
+          aria-pressed={element==="ALL"} style={chipStyle(element==="ALL")}>전체</button>
+        {XRF_TREND_ELEMENTS.map(el=>(
+          <button key={el} type="button" className="pill-btn" data-i18n-skip="true"
+            onClick={()=>setElement(el)} aria-pressed={element===el}
+            style={chipStyle(element===el)}>{el}</button>
+        ))}
+      </div>
+
+      {/* 범례 */}
+      <div data-i18n-skip="true" style={{padding:"8px 14px",borderBottom:`1px solid ${C.bd}`,
+        display:"flex",gap:14,flexWrap:"wrap",alignItems:"center",fontSize:10,color:C.text3}}>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+          <span style={{width:16,height:2,background:XRF_TREND_LEGAL_COLOR,display:"inline-block"}}/>
+          Legal Limit
+        </span>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+          <span style={{width:16,height:0,borderTop:`2px dashed ${XRF_TREND_INTERNAL_COLOR}`,display:"inline-block"}}/>
+          Internal Limit (Legal × 70%)
+        </span>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+          <span style={{width:9,height:9,borderRadius:"50%",background:C.xOk,display:"inline-block"}}/>OK
+        </span>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+          <span style={{width:9,height:9,borderRadius:"50%",background:C.red,display:"inline-block"}}/>NG
+        </span>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+          <span style={{width:9,height:9,borderRadius:"50%",background:C.card,
+            border:`1.6px solid ${C.xOk}`,display:"inline-block"}}/>N.D.
+        </span>
+        <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+          <span style={{color:C.xWarn,fontWeight:700}}>??</span>재측정 · 선 끊김
+        </span>
+      </div>
+
+      {/* 플롯 */}
+      <div style={{padding:"14px 14px 16px"}}>
+        {element==="ALL"
+          ? <div className="xrf-trend-grid">
+              {XRF_TREND_ELEMENTS.map(el=>(
+                <div key={el} style={{border:`1px solid ${C.bd}`,borderRadius:10,
+                  padding:"10px 10px 8px",background:C.card,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:4}}>
+                    <span data-i18n-skip="true" style={{fontSize:12,fontWeight:700,color:C.text1}}>{el}</span>
+                    <span style={{fontSize:9.5,color:C.text4}}>{XRF_TREND_EL_KO[el]||""}</span>
+                  </div>
+                  <XrfTrendPlot element={el} series={seriesByElement[el]} scaleMode={scaleMode}
+                    compact selectedPeriodNum={selectedPeriodNum} selectedMeasurementId={selectedMeasurementId}
+                    onSelectPeriod={onSelectPeriod} onSelectMeasurement={onSelectMeasurement}/>
+                </div>
+              ))}
+            </div>
+          : <XrfTrendPlot element={element} series={seriesByElement[element]} scaleMode={scaleMode}
+              selectedPeriodNum={selectedPeriodNum} selectedMeasurementId={selectedMeasurementId}
+              onSelectPeriod={onSelectPeriod} onSelectMeasurement={onSelectMeasurement}/>
+        }
+      </div>
+    </div>
+  );
+}
+
 function EBar({el, d, measurement, last=false}){
   if(!d) return null;
   const EL_KO={Pb:"납",Hg:"수은",Cr:"크롬",Cd:"카드뮴",Cl:"염소",Br:"브롬","Cl+Br":"염소+브롬"};
@@ -5373,6 +5906,7 @@ export default function App(){
   const [dbError,setDbError]=useState("");
   const [dbCounts,setDbCounts]=useState(null);
   const [selMeasurementId,setSelMeasurementId]=useState(null);
+  const [xrfDetailView,setXrfDetailView]=useState("analysis");
   const [regType,setRegType]=useState(null);
   const [regStep,setRegStep]=useState(1);
   const [regCR,setRegCR]=useState("M");
@@ -5504,6 +6038,9 @@ export default function App(){
   // 품목이 바뀌면 이전 품목에서 수동으로 선택했던 주기 페이지를 이어받지 않습니다.
   useEffect(()=>{
     setSelPeriodPage(null);
+    setSelPeriodNum(null);
+    setSelMeasurementId(null);
+    setXrfDetailView("analysis");
     setItemEditOpen(false);
     setItemEditForm(null);
     setItemEditAuth({open:false,item:null,password:"",error:""});
@@ -6501,18 +7038,22 @@ export default function App(){
       if(byId) return byId;
     }
     if(selPeriodNum !== null && selPeriodNum !== undefined){
-      const p=selAllPeriods.find(pp=>pp.num===selPeriodNum);
-      return p?.measurementId ? measurementById(sel,p.measurementId) : null;
+      const p=selAllPeriods.find(pp=>Number(pp.num)===Number(selPeriodNum));
+      return xrfTrendMeasurement(sel,p);
     }
     return latestMeasurementOf(sel) || null;
   },[sel,selPeriodNum,selAllPeriods,selMeasurementId]);
 
   const currentPeriodMeta=useMemo(()=>{
     if(!sel || selPeriodNum === null || selPeriodNum === undefined) {
-      const latestP=selAllPeriods.slice().reverse().find(p=>p.measurementId===sel.latestMeasurementId);
+      const latestId=String(sel.latestMeasurementId||latestMeasurementOf(sel)?.id||"");
+      const latestP=selAllPeriods.slice().reverse().find(p=>
+        periodMeasurementIds(p).some(id=>String(id)===latestId)
+        || measurementAttemptsForPeriod(sel,p).some(row=>String(row?.id||row?.measurementId||"")===latestId)
+      );
       return latestP;
     }
-    return selAllPeriods.find(p=>p.num===selPeriodNum);
+    return selAllPeriods.find(p=>Number(p.num)===Number(selPeriodNum));
   },[sel,selPeriodNum,selAllPeriods]);
   const selectedPeriodLabel=useMemo(()=>currentPeriodMeta?periodLabel(currentPeriodMeta):"선택 주기",[currentPeriodMeta]);
   const selectedMetrics=useMemo(()=>{
@@ -7442,6 +7983,8 @@ export default function App(){
         .num { font-family:${FONT_NUM}; font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
 
         /* 첨부 레퍼런스의 pill 버튼 규칙 */
+        .xrf-trend-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px; }
+        @media (max-width: 560px){ .xrf-trend-grid{ grid-template-columns:1fr; } }
         .pill-btn{
           display:inline-flex; align-items:center; justify-content:center; gap:6px;
           border-radius:${UI.pill}px; cursor:pointer; white-space:nowrap;
@@ -8109,6 +8652,35 @@ export default function App(){
                       관리자가 결과 파일을 업로드하면 원소별 분석, Final Risk, 재측정 여부가 자동 표시됩니다.
                     </div>
                   </div>
+                ):xrfDetailView==="trend"?(
+                  <div style={{padding:"18px clamp(14px, 2.4vw, 32px) 26px",background:C.bg}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12}}>
+                      <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+                        <button type="button" onClick={()=>setXrfDetailView("analysis")} className="pill-btn"
+                          aria-label="XRF 분석으로 돌아가기"
+                          style={{width:32,height:32,display:"inline-flex",alignItems:"center",justifyContent:"center",border:`1px solid ${C.bd2}`,background:C.card,color:C.text1,fontSize:17,fontWeight:700,cursor:"pointer",flex:"0 0 auto"}}>←</button>
+                        <div style={{minWidth:0}}>
+                          <div style={{...T.cardTitle}}>원소별 XRF 트렌드</div>
+                          <div style={{...T.micro,marginTop:3}}>{sel.code} · {sel.name}</div>
+                        </div>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",fontSize:10.5,color:C.text3}}>
+                        <span style={{padding:"5px 9px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.pill}}>{selectedPeriodLabel}</span>
+                        <span style={{padding:"5px 9px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.pill}}>Meas.Date {currentMeasurement?.date||"—"}</span>
+                      </div>
+                    </div>
+                    <div style={{padding:"9px 12px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:10.5,color:C.text3,lineHeight:1.55}}>
+                      모든 실제 XRF 측정값을 관리주기와 측정일 순서로 표시합니다. 점을 선택하면 해당 관리주기와 Measurement가 함께 선택되며, 데이터가 많아지면 차트가 가로로 확장되어 스크롤할 수 있습니다.
+                    </div>
+                    <XrfTrendChart
+                      item={sel}
+                      periods={selAllPeriods}
+                      selectedPeriodNum={currentPeriodMeta?.num ?? null}
+                      selectedMeasurementId={currentMeasurement?.id||currentMeasurement?.measurementId||null}
+                      onSelectPeriod={handleSelectPeriod}
+                      onSelectMeasurement={handleSelectPeriodMeasurement}
+                    />
+                  </div>
                 ):(
                   <div className="xrf-detail-grid">
                   <div style={{borderRight:`1px solid ${C.bd}`,display:"flex",flexDirection:"column"}}>
@@ -8174,11 +8746,22 @@ export default function App(){
 
                     {/* 원소 바 */}
                     <div style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:14,overflow:"hidden",boxShadow:"0 10px 24px rgba(26,32,32,.10)"}}>
+                      <div style={{padding:"10px 14px",borderBottom:`1px solid ${C.bd}`,background:C.alt,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+                        <div>
+                          <div style={{fontSize:11,fontWeight:700,color:C.text1}}>측정값</div>
+                          <div style={{fontSize:9.5,color:C.text3,marginTop:2}}>현재 선택 Measurement 기준</div>
+                        </div>
+                        <button type="button" onClick={()=>setXrfDetailView("trend")} className="pill-btn"
+                          style={{height:30,padding:"0 11px 0 13px",display:"inline-flex",alignItems:"center",gap:8,border:`1px solid ${C.charcoalDk}`,background:C.card,color:C.charcoalDk,fontSize:10.5,fontWeight:700,cursor:"pointer"}}>
+                          <span>원소별 트렌드 확인</span><span data-i18n-skip="true" aria-hidden="true" style={{fontSize:15,lineHeight:1}}>→</span>
+                        </button>
+                      </div>
                       {currentMeasurement
                         ? ELEMENTS.map((el,idx)=><EBar key={el} el={el} d={currentMeasurement.elements?.[el]} measurement={currentMeasurement} last={idx===ELEMENTS.length-1}/>)
                         : <div style={{padding:"38px 18px",textAlign:"center",fontSize:12,color:C.text3,fontWeight:600}}>선택한 주기에 연결된 XRF 측정 이력이 없습니다.</div>
                       }
                     </div>
+
                   </div>
                   </div>
                 )}
