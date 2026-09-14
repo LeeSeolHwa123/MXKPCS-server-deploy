@@ -1520,7 +1520,6 @@ const UI_EN_MAP = {
 
   // ── 문장 ──
   "조건에 맞는 품목이 없습니다.":"No items match the current filters.",
-  "R부터 현재까지의 관리주기별 최종 유효 측정값을 한 화면에 표시합니다. 재측정이 있으면 해당 주기의 마지막 측정값을 사용하며, 모든 측정점은 화면 폭에 맞춰 함께 표시됩니다.":"Shows the final valid measurement for every management period from R to the present in one view. When a period has a retest, its latest measurement is used, and all points fit within the chart width.",
   "품목을 선택하면 XRF 분석 결과가 표시됩니다.":"Select an item to view its XRF analysis.",
   "정밀분석 대상이 없습니다.":"There are no precision analysis targets.",
   "선택된 정밀분석 항목이 없습니다.":"No precision analysis case is selected.",
@@ -5235,8 +5234,7 @@ function xrfTrendPointColor(p){
 /* ── 플롯 본체 (소형 멀티플/확대 보기 공용) ───────────────────────────────── */
 function XrfTrendPlot({
   element, series, scaleMode="limit", compact=false,
-  selectedPeriodNum=null, selectedMeasurementId=null,
-  onSelectPeriod=null, onSelectMeasurement=null,
+  selectedPeriodNum=null, onSelectPeriod=null,
 }){
   const [hoverIdx,setHoverIdx]=useState(null);
 
@@ -5275,13 +5273,10 @@ function XrfTrendPlot({
   const hovered=hoverIdx!=null?series[hoverIdx]:null;
 
   const axisFont=compact?9:11;
-  // 모든 측정점은 한 화면에 유지하고, 공간이 부족하면 축 라벨만 일정 간격으로 줄입니다.
-  // 첫/마지막/현재 선택 주기 라벨은 항상 표시합니다.
-  const maxLabels=compact?9:14;
-  const labelStep=Math.max(1,Math.ceil(n/maxLabels));
-  const showAxisLabel=(p,i)=>i===0 || i===n-1
-    || i%labelStep===0
-    || (selectedPeriodNum!=null && Number(p.num)===Number(selectedPeriodNum));
+  // 모든 측정점과 실선은 한 화면에 유지합니다. 주기가 화면 수용 범위를 넘으면
+  // 가로축 텍스트를 일부만 남기지 않고 전부 숨겨 잘못 읽히는 것을 방지합니다.
+  const denseAxis=n>(compact?9:14);
+  const showAxisLabel=()=>!denseAxis;
 
   // 선 두께는 얇게 유지하고, 색 블록 대신 선과 점만으로 상태를 읽히게 합니다.
   const gridW=0.6;
@@ -5311,9 +5306,7 @@ function XrfTrendPlot({
 
         {/* 선택된 주기 */}
         {series.map((p,i)=>(
-          (selectedMeasurementId
-            ? String(p.measurementId)===String(selectedMeasurementId)
-            : selectedPeriodNum!=null && Number(p.num)===Number(selectedPeriodNum))
+          (selectedPeriodNum!=null && Number(p.num)===Number(selectedPeriodNum))
             ? <line key={`sel-${i}`} x1={xAt(i)} x2={xAt(i)} y1={plotT} y2={plotB}
                 stroke={C.bd2} strokeWidth={0.8} strokeDasharray="2 3"/>
             : null
@@ -5364,9 +5357,7 @@ function XrfTrendPlot({
         {series.map((p,i)=>{
           const x=xAt(i);
           const color=xrfTrendPointColor(p);
-          const selected=selectedMeasurementId
-            ? String(p.measurementId)===String(selectedMeasurementId)
-            : selectedPeriodNum!=null&&Number(p.num)===Number(selectedPeriodNum);
+          const selected=selectedPeriodNum!=null&&Number(p.num)===Number(selectedPeriodNum);
           return (
             <g key={`p-${p.measurementId||i}`}>
               {p.hasValue&&selected&&(
@@ -5391,12 +5382,11 @@ function XrfTrendPlot({
                 </text>
               )}
               <rect x={x-(compact?9:13)} y={plotT} width={compact?18:26} height={plotH}
-                fill="transparent" style={{cursor:onSelectMeasurement||onSelectPeriod?"pointer":"default"}}
+                fill="transparent" style={{cursor:onSelectPeriod?"pointer":"default"}}
                 onMouseEnter={()=>setHoverIdx(i)}
                 onMouseLeave={()=>setHoverIdx(null)}
                 onClick={()=>{
-                  if(onSelectMeasurement && p.measurementId) onSelectMeasurement(p.num,p.measurementId);
-                  else if(onSelectPeriod && Number.isFinite(p.num)) onSelectPeriod(p.num);
+                  if(onSelectPeriod && Number.isFinite(p.num)) onSelectPeriod(p.num);
                 }}/>
             </g>
           );
@@ -5406,7 +5396,7 @@ function XrfTrendPlot({
         {!compact&&(
           <>
             <text x={plotL-52} y={plotT-12} fontSize={10} fill={C.text4}>Content (ppm)</text>
-            <text x={plotR} y={plotB+62} textAnchor="end" fontSize={10} fill={C.text4}>관리주기</text>
+            {!denseAxis&&<text x={plotR} y={plotB+62} textAnchor="end" fontSize={10} fill={C.text4}>관리주기</text>}
           </>
         )}
       </svg>
@@ -5454,7 +5444,7 @@ function XrfTrendPlot({
 
 /* ── 카드 (원소 선택 · 축 모드 · 범례 포함) ──────────────────────────────── */
 function XrfTrendChart({
-  item, periods, selectedPeriodNum=null,
+  item, periods, selectedPeriodNum=null, onSelectPeriod=null,
 }){
   const [element,setElement]=useState("ALL");          // "ALL" = 전 원소 소형 멀티플
   const [scaleMode,setScaleMode]=useState("limit");
@@ -5546,7 +5536,7 @@ function XrfTrendChart({
             border:`1.6px solid ${C.xOk}`,display:"inline-block"}}/>N.D.
         </span>
         <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
-          <span style={{color:C.xWarn,fontWeight:700}}>??</span>재측정 · 선 끊김
+          <span style={{color:C.xWarn,fontWeight:700}}>??</span>재측정
         </span>
       </div>
 
@@ -5562,12 +5552,12 @@ function XrfTrendChart({
                     <span style={{fontSize:9.5,color:C.text4}}>{XRF_TREND_EL_KO[el]||""}</span>
                   </div>
                   <XrfTrendPlot element={el} series={seriesByElement[el]} scaleMode={scaleMode}
-                    compact selectedPeriodNum={selectedPeriodNum}/>
+                    compact selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod}/>
                 </div>
               ))}
             </div>
           : <XrfTrendPlot element={element} series={seriesByElement[element]} scaleMode={scaleMode}
-              selectedPeriodNum={selectedPeriodNum}/>
+              selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod}/>
         }
       </div>
     </div>
@@ -8649,13 +8639,11 @@ export default function App(){
                         <span style={{padding:"5px 9px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.pill}}>Meas.Date {currentMeasurement?.date||"—"}</span>
                       </div>
                     </div>
-                    <div style={{padding:"9px 12px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:10.5,color:C.text3,lineHeight:1.55}}>
-                      R부터 현재까지의 관리주기별 최종 유효 측정값을 한 화면에 표시합니다. 재측정이 있으면 해당 주기의 마지막 측정값을 사용하며, 모든 측정점은 화면 폭에 맞춰 함께 표시됩니다.
-                    </div>
                     <XrfTrendChart
                       item={sel}
                       periods={selAllPeriods}
                       selectedPeriodNum={currentPeriodMeta?.num ?? null}
+                      onSelectPeriod={handleSelectPeriod}
                     />
                   </div>
                 ):(
