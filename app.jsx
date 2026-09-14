@@ -1520,7 +1520,7 @@ const UI_EN_MAP = {
 
   // ── 문장 ──
   "조건에 맞는 품목이 없습니다.":"No items match the current filters.",
-  "모든 실제 XRF 측정값을 관리주기와 측정일 순서로 표시합니다. 점을 선택하면 해당 관리주기와 Measurement가 함께 선택되며, 데이터가 많아지면 차트가 가로로 확장되어 스크롤할 수 있습니다.":"All actual XRF measurements are shown by management period and measurement date. Selecting a point selects its management period and Measurement. When the history grows, the chart expands horizontally and can be scrolled.",
+  "R부터 현재까지의 관리주기별 최종 유효 측정값을 한 화면에 표시합니다. 재측정이 있으면 해당 주기의 마지막 측정값을 사용하며, 모든 측정점은 화면 폭에 맞춰 함께 표시됩니다.":"Shows the final valid measurement for every management period from R to the present in one view. When a period has a retest, its latest measurement is used, and all points fit within the chart width.",
   "품목을 선택하면 XRF 분석 결과가 표시됩니다.":"Select an item to view its XRF analysis.",
   "정밀분석 대상이 없습니다.":"There are no precision analysis targets.",
   "선택된 정밀분석 항목이 없습니다.":"No precision analysis case is selected.",
@@ -3286,9 +3286,16 @@ function measurementAttemptsForPeriod(item,period){
   history.forEach(h=>{
     const id=h.id||h.measurementId;
     const parentId=h.parentMeasurementId||null;
-    const sameStoredPeriod=Number(h.periodNo)===periodNo
-      && (isReference ? String(h.measurementRole||h.role||"")!=="Cycle_Reset" : !["Initial","Cycle_Reset"].includes(h.measurementRole));
-    const linkedRetest=String(h.measurementRole||h.role||"")==="Retest" && parentId && linkedIds.includes(parentId);
+    const rawStoredPeriod=h.periodNo;
+    const hasStoredPeriod=rawStoredPeriod!==null
+      && rawStoredPeriod!==undefined
+      && String(rawStoredPeriod).trim()!=="";
+    const role=normalizeMeasurementRole(h.measurementRole||h.role||"");
+    // Number(null)과 Number("")는 0이므로 빈 periodNo를 R로 오인하지 않도록 먼저 존재 여부를 확인합니다.
+    const sameStoredPeriod=hasStoredPeriod
+      && Number(rawStoredPeriod)===periodNo
+      && (isReference ? role==="Initial" : !["Initial","Cycle_Reset"].includes(role));
+    const linkedRetest=role==="Retest" && parentId && linkedIds.includes(parentId);
     if(sameStoredPeriod || linkedRetest || linkedIds.includes(id)) add(h);
   });
   return rows.sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")) || Number(a.attemptNo||1)-Number(b.attemptNo||1));
@@ -5071,11 +5078,11 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
 /* ══════════════════════════════════════════════════════════════════════════════
    원소별 XRF 추세 차트 (XRF Trend Chart)
 
-   - 가로축: 관리주기(R / P1 / P2 ... / F1)와 실제 Measurement 전체.
-     같은 주기의 복수 측정과 Retest도 #1, #2로 구분해 빠짐없이 표시합니다.
+   - 가로축: 실제 측정이 완료된 관리주기(R / P1 / P2 ... / F1) 전체.
+     같은 주기의 복수 측정과 Retest는 해당 주기의 마지막 유효값으로 대표합니다.
    - 세로축: Content(ppm). Legal Limit(법적 규제)과 Internal Limit(법적 × 70%)
      두 기준선을 항상 함께 그립니다.
-   - 상세 화면의 대표값은 마지막 시도를 사용하되, 트렌드에는 모든 시도를 개별 점으로 표시합니다.
+   - 상세 화면과 트렌드 모두 동일한 주기 대표 Measurement를 사용합니다.
    - N.D.는 0 ppm 위치에 속이 빈 마커, 결측/재측정(??)은 선을 끊어서 표시합니다.
 
    의존: ELEMENTS, XRF_ELEMENT_LIMITS, XRF_INTERNAL_LIMITS, XRF_INTERNAL_LIMIT_RATIO,
@@ -5113,36 +5120,26 @@ function xrfTrendMeasurement(item, period){
   return id ? measurementById(item,id) : null;
 }
 
-// 트렌드는 한 주기를 한 점으로 축약하지 않고, 지금까지 저장된 모든 실제 Measurement를
-// 주기별/측정일별로 펼칩니다. 같은 Pn에 여러 측정이나 Retest가 있으면 Pn #1, #2로 구분합니다.
+// 트렌드 가로축은 Measurement 시도 횟수가 아니라 업무 관리주기(R/P1/P2...)입니다.
+// 같은 주기의 재측정/복수 측정은 마지막 유효 Measurement 하나로 대표해 주기 라벨이
+// R #1, R #2처럼 변형되지 않도록 합니다. 개별 시도 이력은 주기별 산정 요약에서 확인합니다.
 function xrfTrendMeasurementEntries(item, periods){
   if(!item) return [];
   const rows=[];
-  const seen=new Set();
   const safePeriods=periods||[];
-  const add=(measurement,period)=>{
-    if(!measurement) return;
-    const id=String(measurement?.id||measurement?.measurementId||"").trim();
-    if(!id || seen.has(id)) return;
-    seen.add(id);
-    rows.push({measurement,period:period||null});
-  };
-
   safePeriods.forEach(period=>{
-    measurementAttemptsForPeriod(item,period).forEach(attempt=>{
-      const id=attempt?.id||attempt?.measurementId;
-      add(measurementById(item,id)||attempt,period);
+    const attempts=measurementAttemptsForPeriod(item,period);
+    const measurement=xrfTrendMeasurement(item,period);
+    if(!measurement) return;
+    rows.push({
+      measurement,
+      period,
+      attempts,
+      num:Number(period.num),
+      baseLabel:periodLabel(period),
+      label:periodLabel(period),
+      total:attempts.length||1,
     });
-  });
-
-  // 과거 마이그레이션 데이터처럼 Pn 연결 정보가 불완전한 Measurement도 누락하지 않습니다.
-  itemMeasurementRecords(item).forEach(measurement=>{
-    const storedPeriod=Number(measurement?.periodNo);
-    const linkedPeriod=safePeriods.find(period=>
-      periodMeasurementIds(period).includes(measurement?.id||measurement?.measurementId)
-      || (Number.isFinite(storedPeriod) && Number(period?.num)===storedPeriod)
-    ) || null;
-    add(measurement,linkedPeriod);
   });
 
   rows.sort((a,b)=>{
@@ -5153,26 +5150,7 @@ function xrfTrendMeasurementEntries(item, periods){
       || Number(a.measurement?.attemptNo||1)-Number(b.measurement?.attemptNo||1);
   });
 
-  const counts=new Map();
-  rows.forEach(row=>{
-    const key=row.period ? String(row.period.num) : "unlinked";
-    counts.set(key,(counts.get(key)||0)+1);
-  });
-  const sequence=new Map();
-  return rows.map((row,index)=>{
-    const key=row.period ? String(row.period.num) : "unlinked";
-    const order=(sequence.get(key)||0)+1;
-    sequence.set(key,order);
-    const total=counts.get(key)||1;
-    const baseLabel=row.period ? periodLabel(row.period) : `M${index+1}`;
-    return {
-      ...row,
-      num:row.period ? Number(row.period.num) : null,
-      baseLabel,
-      label:total>1?`${baseLabel} #${order}`:baseLabel,
-      order,total,
-    };
-  });
+  return rows;
 }
 
 // 실제 Measurement 하나 → 원소 하나의 추세 포인트
@@ -5263,13 +5241,10 @@ function XrfTrendPlot({
   const [hoverIdx,setHoverIdx]=useState(null);
 
   const n=series.length;
-  const baseWidth=compact?330:780;
-  const pointWidth=compact?58:84;
+  const W=compact?330:780;
   const H=compact?196:366;
   const PAD=compact?{t:24,r:14,b:30,l:46}:{t:30,r:20,b:74,l:66};
   const inset=compact?10:18;
-  // 측정 수가 많아져도 점과 라벨을 압축하거나 생략하지 않고 차트 자체를 넓혀 가로 스크롤합니다.
-  const W=Math.max(baseWidth,PAD.l+PAD.r+inset*2+Math.max(0,n-1)*pointWidth);
 
   const plotL=PAD.l, plotR=W-PAD.r, plotT=PAD.t, plotB=H-PAD.b;
   const plotW=plotR-plotL, plotH=plotB-plotT;
@@ -5300,6 +5275,13 @@ function XrfTrendPlot({
   const hovered=hoverIdx!=null?series[hoverIdx]:null;
 
   const axisFont=compact?9:11;
+  // 모든 측정점은 한 화면에 유지하고, 공간이 부족하면 축 라벨만 일정 간격으로 줄입니다.
+  // 첫/마지막/현재 선택 주기 라벨은 항상 표시합니다.
+  const maxLabels=compact?9:14;
+  const labelStep=Math.max(1,Math.ceil(n/maxLabels));
+  const showAxisLabel=(p,i)=>i===0 || i===n-1
+    || i%labelStep===0
+    || (selectedPeriodNum!=null && Number(p.num)===Number(selectedPeriodNum));
 
   // 선 두께는 얇게 유지하고, 색 블록 대신 선과 점만으로 상태를 읽히게 합니다.
   const gridW=0.6;
@@ -5308,8 +5290,8 @@ function XrfTrendPlot({
   const dotR=compact?2.6:3.2;
 
   return (
-    <div className="xrf-trend-scroll" style={{width:"100%",overflowX:"auto",overflowY:"visible",paddingBottom:4,scrollbarWidth:"thin"}} data-i18n-skip="true">
-      <div style={{position:"relative",width:`max(100%, ${W}px)`,minWidth:W}}>
+    <div className="xrf-trend-view" style={{width:"100%",overflow:"visible",paddingBottom:4}} data-i18n-skip="true">
+      <div style={{position:"relative",width:"100%",minWidth:0}}>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="auto"
         role="img" aria-label={`${element} 주기별 XRF 추세`}
         style={{display:"block",overflow:"visible",fontFamily:FONT_SANS}}>
@@ -5400,10 +5382,10 @@ function XrfTrendPlot({
                 <text x={x} y={plotB-4} textAnchor="middle" fontSize={axisFont}
                   fontWeight={500} fill={C.xWarn}>??</text>
               )}
-              <text x={x} y={plotB+(compact?13:16)} textAnchor="middle" fontSize={axisFont}
+              {showAxisLabel(p,i)&&<text x={x} y={plotB+(compact?13:16)} textAnchor="middle" fontSize={axisFont}
                 fontWeight={selected?600:400}
-                fill={selected?C.text1:(p.hasValue?C.text3:C.text4)}>{p.label}</text>
-              {!compact&&p.date&&(
+                fill={selected?C.text1:(p.hasValue?C.text3:C.text4)}>{p.label}</text>}
+              {!compact&&p.date&&showAxisLabel(p,i)&&(
                 <text x={x} y={plotB+30} textAnchor="middle" fontSize={9.5} fill={C.text4}>
                   {String(p.date)}
                 </text>
@@ -5472,8 +5454,7 @@ function XrfTrendPlot({
 
 /* ── 카드 (원소 선택 · 축 모드 · 범례 포함) ──────────────────────────────── */
 function XrfTrendChart({
-  item, periods, selectedPeriodNum=null, selectedMeasurementId=null,
-  onSelectPeriod=null, onSelectMeasurement=null,
+  item, periods, selectedPeriodNum=null,
 }){
   const [element,setElement]=useState("ALL");          // "ALL" = 전 원소 소형 멀티플
   const [scaleMode,setScaleMode]=useState("limit");
@@ -5519,7 +5500,7 @@ function XrfTrendChart({
         <div style={{minWidth:0}}>
           <div style={{...T.section}}>주기별 XRF 추세</div>
           <div data-i18n-skip="true" style={{...T.micro,marginTop:3}}>
-            {`전체 측정 이력 ${measurementEntries.length}건 · 측정값 ${totalMeasured}건`}
+            {`측정 완료 관리주기 ${measurementEntries.length}개 · 표시 측정점 ${totalMeasured}개`}
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
@@ -5581,14 +5562,12 @@ function XrfTrendChart({
                     <span style={{fontSize:9.5,color:C.text4}}>{XRF_TREND_EL_KO[el]||""}</span>
                   </div>
                   <XrfTrendPlot element={el} series={seriesByElement[el]} scaleMode={scaleMode}
-                    compact selectedPeriodNum={selectedPeriodNum} selectedMeasurementId={selectedMeasurementId}
-                    onSelectPeriod={onSelectPeriod} onSelectMeasurement={onSelectMeasurement}/>
+                    compact selectedPeriodNum={selectedPeriodNum}/>
                 </div>
               ))}
             </div>
           : <XrfTrendPlot element={element} series={seriesByElement[element]} scaleMode={scaleMode}
-              selectedPeriodNum={selectedPeriodNum} selectedMeasurementId={selectedMeasurementId}
-              onSelectPeriod={onSelectPeriod} onSelectMeasurement={onSelectMeasurement}/>
+              selectedPeriodNum={selectedPeriodNum}/>
         }
       </div>
     </div>
@@ -8671,15 +8650,12 @@ export default function App(){
                       </div>
                     </div>
                     <div style={{padding:"9px 12px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:10.5,color:C.text3,lineHeight:1.55}}>
-                      모든 실제 XRF 측정값을 관리주기와 측정일 순서로 표시합니다. 점을 선택하면 해당 관리주기와 Measurement가 함께 선택되며, 데이터가 많아지면 차트가 가로로 확장되어 스크롤할 수 있습니다.
+                      R부터 현재까지의 관리주기별 최종 유효 측정값을 한 화면에 표시합니다. 재측정이 있으면 해당 주기의 마지막 측정값을 사용하며, 모든 측정점은 화면 폭에 맞춰 함께 표시됩니다.
                     </div>
                     <XrfTrendChart
                       item={sel}
                       periods={selAllPeriods}
                       selectedPeriodNum={currentPeriodMeta?.num ?? null}
-                      selectedMeasurementId={currentMeasurement?.id||currentMeasurement?.measurementId||null}
-                      onSelectPeriod={handleSelectPeriod}
-                      onSelectMeasurement={handleSelectPeriodMeasurement}
                     />
                   </div>
                 ):(

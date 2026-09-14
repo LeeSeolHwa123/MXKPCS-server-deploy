@@ -33,12 +33,14 @@ const elements=ppm=>({
 const measurements=Array.from({length:8},(_,index)=>({
   id:`M${index}`,
   date:`2026-${String(index+1).padStart(2,"0")}-10`,
-  periodNo:index,
+  // SharePoint 과거 행처럼 Initial 이외에는 저장 periodNo가 없어도
+  // period.measurementIds 연결만으로 올바른 Pn에 귀속돼야 한다.
+  periodNo:index===0?0:null,
   role:index===0?"Initial":"Periodic",
   attemptNo:1,
   elements:elements(index*10),
 }));
-const retest={id:"M3-R",date:"2026-04-12",periodNo:3,role:"Retest",attemptNo:2,parentMeasurementId:"M3",elements:elements(35)};
+const retest={id:"M3-R",date:"2026-04-12",periodNo:null,role:"Retest",attemptNo:2,parentMeasurementId:"M3",elements:elements(35)};
 const allMeasurements=[...measurements,retest];
 const syntheticItem={
   code:"TREND-TEST",
@@ -63,12 +65,14 @@ const syntheticPeriods=measurements.map((measurement,index)=>({
 const failures=[];
 const assert=(condition,message)=>{ if(!condition) failures.push(message); };
 const syntheticEntries=app.xrfTrendMeasurementEntries(syntheticItem,syntheticPeriods);
-assert(syntheticEntries.length===9,`all measurements: expected 9, actual ${syntheticEntries.length}`);
-assert(new Set(syntheticEntries.map(row=>row.measurement.id)).size===9,"measurement IDs must be unique");
+assert(syntheticEntries.length===8,`management periods: expected 8, actual ${syntheticEntries.length}`);
+assert(syntheticEntries.map(row=>row.label).join(",")==="R,P1,P2,P3,P4,P5,P6,P7","axis labels must remain R/Pn");
+assert(!syntheticEntries.some(row=>row.label.includes("#")),"trend labels must not use attempt suffixes");
+assert(app.measurementAttemptsForPeriod(syntheticItem,syntheticPeriods[0]).length===1,"null periodNo must not be treated as R");
 assert(app.periodMeasurementsOf(syntheticItem,syntheticPeriods[3]).length===2,"P3 must expose original + retest");
 assert(app.xrfTrendMeasurement(syntheticItem,syntheticPeriods[3])?.id==="M3-R","P3 representative must be the latest retest");
 const syntheticPb=app.xrfTrendSeries(syntheticItem,syntheticPeriods,"Pb",syntheticEntries);
-assert(syntheticPb.length===9,"trend must not cap the x-axis at five points");
+assert(syntheticPb.length===8,"trend must not cap the x-axis at five periods");
 assert(syntheticPb.find(point=>point.measurementId==="M3-R")?.date==="2026-04-12","retest date must come from its Measurement");
 assert(syntheticPb.find(point=>point.measurementId==="M3-R")?.ppm===35,"retest value must come from the same Measurement as its date");
 assert(syntheticPb.every(point=>point.label),"every measurement must have an x-axis label");
@@ -92,10 +96,16 @@ if(exportFile){
     auditedMeasurements+=records.length;
     const periods=app.itemXrfDisplayPeriods(item);
     const entries=app.xrfTrendMeasurementEntries(item,periods);
-    const recordIds=new Set(records.map(row=>String(row.id||row.measurementId)));
-    const entryIds=new Set(entries.map(row=>String(row.measurement.id||row.measurement.measurementId)));
-    assert(entryIds.size===recordIds.size,`${item.code}: trend ${entryIds.size} !== records ${recordIds.size}`);
-    for(const id of recordIds) assert(entryIds.has(id),`${item.code}: missing trend measurement ${id}`);
+    const expectedEntryCount=periods.filter(period=>app.xrfTrendMeasurement(item,period)).length;
+    assert(entries.length===expectedEntryCount,`${item.code}: trend period count ${entries.length} !== ${expectedEntryCount}`);
+    assert(entries.every(entry=>entry.label===entry.baseLabel && !entry.label.includes("#")),`${item.code}: altered R/Pn label`);
+    const reference=periods.find(period=>period?.isReference||Number(period?.num)===0);
+    const referenceIds=new Set(reference?.measurementIds||[reference?.measurementId].filter(Boolean));
+    const referenceAttempts=reference?app.measurementAttemptsForPeriod(item,reference):[];
+    assert(referenceAttempts.every(row=>{
+      const role=String(row?.measurementRole||row?.role||"");
+      return role==="Initial" || (role==="Retest" && referenceIds.has(row?.parentMeasurementId));
+    }),`${item.code}: non-reference measurement leaked into R`);
     const pb=app.xrfTrendSeries(item,periods,"Pb",entries);
     for(const point of pb){
       const measurement=app.measurementById(item,point.measurementId);
