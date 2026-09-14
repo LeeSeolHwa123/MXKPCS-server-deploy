@@ -7045,7 +7045,8 @@ export default function App(){
   },[sel,selPeriodNum,selAllPeriods,selMeasurementId]);
 
   const currentPeriodMeta=useMemo(()=>{
-    if(!sel || selPeriodNum === null || selPeriodNum === undefined) {
+    if(!sel) return null;
+    if(selPeriodNum === null || selPeriodNum === undefined) {
       const latestId=String(sel.latestMeasurementId||latestMeasurementOf(sel)?.id||"");
       const latestP=selAllPeriods.slice().reverse().find(p=>
         periodMeasurementIds(p).some(id=>String(id)===latestId)
