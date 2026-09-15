@@ -5093,7 +5093,11 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
    ══════════════════════════════════════════════════════════════════════════════ */
 
 const XRF_TREND_ELEMENTS = ELEMENTS;                 // Pb, Hg, Cr, Cd, Cl, Br, Cl+Br
-const XRF_TREND_EL_KO = {Pb:"납",Hg:"수은",Cr:"크롬",Cd:"카드뮴",Cl:"염소",Br:"브롬","Cl+Br":"염소+브롬"};
+const XRF_TREND_EL_NAMES = {
+  Pb:{ko:"납",en:"Lead"},Hg:{ko:"수은",en:"Mercury"},Cr:{ko:"크롬",en:"Chromium"},
+  Cd:{ko:"카드뮴",en:"Cadmium"},Cl:{ko:"염소",en:"Chlorine"},Br:{ko:"브롬",en:"Bromine"},
+  "Cl+Br":{ko:"염소+브롬",en:"Chlorine + Bromine"}
+};
 
 // 기준선 색: Legal = 실선 red(법적 상한), Internal = 파선 amber(사내 판정선)
 const XRF_TREND_LEGAL_COLOR    = C.red;
@@ -5193,6 +5197,21 @@ function xrfTrendSeries(item, periods, element, entries=null){
   return source.map(entry=>xrfTrendPoint(entry,element));
 }
 
+// 선택한 주기보다 뒤의 측정 이력은 현재 선택 화면의 트렌드에 포함하지 않습니다.
+// 선택 주기까지의 R/Pn 흐름만 사용해 타임라인 선택과 차트 범위를 일치시킵니다.
+function xrfTrendPeriodsThroughSelection(periods, selectedPeriod){
+  const rows=Array.isArray(periods)?periods:[];
+  if(!selectedPeriod) return rows;
+  const orderOf=period=>{
+    const displaySeq=Number(period?.displaySeq);
+    if(Number.isFinite(displaySeq)) return displaySeq;
+    const num=Number(period?.num);
+    return Number.isFinite(num)?num:Number.POSITIVE_INFINITY;
+  };
+  const selectedOrder=orderOf(selectedPeriod);
+  return rows.filter(period=>orderOf(period)<=selectedOrder);
+}
+
 // 축 눈금을 1 / 2 / 5 × 10ⁿ 로 정돈합니다.
 function xrfTrendNiceStep(range, target=4){
   if(!(range>0)) return 1;
@@ -5234,7 +5253,7 @@ function xrfTrendPointColor(p){
 /* ── 플롯 본체 (소형 멀티플/확대 보기 공용) ───────────────────────────────── */
 function XrfTrendPlot({
   element, series, scaleMode="limit", compact=false,
-  selectedPeriodNum=null, onSelectPeriod=null,
+  selectedPeriodNum=null, onSelectPeriod=null, lang="ko",
 }){
   const [hoverIdx,setHoverIdx]=useState(null);
 
@@ -5288,7 +5307,7 @@ function XrfTrendPlot({
     <div className="xrf-trend-view" style={{width:"100%",overflow:"visible",paddingBottom:4}} data-i18n-skip="true">
       <div style={{position:"relative",width:"100%",minWidth:0}}>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="auto"
-        role="img" aria-label={`${element} 주기별 XRF 추세`}
+        role="img" aria-label={lang==="en"?`${element} XRF trend by period`:`${element} 주기별 XRF 추세`}
         style={{display:"block",overflow:"visible",fontFamily:FONT_SANS}}>
 
         {/* 가로 그리드 */}
@@ -5396,7 +5415,7 @@ function XrfTrendPlot({
         {!compact&&(
           <>
             <text x={plotL-52} y={plotT-12} fontSize={10} fill={C.text4}>Content (ppm)</text>
-            {!denseAxis&&<text x={plotR} y={plotB+62} textAnchor="end" fontSize={10} fill={C.text4}>관리주기</text>}
+            {!denseAxis&&<text x={plotR} y={plotB+62} textAnchor="end" fontSize={10} fill={C.text4}>{lang==="en"?"Management Period":"관리주기"}</text>}
           </>
         )}
       </svg>
@@ -5407,7 +5426,7 @@ function XrfTrendPlot({
           justifyContent:"center",pointerEvents:"none"}}>
           <span style={{fontSize:compact?10:11,color:C.text4,background:"rgba(255,255,255,.86)",
             border:`1px solid ${C.bd}`,borderRadius:UI.pill,padding:"3px 10px"}}>
-            측정 이력 없음
+            {lang==="en"?"No Measurement History":"측정 이력 없음"}
           </span>
         </div>
       )}
@@ -5425,10 +5444,10 @@ function XrfTrendPlot({
           <div style={{fontWeight:700,fontSize:11}}>
             {element} · {hovered.label}
           </div>
-          <div style={{opacity:.78}}>{hovered.date||"측정일 —"}</div>
+          <div style={{opacity:.78}}>{hovered.date||(lang==="en"?"Measurement Date —":"측정일 —")}</div>
           <div style={{marginTop:3,fontWeight:700}}>
             {hovered.missing
-              ? (hovered.remeasure?"?? 재측정 대상":"데이터 없음")
+              ? (hovered.remeasure?(lang==="en"?"Remeasurement Required":"?? 재측정 대상"):(lang==="en"?"No Data":"데이터 없음"))
               : (hovered.isND?"N.D.":`${xrfTrendFmt(hovered.ppm)} ppm`)}
             {hovered.judgement?`  ·  ${hovered.judgement}`:""}
           </div>
@@ -5444,7 +5463,7 @@ function XrfTrendPlot({
 
 /* ── 카드 (원소 선택 · 축 모드 · 범례 포함) ──────────────────────────────── */
 function XrfTrendChart({
-  item, periods, selectedPeriodNum=null, onSelectPeriod=null,
+  item, periods, selectedPeriodNum=null, onSelectPeriod=null, lang="ko",
 }){
   const [element,setElement]=useState("ALL");          // "ALL" = 전 원소 소형 멀티플
   const [scaleMode,setScaleMode]=useState("limit");
@@ -5467,7 +5486,7 @@ function XrfTrendChart({
     return (
       <div style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:14,padding:"28px 18px",
         textAlign:"center",fontSize:12,color:C.text3,marginTop:12}}>
-        추세를 그릴 관리주기가 아직 없습니다.
+        {lang==="en"?"No management-period measurements are available for the trend.":"추세를 그릴 관리주기가 아직 없습니다."}
       </div>
     );
   }
@@ -5488,13 +5507,15 @@ function XrfTrendChart({
       <div style={{padding:"13px 14px",borderBottom:`1px solid ${C.bd}`,background:C.alt,
         display:"flex",flexWrap:"wrap",alignItems:"center",gap:10,justifyContent:"space-between"}}>
         <div style={{minWidth:0}}>
-          <div style={{...T.section}}>주기별 XRF 추세</div>
+          <div style={{...T.section}}>{lang==="en"?"XRF Trend by Period":"주기별 XRF 추세"}</div>
           <div data-i18n-skip="true" style={{...T.micro,marginTop:3}}>
-            {`측정 완료 관리주기 ${measurementEntries.length}개 · 표시 측정점 ${totalMeasured}개`}
+            {lang==="en"
+              ? `${measurementEntries.length} measured periods · ${totalMeasured} plotted points`
+              : `측정 완료 관리주기 ${measurementEntries.length}개 · 표시 측정점 ${totalMeasured}개`}
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-          {[["limit","기준 포함"],["data","측정값 확대"]].map(([key,label])=>(
+          {[["limit",lang==="en"?"Full Scale":"기준 포함"],["data",lang==="en"?"Zoom to Measurements":"측정값 확대"]].map(([key,label])=>(
             <button key={key} type="button" className="pill-btn"
               onClick={()=>setScaleMode(key)} aria-pressed={scaleMode===key}
               style={chipStyle(scaleMode===key)}>{label}</button>
@@ -5506,7 +5527,7 @@ function XrfTrendChart({
       <div style={{padding:"10px 14px",borderBottom:`1px solid ${C.bd}`,
         display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
         <button type="button" className="pill-btn" onClick={()=>setElement("ALL")}
-          aria-pressed={element==="ALL"} style={chipStyle(element==="ALL")}>전체</button>
+          aria-pressed={element==="ALL"} style={chipStyle(element==="ALL")}>{lang==="en"?"All":"전체"}</button>
         {XRF_TREND_ELEMENTS.map(el=>(
           <button key={el} type="button" className="pill-btn" data-i18n-skip="true"
             onClick={()=>setElement(el)} aria-pressed={element===el}
@@ -5546,16 +5567,16 @@ function XrfTrendChart({
                   padding:"10px 10px 8px",background:C.card,minWidth:0}}>
                   <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:4}}>
                     <span data-i18n-skip="true" style={{fontSize:12,fontWeight:700,color:C.text1}}>{el}</span>
-                    <span style={{fontSize:9.5,color:C.text4}}>{XRF_TREND_EL_KO[el]||""}</span>
+                    <span style={{fontSize:9.5,color:C.text4}}>{XRF_TREND_EL_NAMES[el]?.[lang]||""}</span>
                   </div>
                   <XrfTrendPlot element={el} series={seriesByElement[el]} scaleMode={scaleMode}
-                    compact selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod}/>
+                    compact selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod} lang={lang}/>
                 </div>
               ))}
             </div>
           : <div className="xrf-trend-single">
               <XrfTrendPlot element={element} series={seriesByElement[element]} scaleMode={scaleMode}
-                selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod}/>
+                selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod} lang={lang}/>
             </div>
         }
       </div>
@@ -7024,6 +7045,10 @@ export default function App(){
     }
     return selAllPeriods.find(p=>Number(p.num)===Number(selPeriodNum));
   },[sel,selPeriodNum,selAllPeriods]);
+  const selectedTrendPeriods=useMemo(()=>{
+    if(!currentMeasurement) return [];
+    return xrfTrendPeriodsThroughSelection(selAllPeriods,currentPeriodMeta);
+  },[currentMeasurement,currentPeriodMeta,selAllPeriods]);
   const selectedPeriodLabel=useMemo(()=>currentPeriodMeta?periodLabel(currentPeriodMeta):"선택 주기",[currentPeriodMeta]);
   const selectedMetrics=useMemo(()=>{
     if(!sel) return {xrf:"—", xrfLevel:null, judgement:"—", final:"—", measuredDate:"—", precisionRequired:false};
@@ -8630,11 +8655,11 @@ export default function App(){
                     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12}}>
                       <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
                         <button type="button" onClick={()=>setXrfDetailView("analysis")} className="pill-btn"
-                          aria-label="XRF 분석으로 돌아가기"
+                          aria-label={lang==="en"?"Back to XRF Analysis":"XRF 분석으로 돌아가기"}
                           style={{width:32,height:32,display:"inline-flex",alignItems:"center",justifyContent:"center",border:`1px solid ${C.bd2}`,background:C.card,color:C.text1,fontSize:17,fontWeight:700,cursor:"pointer",flex:"0 0 auto"}}>←</button>
                         <div style={{minWidth:0}}>
-                          <div style={{...T.cardTitle}}>원소별 XRF 트렌드</div>
-                          <div style={{...T.micro,marginTop:3}}>{sel.code} · {sel.name}</div>
+                          <div style={{...T.cardTitle}}>{lang==="en"?"XRF Trend by Element":"원소별 XRF 트렌드"}</div>
+                          <div data-i18n-skip="true" style={{...T.micro,marginTop:3}}>{sel.code} · {displayItemName(sel,lang)}</div>
                         </div>
                       </div>
                       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",fontSize:10.5,color:C.text3}}>
@@ -8642,12 +8667,20 @@ export default function App(){
                         <span style={{padding:"5px 9px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.pill}}>Meas.Date {currentMeasurement?.date||"—"}</span>
                       </div>
                     </div>
-                    <XrfTrendChart
-                      item={sel}
-                      periods={selAllPeriods}
-                      selectedPeriodNum={currentPeriodMeta?.num ?? null}
-                      onSelectPeriod={handleSelectPeriod}
-                    />
+                    {currentMeasurement
+                      ? <XrfTrendChart
+                          item={sel}
+                          periods={selectedTrendPeriods}
+                          selectedPeriodNum={currentPeriodMeta?.num ?? null}
+                          onSelectPeriod={handleSelectPeriod}
+                          lang={lang}
+                        />
+                      : <div style={{background:C.card,border:`1px dashed ${C.bd2}`,borderRadius:14,
+                          padding:"38px 18px",textAlign:"center",fontSize:12,color:C.text3,marginTop:12}}>
+                          {lang==="en"
+                            ? "No XRF measurement is linked to the selected period."
+                            : "선택한 주기에 연결된 XRF 측정 이력이 없습니다."}
+                        </div>}
                   </div>
                 ):(
                   <div className="xrf-detail-grid">

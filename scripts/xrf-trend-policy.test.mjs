@@ -8,6 +8,7 @@ const require=createRequire(import.meta.url);
 const projectRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
 const sourcePath=path.join(projectRoot,"app.jsx");
 let source=await fs.readFile(sourcePath,"utf8");
+const originalSource=source;
 const reactUrl=pathToFileURL(require.resolve("react")).href;
 const reactJsxRuntimeUrl=pathToFileURL(require.resolve("react/jsx-runtime")).href;
 const xlsxUrl=pathToFileURL(require.resolve("xlsx")).href;
@@ -18,7 +19,8 @@ source+=`
 export {
   buildRuntimeFromSharePoint,applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
   itemXrfDisplayPeriods,itemMeasurementRecords,measurementById,measurementAttemptsForPeriod,
-  periodMeasurementsOf,xrfTrendMeasurement,xrfTrendMeasurementEntries,xrfTrendSeries
+  periodMeasurementsOf,xrfTrendMeasurement,xrfTrendMeasurementEntries,xrfTrendSeries,
+  xrfTrendPeriodsThroughSelection
 };
 `;
 
@@ -64,6 +66,11 @@ const syntheticPeriods=measurements.map((measurement,index)=>({
 
 const failures=[];
 const assert=(condition,message)=>{ if(!condition) failures.push(message); };
+assert(originalSource.includes('lang==="en"?"XRF Trend by Element":"원소별 XRF 트렌드"'),"trend detail title must react to the selected language");
+assert(originalSource.includes("XRF_TREND_EL_NAMES[el]?.[lang]"),"trend element names must react to the selected language");
+assert(originalSource.includes("displayItemName(sel,lang)"),"trend detail must use the localized item name");
+assert(originalSource.includes('No XRF measurement is linked to the selected period.'),"empty selected period must have an English message");
+assert(originalSource.includes("{currentMeasurement\n                      ? <XrfTrendChart"),"trend chart must be hidden when the selected period has no measurement");
 const syntheticEntries=app.xrfTrendMeasurementEntries(syntheticItem,syntheticPeriods);
 assert(syntheticEntries.length===8,`management periods: expected 8, actual ${syntheticEntries.length}`);
 assert(syntheticEntries.map(row=>row.label).join(",")==="R,P1,P2,P3,P4,P5,P6,P7","axis labels must remain R/Pn");
@@ -76,6 +83,8 @@ assert(syntheticPb.length===8,"trend must not cap the x-axis at five periods");
 assert(syntheticPb.find(point=>point.measurementId==="M3-R")?.date==="2026-04-12","retest date must come from its Measurement");
 assert(syntheticPb.find(point=>point.measurementId==="M3-R")?.ppm===35,"retest value must come from the same Measurement as its date");
 assert(syntheticPb.every(point=>point.label),"every measurement must have an x-axis label");
+const throughP3=app.xrfTrendPeriodsThroughSelection(syntheticPeriods,syntheticPeriods[3]);
+assert(throughP3.map(period=>period.label).join(",")==="R,P1,P2,P3","selected P3 trend must exclude later periods");
 
 const exportDir=path.join(projectRoot,"db_export");
 const exportFiles=(await fs.readdir(exportDir)).filter(name=>/^XRF_SHAREPOINT_PRODUCTION_EXPORT_.*\.json$/.test(name)).sort();
