@@ -5535,9 +5535,6 @@ function XrfTrendChart({
           <span style={{width:9,height:9,borderRadius:"50%",background:C.card,
             border:`1.6px solid ${C.xOk}`,display:"inline-block"}}/>N.D.
         </span>
-        <span style={{display:"inline-flex",alignItems:"center",gap:5}}>
-          <span style={{color:C.xWarn,fontWeight:700}}>??</span>재측정
-        </span>
       </div>
 
       {/* 플롯 */}
@@ -5556,8 +5553,10 @@ function XrfTrendChart({
                 </div>
               ))}
             </div>
-          : <XrfTrendPlot element={element} series={seriesByElement[element]} scaleMode={scaleMode}
-              selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod}/>
+          : <div className="xrf-trend-single">
+              <XrfTrendPlot element={element} series={seriesByElement[element]} scaleMode={scaleMode}
+                selectedPeriodNum={selectedPeriodNum} onSelectPeriod={onSelectPeriod}/>
+            </div>
         }
       </div>
     </div>
@@ -7954,7 +7953,11 @@ export default function App(){
 
         /* 첨부 레퍼런스의 pill 버튼 규칙 */
         .xrf-trend-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px; }
-        @media (max-width: 560px){ .xrf-trend-grid{ grid-template-columns:1fr; } }
+        .xrf-trend-single{ width:50%; min-width:280px; margin:0 auto; }
+        @media (max-width: 560px){
+          .xrf-trend-grid{ grid-template-columns:1fr; }
+          .xrf-trend-single{ width:100%; min-width:0; }
+        }
         .pill-btn{
           display:inline-flex; align-items:center; justify-content:center; gap:6px;
           border-radius:${UI.pill}px; cursor:pointer; white-space:nowrap;
