@@ -20,7 +20,7 @@ export {
   buildRuntimeFromSharePoint,applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
   itemXrfDisplayPeriods,itemMeasurementRecords,measurementById,measurementAttemptsForPeriod,
   periodMeasurementsOf,xrfTrendMeasurement,xrfTrendMeasurementEntries,xrfTrendSeries,
-  xrfTrendPeriodsThroughSelection
+  xrfTrendPeriodsThroughSelection,normalizeItemRecord,displayItemName
 };
 `;
 
@@ -71,6 +71,12 @@ assert(originalSource.includes("XRF_TREND_EL_NAMES[el]?.[lang]"),"trend element 
 assert(originalSource.includes("displayItemName(sel,lang)"),"trend detail must use the localized item name");
 assert(originalSource.includes('No XRF measurement is linked to the selected period.'),"empty selected period must have an English message");
 assert(originalSource.includes("{currentMeasurement\n                      ? <XrfTrendChart"),"trend chart must be hidden when the selected period has no measurement");
+assert(originalSource.includes('["itemNameEn","Item_Name_EN"'),"new-item forms must accept an English item name");
+assert(originalSource.includes('nameEn:String(reqForm.itemNameEn||"").trim()'),"new-item creation must preserve the English item name");
+assert(originalSource.includes('window.alert("Item_Name_EN을 입력하세요.")'),"new-item submission must reject a missing English item name");
+const s11=app.normalizeItemRecord({code:"S-11",name:"S-05 접촉 영향 확인용 간지",nameEn:""});
+assert(s11.nameEn==="Interleaf for S-05 Contact Impact Verification","S-11 must recover its missing legacy English name");
+assert(app.displayItemName(s11,"en")===s11.nameEn,"English UI must prefer the S-11 English name");
 const syntheticEntries=app.xrfTrendMeasurementEntries(syntheticItem,syntheticPeriods);
 assert(syntheticEntries.length===8,`management periods: expected 8, actual ${syntheticEntries.length}`);
 assert(syntheticEntries.map(row=>row.label).join(",")==="R,P1,P2,P3,P4,P5,P6,P7","axis labels must remain R/Pn");
@@ -95,6 +101,8 @@ let auditedMeasurements=0;
 if(exportFile){
   const payload=JSON.parse(await fs.readFile(path.join(exportDir,exportFile),"utf8"));
   const runtime=app.buildRuntimeFromSharePoint(payload);
+  const productionS11=runtime.items.find(item=>item.code==="S-11");
+  assert(productionS11?.nameEn==="Interleaf for S-05 Contact Impact Verification","production S-11 must receive the English-name fallback");
   const items=app.applyPeriodBasedCategories(
     app.deriveReplacementRelations(runtime.items).map(app.applyCurrentRiskPolicy)
   );

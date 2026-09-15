@@ -387,6 +387,12 @@ const UNIQUE_VALS = {
   lifecycle: ["ExistingActive","NewReplacement","ReplacedOld","Discontinued","NewItem","Cancelled"],
 };
 
+// 초기 마이그레이션 원본부터 Item_Name_EN이 비어 있던 품목의 표시 보정값입니다.
+// SharePoint 원본값이 추가되면 원본 영문명이 항상 이 값보다 우선합니다.
+const ITEM_NAME_EN_FALLBACKS = Object.freeze({
+  "S-11":"Interleaf for S-05 Contact Impact Verification",
+});
+
 // SharePoint DB는 브라우저 번들에 하드코딩하지 않습니다.
 // 브라우저는 동일 호스트의 /api/xrf-sharepoint만 호출하고,
 // Microsoft Graph용 Client Secret은 서버 환경변수에만 보관합니다.
@@ -1057,7 +1063,7 @@ function normalizeItemRecord(raw){
     _sourceCode:pickField(raw,"_sourceCode","Source_Code","sourceCode") || code,
     code,
     name:pickField(raw,"name","Item_Name","Item Name") || "",
-    nameEn:pickField(raw,"nameEn","Item_Name_EN","Item Name EN","English_Name","English Name") || raw?.nameEn || "",
+    nameEn:pickField(raw,"nameEn","Item_Name_EN","Item Name EN","English_Name","English Name") || raw?.nameEn || ITEM_NAME_EN_FALLBACKS[code] || "",
     type:pickField(raw,"type","Type","Item_Type") || "",
     dept:pickField(raw,"dept","Handling_Dept") || "",
     materialCategory:pickField(raw,"materialCategory","Material_Category") || "",
@@ -4340,7 +4346,7 @@ function Chip({v, small, result=false}){
 // 부자재 리스트 탭의 ITEM NAME 열을 제외한 화면에서는 영문 모드일 때 영문 품목명을 우선 표시합니다.
 function displayItemName(item, lang){
   if(lang!=="en") return item?.name || "";
-  return String(item?.nameEn||"").trim() || item?.name || "";
+  return String(item?.nameEn||ITEM_NAME_EN_FALLBACKS[String(item?.code||"").trim()]||"").trim() || item?.name || "";
 }
 
 function CatDot({cat, dark=false, lang="ko"}){
@@ -5916,7 +5922,7 @@ export default function App(){
   const measurementSavePendingRef=useRef(false);
   const [measurementSavePending,setMeasurementSavePending]=useState(false);
   const [reqForm,setReqForm]=useState({
-    partNumber:"", itemName:"", type:"Auxiliary Materials", handlingDept:"Assembly", materialCategory:REQUESTER_MATERIAL_CATEGORY_OPTIONS[0],
+    partNumber:"", itemName:"", itemNameEn:"", type:"Auxiliary Materials", handlingDept:"Assembly", materialCategory:REQUESTER_MATERIAL_CATEGORY_OPTIONS[0],
     materialState:"", manufacturer:"", useDate:TODAY_STR,
     crType:"직접접촉+비잔류",
     requestReason:"",
@@ -6550,6 +6556,10 @@ export default function App(){
       window.alert("Item_Name을 입력하세요.");
       return;
     }
+    if(requestType!=="discontinue" && !String(reqForm.itemNameEn||"").trim()){
+      window.alert("Item_Name_EN을 입력하세요.");
+      return;
+    }
     if(requestType!=="discontinue" && !String(reqForm.partNumber||"").trim()){
       window.alert("Part Number를 확인하세요.");
       return;
@@ -6751,7 +6761,7 @@ export default function App(){
     }] : [];
     const item={
       _sourceCode:code,
-      code, name:reqForm.itemName||"신규 등록 요청 품목", nameEn:"", dept:reqForm.handlingDept, respDept:"PQE",
+      code, name:reqForm.itemName||"신규 등록 요청 품목", nameEn:String(reqForm.itemNameEn||"").trim(), dept:reqForm.handlingDept, respDept:"PQE",
       type:reqForm.type,
       materialCategory:reqForm.materialCategory, materialState:reqForm.materialState||"", manufacturer:reqForm.manufacturer,
       useDate:reqForm.useDate, crType:reqForm.crType, crLevel, approvalStatus,
@@ -8396,6 +8406,8 @@ export default function App(){
                     const mutedCell=<span style={{fontSize:11,color:C.text4}}>—</span>;
                     const notTargetCell=<span title="대상 아님" style={{fontSize:12,color:C.text4,fontWeight:500}}>—</span>;
                     const isRowActive=rowSel===item.code;
+                    const primaryItemName=displayItemName(item,lang)||"—";
+                    const secondaryItemName=lang==="en"?(item.name||"—"):(item.nameEn||ITEM_NAME_EN_FALLBACKS[item.code]||"—");
                     return(
                       <tr key={item.code}
                         onClick={()=>setRowSel(prev=>prev===item.code?null:item.code)}
@@ -8411,11 +8423,11 @@ export default function App(){
                           <AutoFitText value={item.code} title={item.code} baseFontSize={11} minFontSize={7} align="center" style={{fontWeight:600,color:C.text3}}/>
                         </td>
                         <td data-i18n-skip="true" style={{...tdS,textAlign:"left",overflow:"visible",padding:"7px 10px"}}>
-                          <div title={lang==="en"?(item.nameEn||item.name||"—"):(item.name||"—")} style={{fontSize:12,fontWeight:600,color:C.text1,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
-                            {lang==="en"?(item.nameEn||item.name||"—"):(item.name||"—")}
+                          <div title={primaryItemName} style={{fontSize:12,fontWeight:600,color:C.text1,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
+                            {primaryItemName}
                           </div>
-                          <div title={lang==="en"?(item.name||"—"):(item.nameEn||"—")} style={{fontSize:10,color:C.text2,marginTop:3,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
-                            {lang==="en"?(item.name||"—"):(item.nameEn||"—")}
+                          <div title={secondaryItemName} style={{fontSize:10,color:C.text2,marginTop:3,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
+                            {secondaryItemName}
                           </div>
                         </td>
                         <td style={{...tdS,color:C.text3,fontSize:11}}><AutoFitText value={item.dept} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
@@ -9099,6 +9111,7 @@ export default function App(){
                       {[
                         ["partNumber","Part Number","자동 생성"],
                         ["itemName",regType==="replacement"?"신규 대체품 Item_Name":"Item_Name","예: 제품 포장용 엠보스"],
+                        ["itemNameEn","Item_Name_EN","e.g. Packaging Emboss"],
                         ["manufacturer","제조사","예: ABC Chemical"],
                         ["useDate","사용 예정 일자",TODAY_STR]
                       ].map(([k,l,ph])=>(
@@ -9208,7 +9221,7 @@ export default function App(){
                       ]:[
                         ["요청 유형",regType==="replacement"?"기존 품목 대체 등록":"신규 도입"],
                         ...(regType==="replacement"?[["대체 대상",selectedReplacementTarget?`${selectedReplacementTarget.code} · ${displayItemName(selectedReplacementTarget,lang)}`:"미선택"],["대체 사유",reqForm.replacementReason==="기타"?(reqForm.replacementReasonOther||"기타 상세 미입력"):reqForm.replacementReason],["기존 품목 처리",reqForm.oldItemDisposition],["전환 예정일",reqForm.replacementDate]]:[]),
-                        ["Part Number",reqForm.partNumber||"자동 발번"],["Item_Name",reqForm.itemName||"—"],["Type",`${ITEM_TYPE_KO[reqForm.type]||reqForm.type} (${reqForm.type})`],["Handling_Dept",reqForm.handlingDept],["Material_Category",reqForm.materialCategory],["Material_State",reqForm.materialState||"—"],["제조사",reqForm.manufacturer||"—"],["사용 예정 일자",reqForm.useDate],["CR_Type",reqForm.crType],["XRF 방식",reqXrfMode==="upload"?"XRF 원본 업로드":"XRF 측정 의뢰"],["업로드 파일",reqXrfMode==="upload"?(reqUploadFileName||"미선택"):"—"],["XRF Result",reqXrfMode==="upload"?(reqUploadResult.parsed?(reqUploadResult.xrfResult||reqUploadResult.xrfWorst):"파싱 대기"):"측정 후 산출"],["Judgment",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementJudgementSummary({elements:reqUploadResult.elements||{}}):"파싱 대기"):"측정 후 산출"],["후속조치",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementFollowupInfo({elements:reqUploadResult.elements||{},role:"Initial",attemptNo:1}).label:"파싱 대기"):"측정 후 산출"],["예상 Approval_Status",reqXrfMode==="request"||!reqUploadResult.parsed?"보류":(reqUploadResult.approvalStatus||deriveXrfApprovalStatus(reqUploadResult.xrfResult||reqUploadResult.xrfWorst))]
+                        ["Part Number",reqForm.partNumber||"자동 발번"],["Item_Name",reqForm.itemName||"—"],["Item_Name_EN",reqForm.itemNameEn||"—"],["Type",`${ITEM_TYPE_KO[reqForm.type]||reqForm.type} (${reqForm.type})`],["Handling_Dept",reqForm.handlingDept],["Material_Category",reqForm.materialCategory],["Material_State",reqForm.materialState||"—"],["제조사",reqForm.manufacturer||"—"],["사용 예정 일자",reqForm.useDate],["CR_Type",reqForm.crType],["XRF 방식",reqXrfMode==="upload"?"XRF 원본 업로드":"XRF 측정 의뢰"],["업로드 파일",reqXrfMode==="upload"?(reqUploadFileName||"미선택"):"—"],["XRF Result",reqXrfMode==="upload"?(reqUploadResult.parsed?(reqUploadResult.xrfResult||reqUploadResult.xrfWorst):"파싱 대기"):"측정 후 산출"],["Judgment",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementJudgementSummary({elements:reqUploadResult.elements||{}}):"파싱 대기"):"측정 후 산출"],["후속조치",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementFollowupInfo({elements:reqUploadResult.elements||{},role:"Initial",attemptNo:1}).label:"파싱 대기"):"측정 후 산출"],["예상 Approval_Status",reqXrfMode==="request"||!reqUploadResult.parsed?"보류":(reqUploadResult.approvalStatus||deriveXrfApprovalStatus(reqUploadResult.xrfResult||reqUploadResult.xrfWorst))]
                       ]).map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.bd}`,fontSize:12}}><span style={{color:C.text4}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right"}}>{v}</span></div>)}
                     </div>
                     <button onClick={submitRequesterNewItem} style={{width:"100%",padding:"12px 0",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:13,fontWeight:600,cursor:"pointer"}}>
@@ -9269,6 +9282,7 @@ export default function App(){
                       {[
                         ["partNumber","Part Number","자동 생성"],
                         ["itemName","Item_Name","예: 제품 포장용 엠보스"],
+                        ["itemNameEn","Item_Name_EN","e.g. Packaging Emboss"],
                         ["manufacturer","제조사","예: ABC Chemical"],
                         ["useDate","사용 일자",TODAY_STR]
                       ].map(([k,l,ph])=>(
