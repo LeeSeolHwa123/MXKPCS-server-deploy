@@ -74,6 +74,10 @@ assert(originalSource.includes("{currentMeasurement\n                      ? <Xr
 assert(originalSource.includes('["itemNameEn","Item_Name_EN"'),"new-item forms must accept an English item name");
 assert(originalSource.includes('nameEn:String(reqForm.itemNameEn||"").trim()'),"new-item creation must preserve the English item name");
 assert(originalSource.includes('window.alert("Item_Name_EN을 입력하세요.")'),"new-item submission must reject a missing English item name");
+assert(originalSource.includes('background:"#343A40"'),"element trend header must use #343A40");
+assert(originalSource.includes("const canUploadPrecisionPdf=isRequested && hasSourceFile"),"precision PDF upload must follow transfer and source-file readiness");
+assert(originalSource.includes('style={uploadArrowStyle(canUploadSourceFile)}>↑</span>'),"precision source upload must show an upload arrow");
+assert(originalSource.includes('style={uploadArrowStyle(canUploadPrecisionPdf)}>↑</span>'),"precision PDF upload must show an upload arrow");
 const s11=app.normalizeItemRecord({code:"S-11",name:"S-05 접촉 영향 확인용 간지",nameEn:""});
 assert(s11.nameEn==="Interleaf for S-05 Contact Impact Verification","S-11 must recover its missing legacy English name");
 assert(app.displayItemName(s11,"en")===s11.nameEn,"English UI must prefer the S-11 English name");

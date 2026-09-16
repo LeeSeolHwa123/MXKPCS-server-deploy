@@ -1624,6 +1624,8 @@ const UI_EN_MAP = {
   "해당 주기에는 이미 XRF 측정값이 있습니다. 추가 등록은 재측정(??)이 필요한 경우에만 가능합니다.":"This period already has an XRF measurement. Additional entries are allowed only when a remeasurement (??) is required.",
   "XRF 재측정은 1회까지만 가능합니다. 이후에는 정밀분석 단계에서 처리하세요.":"Only one XRF remeasurement is allowed. Handle further cases in precision analysis.",
   "정밀분석 인계를 먼저 완료한 뒤 성적서 PDF를 업로드하세요.":"Complete the transfer before uploading the report PDF.",
+  "XRF 원본 파일을 먼저 선택하세요.":"Select the original XRF file first.",
+  "인계 완료 후 선택 가능":"Available after transfer","XRF 원본 파일 선택 후 업로드 가능":"Available after selecting the original XRF file",
   "정밀분석 성적서는 PDF 파일만 업로드할 수 있습니다.":"Only PDF files can be uploaded as the precision report.",
   "Material_Category가 Chemical인 경우 Material_State를 필수로 선택하세요.":"Material_State is required when Material_Category is Chemical.",
   "Material_State를 선택하세요":"Select Material_State","Item_Name을 입력하세요.":"Enter the item name.",
@@ -4916,6 +4918,9 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
   const elementResults=selected.elementResults||selected.precision?.elementResults||{};
   const resultFileName=String(selected.precision?.resultFileId||"").trim();
   const hasPrecisionReportPdf=/\.pdf$/i.test(resultFileName);
+  const hasSourceFile=!!String(selected.sourceFileName||"").trim();
+  const canUploadSourceFile=isRequested;
+  const canUploadPrecisionPdf=isRequested && hasSourceFile;
   const canEditPrecisionResult=isRequested && hasPrecisionReportPdf;
   const derivedResult=derivePrecisionResult(targets,selected.precision,elementResults);
   const infoRows=[
@@ -4927,7 +4932,8 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
     ["인계일",selected.precision.requestedAt||"—"],
     ["담당자",selected.precision.requestedBy||"—"]
   ];
-  const filePickStyle=(enabled=true)=>({marginTop:5,display:"flex",alignItems:"center",justifyContent:"center",width:"100%",maxWidth:"100%",minWidth:0,minHeight:34,padding:"0 14px",border:`1px solid ${C.bd2}`,background:enabled?C.bg:C.alt,color:enabled?C.text1:C.text4,fontSize:11,fontWeight:500,cursor:enabled?"pointer":"not-allowed",boxSizing:"border-box",borderRadius:UI.rs,opacity:enabled?1:.62,overflow:"hidden"});
+  const filePickStyle=(enabled=true)=>({marginTop:5,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,width:"100%",maxWidth:"100%",minWidth:0,minHeight:36,padding:"0 6px 0 14px",border:`1px solid ${enabled?A.blue.solid:C.bd2}`,background:enabled?A.blue.solid:C.alt,color:enabled?"#fff":C.text4,fontSize:11,fontWeight:650,cursor:enabled?"pointer":"not-allowed",boxSizing:"border-box",borderRadius:UI.rs,opacity:enabled?1:.62,overflow:"hidden",transition:"background .15s ease,border-color .15s ease,opacity .15s ease"});
+  const uploadArrowStyle=enabled=>({width:24,height:24,borderRadius:"50%",display:"inline-flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto",fontSize:16,lineHeight:1,background:enabled?"rgba(25,49,167,.32)":"rgba(120,130,140,.12)",color:enabled?"#fff":C.text4});
   const fileNameStyle=(has)=>({marginTop:5,display:"block",width:"100%",maxWidth:"100%",minWidth:0,fontSize:10,color:has?C.text2:C.text4,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",boxSizing:"border-box"});
   const updateElement=(el,patch)=>{
     if(!canEditPrecisionResult) return;
@@ -4942,6 +4948,11 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
     if(!file) return;
     if(!isRequested){
       window.alert("정밀분석 인계를 먼저 완료한 뒤 성적서 PDF를 업로드하세요.");
+      e.target.value="";
+      return;
+    }
+    if(!hasSourceFile){
+      window.alert("XRF 원본 파일을 먼저 선택하세요.");
       e.target.value="";
       return;
     }
@@ -5005,7 +5016,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         {infoRows.map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.bd}`,fontSize:11,gap:12}}>
           <span style={{color:C.text3,flex:"0 0 auto"}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right",minWidth:0,flex:"1 1 auto"}}><AutoFitText value={v} title={String(v)} baseFontSize={11} minFontSize={7} align="right" style={{fontWeight:600,color:C.text1}}/></span>
         </div>)}
-        <button disabled={isRequested} onClick={()=>!isRequested&&markPrecisionRequested(selected.key)} className="pill-btn" style={{marginTop:12,width:"100%",padding:"10px",border:`1px solid ${isRequested?A.green.ln:A.blue.solid}`,background:isRequested?A.green.bg:A.blue.solid,color:isRequested?A.green.tx:"#fff",fontSize:12,fontWeight:600,cursor:isRequested?"default":"pointer"}}>
+        <button disabled={isRequested} onClick={()=>!isRequested&&markPrecisionRequested(selected.key)} className="pill-btn" style={{marginTop:12,width:"100%",padding:"10px",border:`1px solid ${isRequested?A.green.ln:A.blue.solid}`,background:isRequested?A.green.bg:A.blue.solid,color:isRequested?A.green.tx:"#fff",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:isRequested?"default":"pointer"}}>
           {isRequested?"정밀분석 인계 완료":"정밀분석 인계"}
         </button>
       </div>
@@ -5027,8 +5038,8 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         </div>
 
         <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10,marginBottom:12,minWidth:0}}>
-          <div style={{fontSize:11,color:C.text2,fontWeight:600,minWidth:0,overflow:"hidden"}}>XRF 원본 파일<label style={filePickStyle(true)}>파일 선택<input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json,.pdf" onChange={e=>{const file=e.target.files?.[0];if(file) updatePrecisionOverride(selected.key,{sourceFileName:file.name,sourceFileUploadedAt:TODAY_STR});}} style={{display:"none"}}/></label><div title={selected.sourceFileName||""} style={fileNameStyle(!!selected.sourceFileName)}>{selected.sourceFileName||"업로드된 파일 없음"}</div></div>
-          <div style={{fontSize:11,color:C.text2,fontWeight:600,minWidth:0,overflow:"hidden"}}>정밀분석 성적서 PDF<label style={filePickStyle(isRequested)}>PDF 선택<input type="file" accept=".pdf,application/pdf" disabled={!isRequested} onChange={handlePrecisionReportUpload} style={{display:"none"}}/></label><div title={resultFileName||""} style={fileNameStyle(hasPrecisionReportPdf)}>{resultFileName||(!isRequested?"인계 완료 후 업로드 가능":"업로드된 PDF 없음")}</div></div>
+          <div style={{fontSize:11,color:C.text2,fontWeight:600,minWidth:0,overflow:"hidden"}}>XRF 원본 파일<label style={filePickStyle(canUploadSourceFile)}><span>파일 선택</span><span data-i18n-skip="true" aria-hidden="true" style={uploadArrowStyle(canUploadSourceFile)}>↑</span><input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json,.pdf" disabled={!canUploadSourceFile} onChange={e=>{const file=e.target.files?.[0];if(file&&canUploadSourceFile) updatePrecisionOverride(selected.key,{sourceFileName:file.name,sourceFileUploadedAt:TODAY_STR});}} style={{display:"none"}}/></label><div title={selected.sourceFileName||""} style={fileNameStyle(hasSourceFile)}>{selected.sourceFileName||(!isRequested?"인계 완료 후 선택 가능":"업로드된 파일 없음")}</div></div>
+          <div style={{fontSize:11,color:C.text2,fontWeight:600,minWidth:0,overflow:"hidden"}}>정밀분석 성적서 PDF<label style={filePickStyle(canUploadPrecisionPdf)}><span>PDF 선택</span><span data-i18n-skip="true" aria-hidden="true" style={uploadArrowStyle(canUploadPrecisionPdf)}>↑</span><input type="file" accept=".pdf,application/pdf" disabled={!canUploadPrecisionPdf} onChange={handlePrecisionReportUpload} style={{display:"none"}}/></label><div title={resultFileName||""} style={fileNameStyle(hasPrecisionReportPdf)}>{resultFileName||(!isRequested?"인계 완료 후 업로드 가능":(!hasSourceFile?"XRF 원본 파일 선택 후 업로드 가능":"업로드된 PDF 없음"))}</div></div>
         </div>
 
         <div style={{border:`1px solid ${C.bd}`,borderRadius:8,overflow:"hidden",marginBottom:12,opacity:canEditPrecisionResult?1:.58}}>
@@ -5072,7 +5083,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
           <div style={{padding:"9px 11px",borderTop:`1px solid ${C.bd}`,fontSize:11,color:derivedResult==="NG"?C.redDk:C.text3,background:derivedResult==="NG"?C.redBg:C.alt}}>{resultExplain}</div>
         </div>
 
-        <button disabled={!canEditPrecisionResult || !derivedResult} onClick={()=>canEditPrecisionResult&&derivedResult&&updatePrecisionOverride(selected.key,{finalConfirm:"확인",confirmedAt:TODAY_STR,confirmedBy:"admin"})} className="pill-btn" style={{width:"100%",padding:"11px 12px",border:`1px solid ${isConfirmed?A.green.ln:C.bd2}`,background:isConfirmed?A.green.bg:C.card,color:!canEditPrecisionResult||!derivedResult?C.text4:(isConfirmed?A.green.tx:C.text2),fontSize:12,fontWeight:600,opacity:canEditPrecisionResult&&derivedResult?1:.6,cursor:canEditPrecisionResult&&derivedResult?"pointer":"not-allowed"}}>
+        <button disabled={!canEditPrecisionResult || !derivedResult} onClick={()=>canEditPrecisionResult&&derivedResult&&updatePrecisionOverride(selected.key,{finalConfirm:"확인",confirmedAt:TODAY_STR,confirmedBy:"admin"})} className="pill-btn" style={{width:"100%",padding:"11px 12px",border:`1px solid ${isConfirmed?A.green.ln:(canEditPrecisionResult&&derivedResult?A.blue.solid:C.bd2)}`,background:isConfirmed?A.green.bg:(canEditPrecisionResult&&derivedResult?A.blue.solid:C.alt),color:!canEditPrecisionResult||!derivedResult?C.text4:(isConfirmed?A.green.tx:"#fff"),borderRadius:UI.rs,fontSize:12,fontWeight:600,opacity:canEditPrecisionResult&&derivedResult?1:.6,cursor:canEditPrecisionResult&&derivedResult?"pointer":"not-allowed"}}>
           {isConfirmed?"정밀분석 결과 확인 완료":"정밀분석 결과 확인"}
         </button>
       </div>
@@ -8664,19 +8675,19 @@ export default function App(){
                   </div>
                 ):xrfDetailView==="trend"?(
                   <div style={{padding:"18px clamp(14px, 2.4vw, 32px) 26px",background:C.bg}}>
-                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12,padding:"13px 14px",background:"#343A40",borderRadius:UI.rs,boxShadow:"0 8px 20px rgba(24,28,32,.16)"}}>
                       <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
                         <button type="button" onClick={()=>setXrfDetailView("analysis")} className="pill-btn"
                           aria-label={lang==="en"?"Back to XRF Analysis":"XRF 분석으로 돌아가기"}
-                          style={{width:32,height:32,display:"inline-flex",alignItems:"center",justifyContent:"center",border:`1px solid ${C.bd2}`,background:C.card,color:C.text1,fontSize:17,fontWeight:700,cursor:"pointer",flex:"0 0 auto"}}>←</button>
+                          style={{width:32,height:32,display:"inline-flex",alignItems:"center",justifyContent:"center",border:"1px solid rgba(255,255,255,.32)",background:"rgba(255,255,255,.08)",color:"#fff",fontSize:17,fontWeight:700,cursor:"pointer",flex:"0 0 auto"}}>←</button>
                         <div style={{minWidth:0}}>
-                          <div style={{...T.cardTitle}}>{lang==="en"?"XRF Trend by Element":"원소별 XRF 트렌드"}</div>
-                          <div data-i18n-skip="true" style={{...T.micro,marginTop:3}}>{sel.code} · {displayItemName(sel,lang)}</div>
+                          <div style={{...T.cardTitle,color:"#fff"}}>{lang==="en"?"XRF Trend by Element":"원소별 XRF 트렌드"}</div>
+                          <div data-i18n-skip="true" style={{...T.micro,marginTop:3,color:"rgba(255,255,255,.72)"}}>{sel.code} · {displayItemName(sel,lang)}</div>
                         </div>
                       </div>
-                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",fontSize:10.5,color:C.text3}}>
-                        <span style={{padding:"5px 9px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.pill}}>{selectedPeriodLabel}</span>
-                        <span style={{padding:"5px 9px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.pill}}>Meas.Date {currentMeasurement?.date||"—"}</span>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",fontSize:10.5,color:"rgba(255,255,255,.86)"}}>
+                        <span style={{padding:"5px 9px",background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.22)",borderRadius:UI.rs}}>{selectedPeriodLabel}</span>
+                        <span style={{padding:"5px 9px",background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.22)",borderRadius:UI.rs}}>Meas.Date {currentMeasurement?.date||"—"}</span>
                       </div>
                     </div>
                     {currentMeasurement
@@ -8764,9 +8775,9 @@ export default function App(){
                           <div style={{fontSize:11,fontWeight:700,color:C.text1}}>측정값</div>
                           <div style={{fontSize:9.5,color:C.text3,marginTop:2}}>현재 선택 Measurement 기준</div>
                         </div>
-                        <button type="button" onClick={()=>setXrfDetailView("trend")} className="pill-btn"
-                          style={{height:30,padding:"0 11px 0 13px",display:"inline-flex",alignItems:"center",gap:8,border:`1px solid ${C.charcoalDk}`,background:C.card,color:C.charcoalDk,fontSize:10.5,fontWeight:700,cursor:"pointer"}}>
-                          <span>원소별 트렌드 확인</span><span data-i18n-skip="true" aria-hidden="true" style={{fontSize:15,lineHeight:1}}>→</span>
+                        <button type="button" onClick={()=>setXrfDetailView("trend")}
+                          style={{height:34,padding:0,display:"inline-flex",alignItems:"stretch",border:"1px solid #495057",borderRadius:8,background:"#111418",color:"#fff",fontSize:10.5,fontWeight:650,cursor:"pointer",overflow:"hidden",boxShadow:"0 2px 8px rgba(17,20,24,.14)"}}>
+                          <span style={{display:"inline-flex",alignItems:"center",padding:"0 13px"}}>원소별 트렌드 확인</span><span data-i18n-skip="true" aria-hidden="true" style={{width:34,display:"inline-flex",alignItems:"center",justifyContent:"center",borderLeft:"1px solid #495057",background:"#1B1F24",fontSize:15,lineHeight:1}}>→</span>
                         </button>
                       </div>
                       {currentMeasurement
