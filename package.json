@@ -10,7 +10,8 @@
     "test:followup": "node scripts/followup-policy.test.mjs",
     "test:retry": "node scripts/retry-policy.test.mjs",
     "test:trend": "node scripts/xrf-trend-policy.test.mjs",
-    "test:files": "node scripts/precision-file-upload.test.mjs"
+    "test:files": "node scripts/precision-file-upload.test.mjs",
+    "test:public-share": "node scripts/public-share-readonly.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -824,11 +824,23 @@ async function parseBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+function isSharedReadOnlyDeployment() {
+  const deploymentEnv = process.env.VERCEL_ENV || process.env.VERCEL_TARGET_ENV;
+  return deploymentEnv === "production" || deploymentEnv === "preview"
+    || (process.env.VERCEL === "1" && process.env.NODE_ENV === "production");
+}
+
 export default async function handler(req, res) {
+  const readOnly = isSharedReadOnlyDeployment();
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
-    res.setHeader("Allow", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Allow", readOnly ? "GET, OPTIONS" : "GET, POST, DELETE, OPTIONS");
     return res.end();
+  }
+
+  if (readOnly && req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return sendJson(res, 403, { ok: false, error: "공유 링크는 보기 전용입니다. 변경 및 업로드는 로컬 환경에서 진행해 주세요." });
   }
 
   try {
@@ -840,7 +852,7 @@ export default async function handler(req, res) {
       if (params.has("precisionFilesFor")) {
         return sendJson(res, 200, { ok: true, files: await handleListPrecisionFiles(siteId, accessToken, params.get("precisionFilesFor")) });
       }
-      return sendJson(res, 200, await readBootstrap(siteId, accessToken));
+      return sendJson(res, 200, { ...await readBootstrap(siteId, accessToken), readOnly });
     }
 
     if (req.method === "DELETE") {

@@ -5979,6 +5979,7 @@ export default function App(){
   const [sharePointItems,setSharePointItems]=useState([]);
   const [dbLoading,setDbLoading]=useState(true);
   const [dbError,setDbError]=useState("");
+  const [dbReadOnly,setDbReadOnly]=useState(false);
   const [dbCounts,setDbCounts]=useState(null);
   const [selMeasurementId,setSelMeasurementId]=useState(null);
   const [xrfDetailView,setXrfDetailView]=useState("analysis");
@@ -6033,6 +6034,7 @@ export default function App(){
       setApprovalOverrides({});
       setItemOverrides({});
       setDbCounts(runtime.counts);
+      setDbReadOnly(payload.readOnly===true);
     }catch(error){
       console.error(error);
       setDbError(error?.message||String(error));
@@ -6046,6 +6048,10 @@ export default function App(){
   },[reloadSharePointDb]);
 
   const persistSharePointAction=useCallback(async(action,payload,{reload=true,silent=false}={})=>{
+    if(dbReadOnly){
+      if(!silent && typeof window!=="undefined") window.alert(lang==="en"?"This shared link is view-only. Make changes in the local app.":"공유 링크는 보기 전용입니다. 변경은 로컬 환경에서 진행해 주세요.");
+      return null;
+    }
     if(VISUAL_UAT_MUTATION_ACTIONS.has(action) && containsVisualUatReference(payload)){
       if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
       return null;
@@ -6060,7 +6066,7 @@ export default function App(){
       if(reload) await reloadSharePointDb();
       return null;
     }
-  },[reloadSharePointDb]);
+  },[dbReadOnly,lang,reloadSharePointDb]);
 
   // UI 언어는 표시 계층에서만 변환합니다. 데이터값/필터값/Workflow 비교값은 한국어 원본을 유지합니다.
   useEffect(()=>{
@@ -8390,6 +8396,14 @@ export default function App(){
           </div>
         </div>
       </div>
+
+      {dbReadOnly&&(
+        <div data-i18n-skip="true" style={{background:"#edf3ff",borderBottom:`1px solid ${C.bd}`}}>
+          <div className="app-shell" style={{paddingTop:8,paddingBottom:8,fontSize:11,fontWeight:650,color:C.text2}}>
+            {lang==="en"?"Shared view-only link: editing and uploads are disabled.":"공유 보기 전용 링크: 등록·수정·업로드는 사용할 수 없습니다."}
+          </div>
+        </div>
+      )}
 
       {VISUAL_UAT_MODE&&(
         <div data-i18n-skip="true" data-visual-uat-banner="1" style={{background:A.purple.bg,borderBottom:`1px solid ${A.purple.ln}`}}>
