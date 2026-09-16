@@ -1,6 +1,7 @@
 // Node.js SharePoint API Handler
 // SharePoint XRF DB READ + WRITE gateway
 // Client secret must exist only in server-side environment variables.
+import { randomUUID } from "node:crypto";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const DEFAULT_TENANT = "kochind.com";
@@ -29,6 +30,8 @@ const WRITABLE_LISTS = new Set([
 const XRF_SOURCE_ELEMENTS = ["Pb", "Hg", "Cr", "Cd", "Cl", "Br"];
 const MAX_RETRIES = 4;
 const RETRY_BASE_MS = 350;
+const PRECISION_FILE_CHUNK_BYTES = 8 * 320 * 1024; // 2.5 MiB; base64 JSON stays below Vercel's 4.5 MB request limit.
+const PRECISION_FILE_MAX_BYTES = 250 * 1024 * 1024;
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function cleanText(v) { return v == null ? "" : String(v); }
@@ -110,6 +113,187 @@ async function acquireGraphToken() {
 
 function graphHeaders(accessToken, extra = {}) {
   return { Authorization: `Bearer ${accessToken}`, Accept: "application/json", ...extra };
+}
+
+function precisionFileFolderName(measurementId) {
+  const id = cleanText(measurementId).trim();
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(id)) throw new Error("유효하지 않은 XRF 측정 ID입니다.");
+  return `PREC_${id}`;
+}
+
+function precisionUploadName(kind, fileName) {
+  if (kind !== "source" && kind !== "report") throw new Error("지원하지 않는 파일 종류입니다.");
+  const name = cleanText(fileName).trim();
+  if (!name || name.length > 160 || /[\\/:*?"<>|\x00-\x1f]/.test(name) || name === "." || name === "..") {
+    throw new Error("파일명을 확인하세요. 경로 문자와 160자를 넘는 이름은 사용할 수 없습니다.");
+  }
+  if (kind === "report" && !/\.pdf$/i.test(name)) throw new Error("정밀분석 성적서는 PDF만 업로드할 수 있습니다.");
+  if (kind === "source" && !/\.(xlsx|xlsm|xls|csv|json|pdf)$/i.test(name)) {
+    throw new Error("XRF 원본은 xlsx, xlsm, xls, csv, json, pdf 형식만 허용합니다.");
+  }
+  return `${kind}_${randomUUID()}_${name}`;
+}
+
+function precisionFileMetadata(item) {
+  const match = /^(source|report)_[0-9a-f-]{36}_(.+)$/i.exec(cleanText(item?.name));
+  if (!match || !item?.file) return null;
+  return {
+    id: item.id, kind: match[1].toLowerCase(), name: match[2],
+    size: Number(item.size || 0), uploadedAt: item.lastModifiedDateTime || null,
+    webUrl: item.webUrl || null,
+  };
+}
+
+function validateUploadSessionUrl(raw) {
+  const url = new URL(cleanText(raw));
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.username || url.password || url.port
+    || !(host.endsWith(".sharepoint.com") || host.endsWith(".1drv.com"))) {
+    throw new Error("유효하지 않은 Graph 업로드 세션 URL입니다.");
+  }
+  return url.href;
+}
+
+async function precisionDriveId(siteId, accessToken) {
+  const response = await fetchWithRetry(`${listUrl(siteId, "XRF_ReportLibrary")}/drive`, {
+    method: "GET", headers: graphHeaders(accessToken),
+  });
+  const drive = await response.json();
+  if (!drive?.id || drive.driveType !== "documentLibrary") throw new Error("XRF_ReportLibrary 문서 라이브러리를 찾지 못했습니다.");
+  return drive.id;
+}
+
+async function precisionFolder(driveId, measurementId, accessToken, create = false) {
+  const folderName = precisionFileFolderName(measurementId);
+  const root = `${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/root`;
+  const path = `${root}:/${encodeURIComponent(folderName)}`;
+  const find = async () => {
+    const response = await fetch(path, { method: "GET", headers: graphHeaders(accessToken) });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`문서 폴더 조회 실패: HTTP ${response.status}`);
+    const item = await response.json();
+    if (!item?.folder) throw new Error("정밀분석 문서 경로가 폴더가 아닙니다.");
+    return item;
+  };
+  let folder = await find();
+  if (folder || !create) return folder;
+  const response = await fetch(`${root}/children`, {
+    method: "POST", headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+  });
+  if (response.status === 409) folder = await find();
+  else if (response.ok) folder = await response.json();
+  else throw new Error(`정밀분석 문서 폴더 생성 실패: HTTP ${response.status}`);
+  if (!folder?.id) throw new Error("정밀분석 문서 폴더 ID를 받지 못했습니다.");
+  return folder;
+}
+
+async function precisionFolderFiles(driveId, folder, accessToken) {
+  if (!folder?.id) return [];
+  return (await graphGetAll(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}/children?$top=200`, accessToken))
+    .map(item => ({ item, metadata: precisionFileMetadata(item) }))
+    .filter(row => row.metadata);
+}
+
+function latestPrecisionFiles(rows) {
+  const output = { source: null, report: null };
+  for (const row of rows) {
+    const file = row.metadata;
+    if (!output[file.kind] || String(file.uploadedAt) > String(output[file.kind].uploadedAt)) output[file.kind] = file;
+  }
+  return output;
+}
+
+async function handleListPrecisionFiles(siteId, accessToken, measurementId) {
+  precisionFileFolderName(measurementId);
+  const driveId = await precisionDriveId(siteId, accessToken);
+  const folder = await precisionFolder(driveId, measurementId, accessToken);
+  return latestPrecisionFiles(await precisionFolderFiles(driveId, folder, accessToken));
+}
+
+async function handleBeginPrecisionFileUpload(siteId, accessToken, payload) {
+  const measurementId = cleanText(payload?.measurementId).trim();
+  const kind = cleanText(payload?.kind).trim();
+  const originalName = cleanText(payload?.fileName).trim();
+  const storedName = precisionUploadName(kind, originalName);
+  const size = Number(payload?.size);
+  if (!Number.isSafeInteger(size) || size < 1 || size > PRECISION_FILE_MAX_BYTES) {
+    throw new Error("파일은 1바이트 이상, 250MB 이하만 업로드할 수 있습니다.");
+  }
+  const measurements = await readList(siteId, "XRF_Measurements", accessToken);
+  if (!measurements.some(row => cleanText(row?.fields?.Title).trim() === measurementId)) {
+    throw new Error("실제 DB에 등록된 XRF 측정 건만 파일을 첨부할 수 있습니다.");
+  }
+  const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
+  if (!precisionRows.some(row => cleanText(row?.fields?.field_1).trim() === measurementId)) {
+    throw new Error("정밀분석 인계가 DB에 저장된 뒤 파일을 업로드하세요.");
+  }
+  const driveId = await precisionDriveId(siteId, accessToken);
+  const folder = await precisionFolder(driveId, measurementId, accessToken, true);
+  if (kind === "report") {
+    const files = latestPrecisionFiles(await precisionFolderFiles(driveId, folder, accessToken));
+    if (!files.source) throw new Error("XRF 원본 파일을 먼저 업로드하세요.");
+  }
+  const url = `${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}:/${encodeURIComponent(storedName)}:/createUploadSession`;
+  const response = await fetchWithRetry(url, {
+    method: "POST", headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "fail", name: storedName } }),
+  }, { retry5xx: false, retryNetwork: false });
+  const session = await response.json();
+  if (!session?.uploadUrl) throw new Error("Graph 업로드 세션을 시작하지 못했습니다.");
+  return { uploadUrl: validateUploadSessionUrl(session.uploadUrl), storedName, chunkBytes: PRECISION_FILE_CHUNK_BYTES };
+}
+
+async function handlePrecisionFileChunk(payload) {
+  const uploadUrl = validateUploadSessionUrl(payload?.uploadUrl);
+  const offset = Number(payload?.offset);
+  const total = Number(payload?.totalSize);
+  const base64 = cleanText(payload?.base64);
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(total)
+    || total < 1 || total > PRECISION_FILE_MAX_BYTES || !base64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+    throw new Error("업로드 조각의 크기 또는 형식이 올바르지 않습니다.");
+  }
+  const bytes = Buffer.from(base64, "base64");
+  if (!bytes.length || bytes.length > PRECISION_FILE_CHUNK_BYTES || offset + bytes.length > total
+    || Buffer.from(bytes).toString("base64") !== base64) {
+    throw new Error("업로드 조각 데이터가 올바르지 않습니다.");
+  }
+  if (offset + bytes.length < total && bytes.length % (320 * 1024) !== 0) {
+    throw new Error("마지막 조각을 제외한 업로드 크기는 320KiB의 배수여야 합니다.");
+  }
+  const response = await fetch(uploadUrl, {
+    method: "PUT", headers: {
+      "Content-Length": String(bytes.length),
+      "Content-Range": `bytes ${offset}-${offset + bytes.length - 1}/${total}`,
+    }, body: bytes,
+  });
+  if (![200, 201, 202].includes(response.status)) {
+    const detail = await response.text();
+    throw new Error(`Graph 파일 업로드 HTTP ${response.status}: ${detail.slice(0, 500)}`);
+  }
+  const result = await response.json();
+  return response.status === 202
+    ? { complete: false, nextExpectedRanges: result?.nextExpectedRanges || [] }
+    : { complete: true, driveItemId: result?.id || null };
+}
+
+async function handleFinishPrecisionFileUpload(siteId, accessToken, payload) {
+  const measurementId = cleanText(payload?.measurementId).trim();
+  const storedName = cleanText(payload?.storedName).trim();
+  const driveItemId = cleanText(payload?.driveItemId).trim();
+  precisionFileFolderName(measurementId);
+  if (!driveItemId || !storedName) throw new Error("완료된 파일의 Graph ID가 없습니다.");
+  const driveId = await precisionDriveId(siteId, accessToken);
+  const folder = await precisionFolder(driveId, measurementId, accessToken);
+  const rows = await precisionFolderFiles(driveId, folder, accessToken);
+  const file = rows.find(row => row.item.id === driveItemId && row.item.name === storedName)?.metadata;
+  if (!file || file.size < 1) throw new Error("문서 라이브러리에 업로드된 파일을 확인하지 못했습니다.");
+  const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
+  const header = precisionRows.find(row => cleanText(row?.fields?.field_1).trim() === measurementId);
+  if (!header) throw new Error("정밀분석 인계 기록을 찾지 못해 파일을 연결하지 못했습니다.");
+  await patchListItem(siteId, "XRF_PrecisionAnalyses", header.id,
+    file.kind === "report" ? { field_5: file.name, field_6: false } : { field_6: false }, accessToken);
+  return file;
 }
 
 async function graphGetAll(firstUrl, accessToken) {
@@ -651,7 +835,13 @@ export default async function handler(req, res) {
     const siteId = process.env.MXKPCS_SITE_ID || DEFAULT_SITE_ID;
     const accessToken = await acquireGraphToken();
 
-    if (req.method === "GET") return sendJson(res, 200, await readBootstrap(siteId, accessToken));
+    if (req.method === "GET") {
+      const params = new URL(req.url || "/", "http://localhost").searchParams;
+      if (params.has("precisionFilesFor")) {
+        return sendJson(res, 200, { ok: true, files: await handleListPrecisionFiles(siteId, accessToken, params.get("precisionFilesFor")) });
+      }
+      return sendJson(res, 200, await readBootstrap(siteId, accessToken));
+    }
 
     if (req.method === "DELETE") {
       const body = await parseBody(req);
@@ -674,6 +864,9 @@ export default async function handler(req, res) {
     else if (action === "processDiscontinue") result = await handleProcessDiscontinue(siteId, accessToken, payload);
     else if (action === "revertDiscontinue") result = await handleRevertDiscontinue(siteId, accessToken, payload);
     else if (action === "upsertPrecision") result = await handleUpsertPrecision(siteId, accessToken, payload);
+    else if (action === "beginPrecisionFileUpload") result = await handleBeginPrecisionFileUpload(siteId, accessToken, payload);
+    else if (action === "uploadPrecisionFileChunk") result = await handlePrecisionFileChunk(payload);
+    else if (action === "finishPrecisionFileUpload") result = await handleFinishPrecisionFileUpload(siteId, accessToken, payload);
     else if (action === "deleteRecord") result = await handleDeleteRecord(siteId, accessToken, payload);
     else if (action === "writeProbe") result = await handleWriteProbe(siteId, accessToken);
     else throw new Error(`지원하지 않는 action: ${action}`);
