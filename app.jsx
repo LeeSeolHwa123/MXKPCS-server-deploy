@@ -398,6 +398,7 @@ const ITEM_NAME_EN_FALLBACKS = Object.freeze({
 // 브라우저는 동일 호스트의 /api/xrf-sharepoint만 호출하고,
 // Microsoft Graph용 Client Secret은 서버 환경변수에만 보관합니다.
 const XRF_SHAREPOINT_API = "/api/xrf-sharepoint";
+const WRITE_ACCESS_API = "/api/write-access";
 
 async function fetchSharePointBootstrap(){
   const response=await fetch(XRF_SHAREPOINT_API,{
@@ -2276,6 +2277,11 @@ function measurementFollowupInfo(m){
     remeasureElements.length?`XRF 재측정: ${remeasureElements.join(", ")}`:""
   ].filter(Boolean).join(" · ") || "추가 조치 없음";
   return {precisionElements,remeasureElements,flaggedElements,label,detail,hasFollowup:flaggedElements.length>0};
+}
+function measurementFollowupVisibleDetail(info){
+  // 정밀분석 대상 원소는 바로 위 원소별 상태에서 이미 강조되므로 같은 목록을 문장으로 반복하지 않습니다.
+  // 재측정 의무가 함께 있는 경우에만 사용자가 처리 대상을 놓치지 않도록 별도 문구를 유지합니다.
+  return info?.remeasureElements?.length ? `XRF 재측정: ${info.remeasureElements.join(", ")}` : "";
 }
 function retestShortText(list){
   return list?.length ? `${list.join(", ")} 필요` : "필요 없음";
@@ -4453,6 +4459,7 @@ function XrfResultSummary({measurement, item}){
   const isReference=measurement?.id && basis?.id && measurement.id===basis.id;
   const followupInfo=measurementFollowupInfo(measurement);
   const {precisionElements,remeasureElements,flaggedElements,hasFollowup}=followupInfo;
+  const visibleFollowupDetail=measurementFollowupVisibleDetail(followupInfo);
   const stepStyle={background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,padding:"10px 12px",minWidth:0,textAlign:"center",boxShadow:"0 2px 10px rgba(26,32,32,.08)",boxSizing:"border-box"};
   const precisionSet=new Set(precisionElements);
   const remeasureSet=new Set(remeasureElements);
@@ -4493,9 +4500,9 @@ function XrfResultSummary({measurement, item}){
         {/* 후속조치 값은 배지/버튼 없이 검정 텍스트로만 표시합니다. */}
         <div style={{display:"grid",justifyItems:"center",alignItems:"center",rowGap:5,width:"fit-content",maxWidth:"100%",margin:"0 auto"}}>
           <span style={{fontFamily:FONT_SANS,fontSize:11,fontWeight:500,color:C.text1,lineHeight:1.45,letterSpacing:0,textAlign:"center"}}>{followupInfo.label}</span>
-          <div style={{fontSize:11,color:C.text2,fontWeight:400,textAlign:"center",lineHeight:1.5,maxWidth:560}}>
-            {hasFollowup?followupInfo.detail:"원본 보고서 Judgment 기준 후속조치 대상이 없습니다."}
-          </div>
+          {hasFollowup
+            ? visibleFollowupDetail&&<div style={{fontSize:11,color:C.text2,fontWeight:400,textAlign:"center",lineHeight:1.5,maxWidth:560}}>{visibleFollowupDetail}</div>
+            : <div style={{fontSize:11,color:C.text2,fontWeight:400,textAlign:"center",lineHeight:1.5,maxWidth:560}}>원본 보고서 Judgment 기준 후속조치 대상이 없습니다.</div>}
         </div>
       </div>
   );
@@ -4555,7 +4562,7 @@ function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeri
           const followupInfo=m?measurementFollowupInfo(m):null;
           const hasFollowup=!!followupInfo?.hasFollowup;
           const followup=m ? followupInfo.label : "측정 없음";
-          const followupDetail=m ? followupInfo.detail : "XRF 결과 업로드 대기";
+          const followupDetail=m ? measurementFollowupVisibleDetail(followupInfo) : "";
           const st=ST[normStatus(p.status)]||ST.upcoming;
           const handleClick=()=>{
             if(m?.id && onSelectMeasurement) onSelectMeasurement(p.num,m.id);
@@ -4577,7 +4584,7 @@ function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeri
                   ? [["XRF Result", <Chip v={displayXrfText(xrfResult)} small result/>], ["XRF Level", <Chip v={xrfLevel||"—"} small/>], ["Final Risk", <Chip v={final} small/>]]
                   : [["XRF Result", <Chip v={displayXrfText(xrfResult)} small result/>], ["적용 Risk", <Chip v={final} small/>], ["후속조치", <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,minWidth:0,width:"100%",textAlign:"center"}}>
                     <span style={{fontFamily:FONT_SANS,fontSize:10.5,fontWeight:500,color:C.text1,lineHeight:1.4,letterSpacing:0,textAlign:"center",whiteSpace:"normal"}}>{followup}</span>
-                    {hasFollowup&&<span style={{fontSize:9,fontWeight:400,color:C.text2,lineHeight:1.25,whiteSpace:"normal",textAlign:"center"}}>{followupDetail}</span>}
+                    {followupDetail&&<span style={{fontSize:9,fontWeight:400,color:C.text2,lineHeight:1.25,whiteSpace:"normal",textAlign:"center"}}>{followupDetail}</span>}
                   </div>]]
                 ).map(([label,node])=>(
                   <div key={label} style={{background:isSel?C.alt:C.card,border:`1px solid ${C.bd}`,borderRadius:10,padding:"8px 6px",minWidth:0,overflow:"hidden",textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
@@ -5954,10 +5961,370 @@ function DeptRiskChart({rows, riskMeta}){
   );
 }
 
+// 첨부 시안에서 추출한 실제 배경색입니다. 위 #1F272F → 아래 #191F26 의 세로 그라데이션이며,
+// C.charcoalDk(#1A2020)보다 약간 푸른 기가 도는 차콜입니다.
+const SPLASH_BG_TOP = "#1F272F";
+const SPLASH_BG_MID = "#1D242D";
+const SPLASH_BG_BTM = "#191F26";
+const SPLASH_BG     = `linear-gradient(180deg, ${SPLASH_BG_TOP} 0%, ${SPLASH_BG_MID} 46%, ${SPLASH_BG_BTM} 100%)`;
+const SPLASH_DIM   = "rgba(255,255,255,.74)";
+const SPLASH_DIM_2 = "rgba(255,255,255,.55)";
+const SPLASH_LINE  = "rgba(255,255,255,.12)";
+
+function SplashIcon({name}){
+  const p={fill:"none",stroke:"currentColor",strokeWidth:1.5,
+    strokeLinecap:"round",strokeLinejoin:"round"};
+  return (
+    <svg width="27" height="27" viewBox="0 0 24 24" aria-hidden="true">
+      {name==="list"&&<g {...p}>
+        <rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/>
+        <path d="M7.5 9h9M7.5 12.5h9M7.5 16h5.5"/></g>}
+      {name==="xrf"&&<g {...p}>
+        <path d="M3.5 18.5h17"/>
+        <path d="M4 15.5l4.5-5 3.5 3.5 4-6.5 4 4.5"/>
+        <circle cx="8.5" cy="10.5" r="1.3"/><circle cx="16" cy="7.5" r="1.3"/></g>}
+      {name==="precision"&&<g {...p}>
+        <path d="M6 3.5h7.5L18.5 8.5V20a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5Z"/>
+        <path d="M13 3.5V9h5.5"/><circle cx="11" cy="14.5" r="2.6"/><path d="M13 16.5l2 2"/></g>}
+      {name==="risk"&&<g {...p}>
+        <path d="M3.5 15.5a8.5 8.5 0 0 1 17 0"/><path d="M12 15.5l4-4.5"/>
+        <circle cx="12" cy="15.5" r="1.1"/><path d="M3.5 18.5h17"/></g>}
+      {name==="reg"&&<g {...p}>
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5"/></g>}
+    </svg>
+  );
+}
+
+function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", department="QEX"}){
+  const t=(ko,en)=>lang==="en"?en:ko;
+
+  // 궤도 = 앱이 자동으로 수행하는 4단계. 한 줄 소개문의 네 절과 그대로 대응합니다.
+  //   판독 → 산정 → 추적 → 이관 순으로 한 바퀴 돌며, 이 과정이 주기마다 반복됩니다.
+  const orbit=[
+    {x:270,y:311,anchor:"end",  l1:"XRF SCREENING", l2:t("측정값 판독","Reads uploaded results")},
+    {x:270,y:189,anchor:"end",  l1:"RISK & CYCLE",  l2:t("위험도와 주기 산정","Risk and cycle")},
+    {x:730,y:189,anchor:"start",l1:"DUE TRACKING",  l2:t("도래일과 지연 추적","Due date and overdue")},
+    {x:730,y:311,anchor:"start",l1:"ESCALATION",    l2:t("재측정과 정밀분석","Re-measure and precision")},
+  ];
+
+  // 하단 = 실제 TABS
+  const menus=[
+    {tab:"list",      icon:"list",      label:t("부자재 리스트","Materials")},
+    {tab:"xrf",       icon:"xrf",       label:t("XRF 분석","XRF Analysis")},
+    {tab:"precision", icon:"precision", label:t("정밀분석","Precision Analysis")},
+    {tab:"risk",      icon:"risk",      label:t("위험도 현황","Risk Overview")},
+    {tab:"reg",       icon:"reg",       label:t("품목 / 변경 관리","Registration")},
+  ];
+
+  return (
+    <div className="mxk-splash" style={{height:"100dvh",minHeight:0,maxHeight:"100dvh",background:SPLASH_BG,fontFamily:FONT_SANS,
+      display:"flex",flexDirection:"column",position:"relative",overflow:"hidden",boxSizing:"border-box"}}>
+
+      {/* 배경 레이어
+          ① 상단 광원 ② 중앙 하단의 붉은 잔광(그래픽의 레드 플레이트와 이어집니다)
+          ③ 가장자리를 눌러 주는 비네트 — 시선이 가운데로 모이게 합니다 */}
+      <div aria-hidden="true" style={{position:"absolute",inset:0,pointerEvents:"none",
+        background:[
+          "radial-gradient(1100px 520px at 50% 2%, rgba(255,255,255,.055), transparent 68%)",
+          "radial-gradient(760px 340px at 50% 62%, rgba(230,10,50,.10), transparent 70%)",
+          "radial-gradient(120% 90% at 50% 50%, transparent 52%, rgba(0,0,0,.38) 100%)",
+        ].join(",")}}/>
+      <style>{`
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css');
+        @keyframes mxk-drift { to { stroke-dashoffset:-1000; } }
+        @keyframes mxk-breathe { 0%,100%{opacity:.62} 50%{opacity:1} }
+        .mxk-trace { animation: mxk-drift 14s linear infinite; }
+        .mxk-breathe { animation: mxk-breathe 6s ease-in-out infinite; }
+        .mxk-splash button { font-family:${FONT_SANS}; }
+        .mxk-splash-header { flex:0 0 auto; }
+        .mxk-splash-main { min-height:0; overflow:hidden; display:grid; grid-template-columns:minmax(0,1.16fr) minmax(410px,.84fr); grid-template-rows:auto auto; align-content:center; align-items:center; column-gap:clamp(28px,4vw,76px); row-gap:clamp(16px,2.7dvh,28px); }
+        .mxk-splash-content { grid-column:2; grid-row:1; align-self:end; min-width:0; text-align:left; }
+        .mxk-splash-hero-wrap { position:relative; grid-column:1; grid-row:1 / span 2; align-self:center; width:100%; min-width:0; display:flex; justify-content:center; }
+        .mxk-splash-hero { width:100%; min-height:250px; }
+        .mxk-splash-menu { grid-column:2; grid-row:2; align-self:start; display:grid; grid-template-columns:1fr; gap:8px; width:100%; max-width:530px; }
+        .mxk-splash-orbit-mobile { display:none; }
+        .mxk-splash-footer { flex:0 0 auto; }
+        .mxk-splash-menu-item { position:relative; appearance:none; -webkit-appearance:none; display:flex; align-items:center; gap:14px; width:100%; min-height:56px; padding:5px 14px; border:1px solid rgba(255,255,255,.16); border-radius:12px; background:rgba(255,255,255,.035); color:#fff; cursor:pointer; text-align:left; transition:color .18s ease, background .18s ease, border-color .18s ease, transform .18s ease; }
+        .mxk-splash-menu-icon { display:grid; flex:0 0 auto; place-items:center; align-self:center; width:42px; height:42px; box-sizing:border-box; border:1px solid transparent; border-radius:12px; transition:background .18s ease, border-color .18s ease, box-shadow .18s ease; }
+        .mxk-splash-menu-icon svg { display:block; }
+        .mxk-splash-menu-label { min-width:0; color:#fff; font-size:16px; font-weight:650; line-height:1.35; }
+        .mxk-splash-menu-arrow { margin-left:auto; color:rgba(255,255,255,.5); font-size:19px; line-height:1; }
+        .mxk-splash-menu-item:hover .mxk-splash-menu-icon, .mxk-splash-menu-item:focus-visible .mxk-splash-menu-icon { background:${C.red}; border-color:${C.red}; box-shadow:0 0 0 4px rgba(230,10,50,.15), 0 8px 22px rgba(230,10,50,.3); }
+        .mxk-splash-menu-item:focus-visible { outline:none; }
+        .mxk-splash-menu-item:focus-visible .mxk-splash-menu-icon { outline:2px solid rgba(255,255,255,.75); outline-offset:3px; }
+        .mxk-splash-menu-item:active .mxk-splash-menu-icon { background:#B90027; }
+        @media (prefers-reduced-motion: reduce) {
+          .mxk-trace, .mxk-breathe { animation: none; }
+        }
+        @media (max-width:980px) {
+          .mxk-splash-main { display:flex; flex-direction:column; align-items:center; justify-content:center; }
+          .mxk-splash-content { width:100%; max-width:780px; text-align:center; }
+          .mxk-splash-title { font-size:clamp(40px,6vw,64px) !important; }
+          .mxk-splash-subtitle { font-size:clamp(15px,2.6vw,21px) !important; }
+          .mxk-splash-rule { margin-left:auto !important; margin-right:auto !important; }
+          .mxk-splash-copy { margin:0 auto; font-size:calc(clamp(12px,1.6vw,14px) - 1.5pt) !important; }
+          .mxk-splash-hero-wrap { max-width:1000px; margin-top:clamp(9px,1.7dvh,18px); }
+          .mxk-splash-hero { min-height:150px; height:clamp(165px,39dvh,430px) !important; }
+          .mxk-splash-menu { width:min(710px,100%); max-width:none; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0; margin-top:clamp(12px,2.3dvh,25px); }
+          .mxk-splash-menu-item { flex-direction:column; justify-content:center; gap:clamp(4px,.8dvh,8px); min-height:76px; padding:2px 6px; border:0; border-radius:0; background:transparent; text-align:center; }
+          .mxk-splash-menu-item:not(:first-child) { border-left:1px solid ${SPLASH_LINE}; }
+          .mxk-splash-menu-icon { width:45px; height:45px; border-radius:14px; }
+          .mxk-splash-menu-label { font-size:13px; white-space:normal; }
+          .mxk-splash-menu-arrow { display:none; }
+        }
+        @media (max-width:620px) {
+          .mxk-splash-header { padding-left:12px !important; padding-right:12px !important; gap:8px !important; }
+          .mxk-splash-brand { gap:6px !important; }
+          .mxk-splash-brand span:last-child { font-size:9px !important; }
+          .mxk-splash-language button { padding:4px 8px !important; font-size:10px !important; }
+          .mxk-splash-main { padding-left:8px !important; padding-right:8px !important; }
+          .mxk-splash-menu-item { padding-left:2px !important; padding-right:2px !important; }
+          .mxk-splash-menu-icon { width:38px; height:38px; }
+          .mxk-splash-menu-item svg { width:23px; height:23px; }
+          .mxk-splash-menu-label { font-size:11px !important; line-height:1.25 !important; white-space:normal !important; }
+          .mxk-splash-orbit-text { display:none; }
+          .mxk-splash-orbit-mobile { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 12px; width:min(380px,100%); margin-top:4px; text-align:center; }
+          .mxk-splash-orbit-mobile strong { display:block; color:#fff; font-size:10.5px; font-weight:600; letter-spacing:.3px; line-height:1.25; }
+          .mxk-splash-orbit-mobile span { display:block; color:rgba(255,255,255,.67); font-size:10px; line-height:1.25; }
+        }
+        @media (max-height:650px) {
+          .mxk-splash-main { row-gap:12px; }
+          .mxk-splash-copy { font-size:calc(clamp(12px,1.15vw,15px) - 1.5pt) !important; line-height:1.4 !important; }
+          .mxk-splash-hero { min-height:180px; height:46dvh !important; }
+          .mxk-splash-menu { gap:5px; }
+          .mxk-splash-menu-item { min-height:46px; }
+          .mxk-splash-menu-icon { width:36px; height:36px; }
+          .mxk-splash-menu-item svg { width:22px; height:22px; }
+        }
+        @media (max-width:980px) and (max-height:650px) {
+          .mxk-splash-hero-wrap { margin-top:8px !important; }
+          .mxk-splash-hero { min-height:130px; height:30dvh !important; }
+          .mxk-splash-menu { gap:0; margin-top:7px !important; }
+          .mxk-splash-menu-item { min-height:70px; }
+          .mxk-splash-menu-label { font-size:11px !important; }
+        }
+      `}</style>
+
+      {/* 상단 */}
+      <div className="mxk-splash-header" style={{position:"relative",display:"flex",alignItems:"center",
+        justifyContent:"space-between",gap:20,padding:"clamp(10px,2.5dvh,30px) clamp(20px,4vw,52px) 0",flexWrap:"nowrap"}}>
+        <div className="mxk-splash-brand" data-i18n-skip="true" style={{display:"flex",alignItems:"baseline",gap:10,whiteSpace:"nowrap"}}>
+          <span style={{fontFamily:"Arial Black,Arial,sans-serif",fontWeight:900,fontSize:21,
+            color:C.red,letterSpacing:"-1px"}}>molex</span>
+          <span style={{fontFamily:"Georgia,serif",fontStyle:"italic",fontSize:11,
+            color:SPLASH_DIM}}>creating connections for life</span>
+        </div>
+        <div className="mxk-splash-language" style={{display:"flex",alignItems:"center",gap:2,border:`1px solid ${SPLASH_LINE}`,
+          borderRadius:UI.pill,padding:3}}>
+          {[["ko",t("한국어","Korean")],["en","English"]].map(([k,label])=>(
+            <button key={k} type="button" onClick={()=>onLang&&onLang(k)} aria-pressed={lang===k}
+              style={{padding:"5px 13px",borderRadius:UI.pill,border:"none",cursor:"pointer",
+                fontSize:10.5,fontWeight:600,letterSpacing:".3px",
+                background:lang===k?"rgba(255,255,255,.12)":"transparent",
+                color:lang===k?"#fff":SPLASH_DIM}}>{label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* 본문 */}
+      <div className="mxk-splash-main" style={{position:"relative",flex:"1 1 auto",width:"100%",maxWidth:1540,margin:"0 auto",
+        boxSizing:"border-box",padding:"clamp(6px,1.5dvh,18px) clamp(20px,4vw,64px) clamp(8px,1.5dvh,18px)"}}>
+
+        <div className="mxk-splash-content">
+          <h1 className="mxk-splash-title" data-i18n-skip="true" style={{margin:0,fontSize:"clamp(56px,min(5.7vw,10dvh),88px)",fontWeight:800,
+            letterSpacing:"-2.5px",lineHeight:1,color:"#fff"}}>
+            MXK<span style={{color:C.red}}>PCS</span>
+          </h1>
+          <div className="mxk-splash-subtitle" data-i18n-skip="true" style={{marginTop:"clamp(9px,1.5dvh,15px)",fontSize:"clamp(20px,2vw,27px)",
+            fontWeight:500,letterSpacing:"-.2px",color:"rgba(255,255,255,.9)"}}>Product Compliance System</div>
+          <div className="mxk-splash-rule" aria-hidden="true" style={{width:48,height:2,background:C.red,margin:"clamp(13px,2dvh,20px) 0 clamp(10px,1.5dvh,15px)"}}/>
+          <div className="mxk-splash-copy" style={{maxWidth:600,fontSize:"calc(clamp(15px,1.25vw,18px) - 1.5pt)",lineHeight:1.6,
+            color:"#fff"}}>
+            {t("부자재의 신규 등록과 변경, 단종을 관리하고 업로드한 XRF 파일에서 위험도와 관리주기를 자동 산정합니다.",
+               "Manage registration, change and discontinuation of auxiliary materials, and derive risk level and inspection cycle automatically from uploaded XRF files.")}
+          </div>
+        </div>
+
+        {/* 히어로 그래픽 — 시안의 아이소메트릭 유리판 + 레드 글로우 + 궤도는 유지하고,
+            방패·잎사귀 자리에 이 시스템의 실제 판정을 넣었습니다.
+              · 유리판 위 7개 막대 = Pb · Hg · Cr · Cd · Cl · Br · Cl+Br 원소 측정값
+              · 위쪽 두 평면      = Legal Limit(빨강) / Internal Limit = Legal × 70%(주황)
+              · Cd 막대가 내부 기준 평면을 뚫고 올라가 초과 상태를 나타냅니다
+              · 궤도             = 관리주기 R → P1 → P2 → P3 ··· 의 반복             */}
+        <div className="mxk-splash-hero-wrap">
+          <svg className="mxk-splash-hero" viewBox="85 60 830 340" width="100%" role="img" aria-hidden="true"
+            style={{height:"clamp(290px,56dvh,500px)",margin:0,display:"block"}}>
+          <defs>
+            <linearGradient id="mxk-bar" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(255,255,255,.92)"/>
+              <stop offset="55%" stopColor="rgba(255,255,255,.44)"/>
+              <stop offset="100%" stopColor="rgba(255,255,255,.14)"/>
+            </linearGradient>
+            <linearGradient id="mxk-bar-ng" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#FFD79B"/>
+              <stop offset="45%" stopColor={A.amber.solid} stopOpacity=".85"/>
+              <stop offset="100%" stopColor={A.amber.solid} stopOpacity=".16"/>
+            </linearGradient>
+            <linearGradient id="mxk-plate" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="rgba(255,255,255,.22)"/>
+              <stop offset="48%" stopColor="rgba(255,255,255,.08)"/>
+              <stop offset="100%" stopColor="rgba(255,255,255,.03)"/>
+            </linearGradient>
+            <linearGradient id="mxk-plate-red" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#FF4D6E"/>
+              <stop offset="100%" stopColor={C.red}/>
+            </linearGradient>
+            {/* 궤도 : 양 끝이 사라지는 선 */}
+            <linearGradient id="mxk-ring" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%"   stopColor="rgba(255,255,255,0)"/>
+              <stop offset="22%"  stopColor="rgba(255,255,255,.20)"/>
+              <stop offset="50%"  stopColor="rgba(255,255,255,.07)"/>
+              <stop offset="78%"  stopColor="rgba(255,255,255,.20)"/>
+              <stop offset="100%" stopColor="rgba(255,255,255,0)"/>
+            </linearGradient>
+            <radialGradient id="mxk-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor={C.red} stopOpacity=".62"/>
+              <stop offset="55%" stopColor={C.red} stopOpacity=".18"/>
+              <stop offset="100%" stopColor={C.red} stopOpacity="0"/>
+            </radialGradient>
+            <radialGradient id="mxk-orbit-dot-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#FF536D" stopOpacity=".75"/>
+              <stop offset="35%" stopColor={C.red} stopOpacity=".38"/>
+              <stop offset="100%" stopColor={C.red} stopOpacity="0"/>
+            </radialGradient>
+            {/* 막대 아래로 비치는 반사 */}
+            <linearGradient id="mxk-mirror" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(255,255,255,.16)"/>
+              <stop offset="100%" stopColor="rgba(255,255,255,0)"/>
+            </linearGradient>
+            <filter id="mxk-soft" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="7"/>
+            </filter>
+            <filter id="mxk-tip" x="-120%" y="-120%" width="340%" height="340%">
+              <feGaussianBlur stdDeviation="3.4"/>
+            </filter>
+            <marker id="mxk-arrow" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5"
+              orient="auto"><path d="M1 1 L8 4.5 L1 8 Z" fill="rgba(255,255,255,.34)"/></marker>
+          </defs>
+
+          <ellipse className="mxk-breathe" cx="500" cy="358" rx="228" ry="46" fill="url(#mxk-glow)"/>
+
+          {/* 관리주기 궤도 + 궤도를 천천히 도는 빛줄기 */}
+          <g transform="rotate(-4 500 250)">
+            <ellipse cx="500" cy="250" rx="300" ry="95" fill="none"
+              stroke="url(#mxk-ring)" strokeWidth="1.1"/>
+            <ellipse className="mxk-trace" cx="500" cy="250" rx="300" ry="95" fill="none"
+              stroke="rgba(255,255,255,.62)" strokeWidth="1.4" strokeLinecap="round"
+              pathLength="1000" strokeDasharray="20 980"/>
+          </g>
+          <path d="M232 214 A 300 95 -4 0 1 292 170" fill="none"
+            stroke="rgba(255,255,255,.26)" strokeWidth="1.2" markerEnd="url(#mxk-arrow)"/>
+          <path d="M708 170 A 300 95 -4 0 1 768 214" fill="none"
+            stroke="rgba(255,255,255,.26)" strokeWidth="1.2" markerEnd="url(#mxk-arrow)"/>
+
+          {/* 기준 평면 — 뒤쪽 */}
+          <path d="M348 140 L500 87 L652 140 L500 193 Z" fill={C.red} fillOpacity=".055"
+            stroke={C.red} strokeOpacity=".50" strokeWidth="1"/>
+          <path d="M348 188 L500 135 L652 188 L500 241 Z" fill={A.amber.solid} fillOpacity=".055"
+            stroke={A.amber.solid} strokeOpacity=".50" strokeWidth="1" strokeDasharray="5 4"/>
+
+          {/* 받침 : 레드 플레이트(번짐 포함) + 유리 플레이트 */}
+          <path d="M500 292 L622 334 L500 376 L378 334 Z" fill={C.red} opacity=".55"
+            filter="url(#mxk-soft)"/>
+          <path d="M500 292 L622 334 L500 376 L378 334 Z" fill="url(#mxk-plate-red)" opacity=".92"/>
+          <path d="M500 247 L652 300 L500 353 L348 300 Z" fill="url(#mxk-plate)"
+            stroke="rgba(255,255,255,.26)" strokeWidth="1"/>
+          <path d="M348 300 L500 247 L652 300" fill="none" stroke="rgba(255,255,255,.34)" strokeWidth="1"/>
+
+          {/* 원소 측정 막대 (왼쪽부터 큰 값) */}
+          {[["Cd",380,128,true],["Pb",420,92,false],["Cl+Br",460,86,false],["Cr",500,70,false],
+            ["Cl",540,60,false],["Br",580,54,false],["Hg",620,46,false]].map(([el,x,hgt,over])=>{
+            const top=300-hgt;
+            const tint=over?A.amber.solid:"#fff";
+            return (
+              <g key={el}>
+                <rect x={x-7} y={top+14} width="14" height={hgt-14} rx="3"
+                  fill={tint} opacity={over?".34":".16"} filter="url(#mxk-soft)"/>
+                <rect x={x-9} y={top} width="18" height={hgt+26} rx="3"
+                  fill="url(#mxk-mirror)" opacity=".5"/>
+                <rect x={x-9} y={top} width="18" height={hgt} rx="3"
+                  fill={over?"url(#mxk-bar-ng)":"url(#mxk-bar)"}/>
+                <ellipse cx={x} cy={top} rx="13" ry="4.5" fill={tint}
+                  opacity={over?".55":".34"} filter="url(#mxk-tip)"/>
+                <ellipse cx={x} cy={top} rx="9" ry="3" fill={over?"#FFD79B":"rgba(255,255,255,.96)"}/>
+                <text x={x} y={top-11} textAnchor="middle" fontSize="9.5" fontWeight="600"
+                  letterSpacing=".3" fill="#fff">{el}</text>
+              </g>
+            );
+          })}
+
+          {/* 기준 평면 — 앞쪽 모서리를 막대 위에 겹칩니다 */}
+          <path d="M348 140 L500 193 L652 140" fill="none" stroke={C.red}
+            strokeOpacity=".85" strokeWidth="1.5"/>
+          <path d="M348 188 L500 241 L652 188" fill="none" stroke={A.amber.solid}
+            strokeOpacity=".85" strokeWidth="1.5" strokeDasharray="5 4"/>
+          <text x="648" y="128" textAnchor="end" fontSize="10.5" fontWeight="600"
+            letterSpacing="1" fill="rgba(255,255,255,.78)">LEGAL LIMIT</text>
+          <text x="648" y="176" textAnchor="end" fontSize="10.5" fontWeight="600"
+            letterSpacing="1" fill="rgba(255,255,255,.78)">INTERNAL 70%</text>
+
+          {orbit.map(o=>(
+            <g key={o.l1}>
+              <circle className="mxk-breathe" cx={o.x} cy={o.y} r="20" fill="url(#mxk-orbit-dot-glow)"/>
+              <circle cx={o.x} cy={o.y} r="4.5" fill={C.red}/>
+              <circle cx={o.x} cy={o.y} r="9.5" fill="none" stroke={C.red}
+                strokeOpacity=".28" strokeWidth="1"/>
+              <text className="mxk-splash-orbit-text" x={o.anchor==="end"?o.x-20:o.x+20} y={o.y-3} textAnchor={o.anchor}
+                fontSize="16.5" fontWeight="600" letterSpacing=".7" fill="#fff">{o.l1}</text>
+              <text className="mxk-splash-orbit-text" x={o.anchor==="end"?o.x-20:o.x+20} y={o.y+16} textAnchor={o.anchor}
+                fontSize="14" fontWeight="400" fill="rgba(255,255,255,.68)">{o.l2}</text>
+            </g>
+          ))}
+          </svg>
+        </div>
+        <div className="mxk-splash-orbit-mobile">
+          {orbit.map(o=><div key={o.l1}><strong>{o.l1}</strong><span>{o.l2}</span></div>)}
+        </div>
+
+        {/* 메뉴 5개 */}
+        <div className="mxk-splash-menu">
+          {menus.map(m=>(
+            <button type="button" className="mxk-splash-menu-item" data-splash-tab={m.tab} key={m.tab}
+              onClick={()=>onSelectTab&&onSelectTab(m.tab)} aria-label={m.label}>
+              <span className="mxk-splash-menu-icon"><SplashIcon name={m.icon}/></span>
+              <span className="mxk-splash-menu-label">{m.label}</span>
+              <span className="mxk-splash-menu-arrow" aria-hidden="true">→</span>
+            </button>
+          ))}
+        </div>
+
+      </div>
+
+      {/* 푸터 */}
+      <div className="mxk-splash-footer" style={{position:"relative"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,
+          flexWrap:"nowrap",padding:"0 clamp(12px,4vw,52px) clamp(7px,1.5dvh,16px)",fontSize:10,color:SPLASH_DIM_2}}>
+          <span data-i18n-skip="true" style={{display:"inline-flex",alignItems:"center",gap:9}}>
+            <span style={{letterSpacing:".6px"}}>Developer</span>
+            <span style={{color:SPLASH_DIM,fontWeight:600}}>{developer}</span>
+            <span aria-hidden="true" style={{width:1,height:11,background:SPLASH_LINE}}/>
+            <span>{department}</span>
+          </span>
+        </div>
+        <div aria-hidden="true" style={{height:4,background:C.red}}/>
+      </div>
+    </div>
+  );
+}
+
+
+
 const MATERIAL_LIST_PAGE_SIZE=100;
 
 export default function App(){
   const appRootRef=useRef(null);
+  const [entered,setEntered]=useState(false);
   const [lang,setLang]=useState(()=>{
     try{ return localStorage.getItem("xrf-ui-language")==="en"?"en":"ko"; }catch{return "ko";}
   });
@@ -5980,6 +6347,9 @@ export default function App(){
   const [dbLoading,setDbLoading]=useState(true);
   const [dbError,setDbError]=useState("");
   const [dbReadOnly,setDbReadOnly]=useState(false);
+  const [dbAuthRequired,setDbAuthRequired]=useState(false);
+  const [writeAccessEmail,setWriteAccessEmail]=useState("");
+  const [writeAccessForm,setWriteAccessForm]=useState({open:false,email:"",code:"",error:"",busy:false});
   const [dbCounts,setDbCounts]=useState(null);
   const [selMeasurementId,setSelMeasurementId]=useState(null);
   const [xrfDetailView,setXrfDetailView]=useState("analysis");
@@ -6035,6 +6405,8 @@ export default function App(){
       setItemOverrides({});
       setDbCounts(runtime.counts);
       setDbReadOnly(payload.readOnly===true);
+      setDbAuthRequired(payload.authRequired===true);
+      setWriteAccessEmail(payload.writeAccessEmail||"");
     }catch(error){
       console.error(error);
       setDbError(error?.message||String(error));
@@ -6047,9 +6419,36 @@ export default function App(){
     reloadSharePointDb();
   },[reloadSharePointDb]);
 
+  const submitWriteAccess=useCallback(async(event)=>{
+    event.preventDefault();
+    if(writeAccessForm.busy) return;
+    setWriteAccessForm(prev=>({...prev,busy:true,error:""}));
+    try{
+      const response=await fetch(WRITE_ACCESS_API,{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",cache:"no-store",body:JSON.stringify({action:"login",email:writeAccessForm.email,code:writeAccessForm.code})});
+      const result=await response.json();
+      if(!response.ok||!result?.canWrite) throw new Error(result?.error||`HTTP ${response.status}`);
+      setWriteAccessForm(prev=>({...prev,open:false,code:"",error:"",busy:false}));
+      await reloadSharePointDb();
+    }catch(error){
+      setWriteAccessForm(prev=>({...prev,busy:false,error:error?.message||String(error)}));
+    }
+  },[writeAccessForm.email,writeAccessForm.code,writeAccessForm.busy,reloadSharePointDb]);
+
+  const logoutWriteAccess=useCallback(async()=>{
+    try{
+      const response=await fetch(WRITE_ACCESS_API,{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",cache:"no-store",body:JSON.stringify({action:"logout"})});
+      if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    }catch(error){
+      if(typeof window!=="undefined") window.alert(lang==="en"?`Sign out failed: ${error?.message||error}`:`로그아웃 실패: ${error?.message||error}`);
+    }finally{
+      setWriteAccessForm(prev=>({...prev,code:"",open:false}));
+      await reloadSharePointDb();
+    }
+  },[lang,reloadSharePointDb]);
+
   const persistSharePointAction=useCallback(async(action,payload,{reload=true,silent=false}={})=>{
     if(dbReadOnly){
-      if(!silent && typeof window!=="undefined") window.alert(lang==="en"?"This shared link is view-only. Make changes in the local app.":"공유 링크는 보기 전용입니다. 변경은 로컬 환경에서 진행해 주세요.");
+      if(!silent) setWriteAccessForm(prev=>({...prev,open:true,error:""}));
       return null;
     }
     if(VISUAL_UAT_MUTATION_ACTIONS.has(action) && containsVisualUatReference(payload)){
@@ -6066,7 +6465,7 @@ export default function App(){
       if(reload) await reloadSharePointDb();
       return null;
     }
-  },[dbReadOnly,lang,reloadSharePointDb]);
+  },[dbReadOnly,reloadSharePointDb]);
 
   // UI 언어는 표시 계층에서만 변환합니다. 데이터값/필터값/Workflow 비교값은 한국어 원본을 유지합니다.
   useEffect(()=>{
@@ -6114,7 +6513,7 @@ export default function App(){
         if(nativePrompt) window.prompt=nativePrompt;
       }
     };
-  },[lang]);
+  },[lang,entered]);
 
   // 품목이 바뀌면 이전 품목에서 수동으로 선택했던 주기 페이지를 이어받지 않습니다.
   useEffect(()=>{
@@ -7972,6 +8371,9 @@ export default function App(){
   const selectedReplacementTarget = selectableExistingItems.find(i=>i.code===reqForm.replacementTargetCode);
   const selectedDiscontinueTarget = selectableExistingItems.find(i=>i.code===reqForm.discontinueTargetCode);
 
+  if(!entered){
+    return <SplashScreen onSelectTab={(nextTab)=>{setTab(nextTab);setEntered(true);}} lang={lang} onLang={setLang}/>;
+  }
   if(dbLoading){
     return <div style={{fontFamily:FONT_SANS,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.bg,color:C.text2}}>
       <div style={{padding:"22px 26px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,fontSize:13,fontWeight:600}}>
@@ -8376,14 +8778,35 @@ export default function App(){
         </div>
       )}
 
+      {writeAccessForm.open&&(
+        <div role="presentation" onMouseDown={()=>setWriteAccessForm(prev=>({...prev,open:false,code:"",error:""}))} style={{position:"fixed",inset:0,zIndex:10001,display:"flex",alignItems:"center",justifyContent:"center",padding:18,background:"rgba(10,16,16,.58)",boxSizing:"border-box"}}>
+          <form role="dialog" aria-modal="true" aria-labelledby="write-access-title" onSubmit={submitWriteAccess} onMouseDown={event=>event.stopPropagation()} style={{width:"min(400px,100%)",padding:22,background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
+            <div id="write-access-title" style={{fontSize:16,fontWeight:750,color:C.text1}}>{lang==="en"?"Write access":"쓰기 권한 인증"}</div>
+            <div style={{marginTop:7,fontSize:11,color:C.text3,lineHeight:1.5}}>{lang==="en"?"Enter the approved account and its access code.":"승인된 계정과 해당 계정의 접근 코드를 입력하세요."}</div>
+            <label style={{display:"block",marginTop:16,fontSize:11,fontWeight:650}}>{lang==="en"?"Account email":"계정 이메일"}<input type="email" required autoComplete="username" value={writeAccessForm.email} onChange={event=>setWriteAccessForm(prev=>({...prev,email:event.target.value,error:""}))} style={{...inp,display:"block",width:"100%",marginTop:5,boxSizing:"border-box"}}/></label>
+            <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650}}>{lang==="en"?"Access code":"접근 코드"}<input type="password" required autoComplete="off" value={writeAccessForm.code} onChange={event=>setWriteAccessForm(prev=>({...prev,code:event.target.value,error:""}))} style={{...inp,display:"block",width:"100%",marginTop:5,boxSizing:"border-box"}}/></label>
+            {writeAccessForm.error&&<div role="alert" style={{marginTop:9,fontSize:11,color:C.redDk}}>{writeAccessForm.error}</div>}
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+              <button type="button" disabled={writeAccessForm.busy} onClick={()=>setWriteAccessForm(prev=>({...prev,open:false,code:"",error:""}))} style={{padding:"8px 13px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,cursor:"pointer"}}>{lang==="en"?"Cancel":"취소"}</button>
+              <button type="submit" disabled={writeAccessForm.busy} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:7,background:C.charcoalDk,color:"#fff",fontWeight:650,cursor:writeAccessForm.busy?"wait":"pointer"}}>{writeAccessForm.busy?(lang==="en"?"Checking...":"확인 중..."):(lang==="en"?"Unlock":"인증")}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       <div style={{background:C.card,borderBottom:`1px solid ${C.bd}`}}>
         <div className="app-shell app-topbar">
-          <div className="app-brand">
+          <button type="button" className="app-brand" onClick={()=>setEntered(false)} aria-label={lang==="en"?"Return to start screen":"시작 화면으로 돌아가기"} title={lang==="en"?"Return to start screen":"시작 화면으로 돌아가기"} style={{padding:0,border:0,background:"transparent",cursor:"pointer",fontFamily:FONT_SANS}}>
             <span style={{fontFamily:"Arial Black,Arial,sans-serif",fontWeight:900,fontSize:21,color:C.red,letterSpacing:"-1px"}}>molex</span>
             <span style={{fontFamily:"Georgia,serif",fontStyle:"italic",fontSize:11,color:C.text4}}>creating connections for life</span>
-          </div>
+          </button>
           <div className="app-topbar-alerts">
             <span style={{fontSize:11,color:C.text4}}>기준일 {TODAY_STR}</span>
+            {dbAuthRequired&&(
+              dbReadOnly
+                ? <button type="button" onClick={()=>setWriteAccessForm(prev=>({...prev,open:true,error:""}))} style={{padding:"7px 11px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,fontWeight:650,cursor:"pointer"}}>{lang==="en"?"Write access":"쓰기 권한 로그인"}</button>
+                : <div style={{display:"flex",alignItems:"center",gap:7,fontSize:11}}><span style={{color:C.text3}}>{writeAccessEmail}</span><button type="button" onClick={logoutWriteAccess} style={{padding:"7px 9px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,cursor:"pointer"}}>{lang==="en"?"Sign out":"로그아웃"}</button></div>
+            )}
             <div className="language-toggle" data-i18n-skip="true" role="group" aria-label="Language">
               <button type="button" className={lang==="ko"?"active":""} aria-pressed={lang==="ko"} onClick={()=>setLang("ko")}>{lang==="en"?"Korean":"한국어"}</button>
               <button type="button" className={lang==="en"?"active":""} aria-pressed={lang==="en"} onClick={()=>setLang("en")}>English</button>
@@ -8396,14 +8819,6 @@ export default function App(){
           </div>
         </div>
       </div>
-
-      {dbReadOnly&&(
-        <div data-i18n-skip="true" style={{background:"#edf3ff",borderBottom:`1px solid ${C.bd}`}}>
-          <div className="app-shell" style={{paddingTop:8,paddingBottom:8,fontSize:11,fontWeight:650,color:C.text2}}>
-            {lang==="en"?"Shared view-only link: editing and uploads are disabled.":"공유 보기 전용 링크: 등록·수정·업로드는 사용할 수 없습니다."}
-          </div>
-        </div>
-      )}
 
       {VISUAL_UAT_MODE&&(
         <div data-i18n-skip="true" data-visual-uat-banner="1" style={{background:A.purple.bg,borderBottom:`1px solid ${A.purple.ln}`}}>

@@ -2,6 +2,7 @@
 // SharePoint XRF DB READ + WRITE gateway
 // Client secret must exist only in server-side environment variables.
 import { randomUUID } from "node:crypto";
+import { verifyWriteSession } from "./write-access-auth.js";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const DEFAULT_TENANT = "kochind.com";
@@ -830,20 +831,45 @@ function isSharedReadOnlyDeployment() {
     || (process.env.VERCEL === "1" && process.env.NODE_ENV === "production");
 }
 
+const SHARED_APPROVED_ACTIONS = new Set([
+  "createRequest", "saveMeasurement", "updateItem", "processDiscontinue",
+  "revertDiscontinue", "upsertPrecision", "beginPrecisionFileUpload",
+  "uploadPrecisionFileChunk", "finishPrecisionFileUpload",
+]);
+
 export default async function handler(req, res) {
-  const readOnly = isSharedReadOnlyDeployment();
+  const shared = isSharedReadOnlyDeployment();
+  const session = shared ? verifyWriteSession(req) : null;
+  const readOnly = shared && !session;
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
-    res.setHeader("Allow", readOnly ? "GET, OPTIONS" : "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Allow", shared ? "GET, POST, OPTIONS" : "GET, POST, DELETE, OPTIONS");
     return res.end();
   }
 
+  if (shared && req.method === "DELETE") {
+    return sendJson(res, 403, { ok: false, error: "공유 배포에서는 삭제를 허용하지 않습니다." });
+  }
   if (readOnly && req.method !== "GET") {
-    res.setHeader("Allow", "GET, OPTIONS");
-    return sendJson(res, 403, { ok: false, error: "공유 링크는 보기 전용입니다. 변경 및 업로드는 로컬 환경에서 진행해 주세요." });
+    return sendJson(res, 403, { ok: false, error: "등록·수정·업로드하려면 승인된 계정의 접근 코드로 인증하세요." });
   }
 
   try {
+    let checkedBody = null;
+    if (shared && req.method === "POST") {
+      const origin = req.headers?.origin;
+      if (origin) {
+        const host = req.headers?.host;
+        const scheme = req.headers?.["x-forwarded-proto"] === "https" || process.env.VERCEL === "1" ? "https" : "http";
+        if (!host || origin !== `${scheme}://${host}`) {
+          return sendJson(res, 403, { ok: false, error: "요청 출처를 확인할 수 없습니다." });
+        }
+      }
+      checkedBody = await parseBody(req);
+      if (!SHARED_APPROVED_ACTIONS.has(cleanText(checkedBody?.action).trim())) {
+        return sendJson(res, 403, { ok: false, error: "공유 배포에서 허용하지 않는 작업입니다." });
+      }
+    }
     const siteId = process.env.MXKPCS_SITE_ID || DEFAULT_SITE_ID;
     const accessToken = await acquireGraphToken();
 
@@ -852,7 +878,7 @@ export default async function handler(req, res) {
       if (params.has("precisionFilesFor")) {
         return sendJson(res, 200, { ok: true, files: await handleListPrecisionFiles(siteId, accessToken, params.get("precisionFilesFor")) });
       }
-      return sendJson(res, 200, { ...await readBootstrap(siteId, accessToken), readOnly });
+      return sendJson(res, 200, { ...await readBootstrap(siteId, accessToken), readOnly, authRequired: shared, writeAccessEmail: session?.email || null });
     }
 
     if (req.method === "DELETE") {
@@ -866,7 +892,7 @@ export default async function handler(req, res) {
       return sendJson(res, 405, { ok: false, error: "Method Not Allowed" });
     }
 
-    const body = await parseBody(req);
+    const body = checkedBody || await parseBody(req);
     const action = cleanText(body?.action).trim();
     const payload = body?.payload || {};
     let result;
