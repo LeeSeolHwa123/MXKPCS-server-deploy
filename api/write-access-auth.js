@@ -3,18 +3,14 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 const COOKIE_NAME = "mxk_write_access";
 const SESSION_SECONDS = 12 * 60 * 60;
 
-function approvedHashes() {
-  const entries = new Map();
+function configuredCodeHashes() {
+  const hashes = new Set();
   for (const entry of String(process.env.MXKPCS_WRITE_ACCESS_HASHES || "").split(/[\r\n,;]+/)) {
-    const separator = entry.indexOf(":");
-    if (separator < 1) continue;
-    const email = entry.slice(0, separator).trim().toLowerCase();
-    const hash = entry.slice(separator + 1).trim().toLowerCase();
-    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && /^[a-f0-9]{64}$/.test(hash)) {
-      entries.set(email, hash);
-    }
+    // 기존 email:hash 설정도 배포 전환 중에 사용할 수 있도록 해시 부분만 읽습니다.
+    const hash = entry.slice(entry.lastIndexOf(":") + 1).trim().toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(hash)) hashes.add(hash);
   }
-  return entries;
+  return hashes;
 }
 
 function sessionKey() {
@@ -49,7 +45,7 @@ export function verifyWriteSession(req) {
     const session = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
     if (session.v !== 1 || !Number.isInteger(session.exp) || session.exp <= Date.now()) return null;
     const email = String(session.email || "").toLowerCase();
-    if (session.accessHash !== approvedHashes().get(email)) return null;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !configuredCodeHashes().has(session.accessHash)) return null;
     return { email };
   } catch {
     return null;
@@ -59,16 +55,17 @@ export function verifyWriteSession(req) {
 export function checkWriteCode(emailInput, codeInput) {
   const email = String(emailInput || "").trim().toLowerCase();
   const code = String(codeInput || "").trim();
-  const expected = approvedHashes().get(email);
-  if (!expected || !/^[A-Za-z0-9_-]{40,100}$/.test(code) || !sessionKey()) return null;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^[A-Za-z0-9_-]{40,100}$/.test(code) || !sessionKey()) return null;
   const actual = createHash("sha256").update(code).digest("hex");
-  return equalText(actual, expected) ? email : null;
+  return [...configuredCodeHashes()].some(expected => equalText(actual, expected))
+    ? { email, accessHash: actual }
+    : null;
 }
 
-export function writeSessionCookie(email, req) {
+export function writeSessionCookie(identity, req) {
   const key = sessionKey();
-  if (!key) throw new Error("쓰기 권한 인증이 설정되지 않았습니다.");
-  const encoded = Buffer.from(JSON.stringify({ v: 1, email, accessHash: approvedHashes().get(email), exp: Date.now() + SESSION_SECONDS * 1000 })).toString("base64url");
+  if (!key || !configuredCodeHashes().has(identity?.accessHash)) throw new Error("쓰기 권한 인증이 설정되지 않았습니다.");
+  const encoded = Buffer.from(JSON.stringify({ v: 1, email: identity.email, accessHash: identity.accessHash, exp: Date.now() + SESSION_SECONDS * 1000 })).toString("base64url");
   const secure = req.headers?.["x-forwarded-proto"] === "https" || process.env.VERCEL === "1";
   return `${COOKIE_NAME}=${encoded}.${signature(encoded, key)}; HttpOnly; SameSite=Strict; Path=/api; Max-Age=${SESSION_SECONDS}${secure ? "; Secure" : ""}`;
 }

@@ -42,10 +42,10 @@ export default async function handler(req, res) {
       return sendJson(res, 200, { ok: true, canWrite: false, email: null });
     }
     if (body.action !== "login") return sendJson(res, 400, { ok: false, error: "지원하지 않는 요청입니다." });
-    const email = checkWriteCode(body.email, body.code);
-    if (!email) return sendJson(res, 401, { ok: false, error: "승인 계정 또는 접근 코드가 올바르지 않습니다." });
-    res.setHeader("Set-Cookie", writeSessionCookie(email, req));
-    return sendJson(res, 200, { ok: true, canWrite: true, email });
+    const identity = checkWriteCode(body.email, body.code);
+    if (!identity) return sendJson(res, 401, { ok: false, error: "계정 또는 접근 코드가 올바르지 않습니다." });
+    res.setHeader("Set-Cookie", writeSessionCookie(identity, req));
+    return sendJson(res, 200, { ok: true, canWrite: true, email: identity.email });
   } catch {
     return sendJson(res, 400, { ok: false, error: "인증 요청을 처리할 수 없습니다." });
   }

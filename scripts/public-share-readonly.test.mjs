@@ -26,8 +26,9 @@ try {
   delete process.env.NODE_ENV;
   process.env.MXKPCS_CLIENT_SECRET = "test-only-secret";
   const code = "A".repeat(43);
-  const email = "approved@example.com";
-  process.env.MXKPCS_WRITE_ACCESS_HASHES = `${email}:${createHash("sha256").update(code).digest("hex")}`;
+  const codeHash = createHash("sha256").update(code).digest("hex");
+  const email = "newly-approved@example.com";
+  process.env.MXKPCS_WRITE_ACCESS_HASHES = `old-account@example.com:${codeHash}`;
 
   let graphCalls = 0;
   globalThis.fetch = async () => { graphCalls += 1; throw new Error("Graph must not be called"); };
@@ -46,8 +47,13 @@ try {
   const login = await invoke(accessHandler, "POST", { action: "login", email, code });
   assert.equal(login.status, 200);
   assert.equal(login.body.canWrite, true);
+  assert.equal(login.body.email, email);
   const cookie = login.headers["Set-Cookie"].split(";")[0];
   assert.ok(cookie.startsWith("mxk_write_access="));
+  const another = await invoke(accessHandler, "POST", { action: "login", email: "another@example.com", code });
+  assert.equal(another.status, 200);
+  assert.equal(another.body.email, "another@example.com");
+  process.env.MXKPCS_WRITE_ACCESS_HASHES = codeHash;
   assert.equal((await invoke(accessHandler, "GET", undefined, cookie)).body.canWrite, true);
   assert.equal((await invoke(accessHandler, "GET", undefined, `${cookie}tampered`)).body.canWrite, false);
 
@@ -76,10 +82,10 @@ try {
   assert.equal(Object.keys(approvedGet.body.lists).length, 6);
   assert.equal(graphCalls, 14);
 
-  process.env.MXKPCS_WRITE_ACCESS_HASHES = `${email}:${"f".repeat(64)}`;
+  process.env.MXKPCS_WRITE_ACCESS_HASHES = "f".repeat(64);
   assert.equal((await invoke(accessHandler, "GET", undefined, cookie)).body.canWrite, false);
   assert.equal((await invoke(sharePointHandler, "POST", { action: "createRequest" }, cookie)).status, 403);
-  process.env.MXKPCS_WRITE_ACCESS_HASHES = `${email}:${createHash("sha256").update(code).digest("hex")}`;
+  process.env.MXKPCS_WRITE_ACCESS_HASHES = codeHash;
   const logout = await invoke(accessHandler, "POST", { action: "logout" }, cookie);
   assert.equal(logout.status, 200);
   assert.match(logout.headers["Set-Cookie"], /Max-Age=0/);
