@@ -53,6 +53,13 @@ try {
   const another = await invoke(accessHandler, "POST", { action: "login", email: "another@example.com", code });
   assert.equal(another.status, 200);
   assert.equal(another.body.email, "another@example.com");
+  const limitedEmail = "rate-limit@example.com";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    assert.equal((await invoke(accessHandler, "POST", { action: "login", email: limitedEmail, code: "B".repeat(43) })).status, 401);
+  }
+  const limited = await invoke(accessHandler, "POST", { action: "login", email: limitedEmail, code });
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.headers["Retry-After"]) > 0);
   process.env.MXKPCS_WRITE_ACCESS_HASHES = codeHash;
   assert.equal((await invoke(accessHandler, "GET", undefined, cookie)).body.canWrite, true);
   assert.equal((await invoke(accessHandler, "GET", undefined, `${cookie}tampered`)).body.canWrite, false);

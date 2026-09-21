@@ -10,8 +10,11 @@ const uploadedBytes = new Map();
 let folderCreated = false;
 let patchedPdfName = null;
 let patchedConfirmation = null;
+let patchedMeasurementFile = null;
+let patchedPrecisionReport = null;
 let sessionName = "";
 let sessionBytes = Buffer.alloc(0);
+let precisionHeaderAvailable = true;
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -21,17 +24,30 @@ globalThis.fetch = async (input, options = {}) => {
   const url = String(input);
   const method = String(options.method || "GET").toUpperCase();
   if (url.includes("/oauth2/v2.0/token")) return json({ access_token: "fake-token" });
+  if (url.includes("/lists/dd0bf876-6066-4877-be6d-eb10eb5ce35c/columns") && method === "GET") {
+    return json({ value: ["field_6", "Source_File_ID", "Source_File_URL"].map(name => ({ name })) });
+  }
+  if (url.includes("/lists/3c387146-a8c5-4b94-9bf3-251452b19a1c/columns") && method === "GET") {
+    return json({ value: ["field_5", "field_6", "Report_File_ID", "Report_File_URL"].map(name => ({ name })) });
+  }
+  if (url.includes("/lists/dd0bf876-6066-4877-be6d-eb10eb5ce35c/items/58/fields") && method === "PATCH") {
+    patchedMeasurementFile = JSON.parse(options.body);
+    return json({ id: "58" });
+  }
   if (url.includes("/lists/3c387146-a8c5-4b94-9bf3-251452b19a1c/items/5/fields") && method === "PATCH") {
     const fields = JSON.parse(options.body);
     patchedPdfName = fields.field_5;
     patchedConfirmation = fields.field_6;
+    if (fields.Report_File_ID) patchedPrecisionReport = fields;
     return json({ id: "5" });
   }
   if (url.includes("/lists/dd0bf876-6066-4877-be6d-eb10eb5ce35c/items") && method === "GET") {
     return json({ value: [{ id: "58", fields: { Title: "C-18-01_20260716_01" } }] });
   }
   if (url.includes("/lists/3c387146-a8c5-4b94-9bf3-251452b19a1c/items") && method === "GET") {
-    return json({ value: [{ id: "5", fields: { Title: "PREC_C-18-01_20260716_01", field_1: "C-18-01_20260716_01" } }] });
+    return json({ value: precisionHeaderAvailable
+      ? [{ id: "5", fields: { Title: "PREC_C-18-01_20260716_01", field_1: "C-18-01_20260716_01" } }]
+      : [] });
   }
   if (url.includes("/lists/0462cdd6-f3ce-40bf-a814-471796a6147b/drive")) {
     return json({ id: "report-drive", driveType: "documentLibrary" });
@@ -127,6 +143,9 @@ try {
   assert.equal(prematureReport.body.ok, false);
   assert.match(prematureReport.body.error, /XRF 원본 파일을 먼저 업로드/);
   assert.equal(unsafeChunk.body.ok, false);
+  precisionHeaderAvailable = false;
+  await upload("source", "measurement-only.xls", Buffer.from("measurement source"));
+  precisionHeaderAvailable = true;
   await upload("source", "original.xls", Buffer.alloc(8 * 320 * 1024 + 17, 0x61));
   await upload("report", "analysis.pdf", Buffer.from("%PDF-1.4\ntest"));
   const listed = await invoke("GET", null, "/api/xrf-sharepoint?precisionFilesFor=C-18-01_20260716_01");
@@ -134,6 +153,9 @@ try {
   assert.equal(listed.body.files.report.name, "analysis.pdf");
   assert.equal(patchedPdfName, "analysis.pdf");
   assert.equal(patchedConfirmation, false);
+  assert.equal(patchedMeasurementFile.field_6, "original.xls");
+  assert.equal(patchedMeasurementFile.Source_File_ID, "file-2");
+  assert.equal(patchedPrecisionReport.Report_File_ID, "file-3");
   console.log("precision-file-upload: PASS");
 } finally {
   globalThis.fetch = originalFetch;

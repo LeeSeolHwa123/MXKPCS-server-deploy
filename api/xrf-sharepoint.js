@@ -33,6 +33,16 @@ const MAX_RETRIES = 4;
 const RETRY_BASE_MS = 350;
 const PRECISION_FILE_CHUNK_BYTES = 8 * 320 * 1024; // 2.5 MiB; base64 JSON stays below Vercel's 4.5 MB request limit.
 const PRECISION_FILE_MAX_BYTES = 250 * 1024 * 1024;
+const FILE_REFERENCE_COLUMNS = {
+  XRF_Measurements: [
+    { name: "Source_File_ID", displayName: "XRF Source File ID", text: { allowMultipleLines: false, maxLength: 255 } },
+    { name: "Source_File_URL", displayName: "XRF Source File URL", text: { allowMultipleLines: true, linesForEditing: 3 } },
+  ],
+  XRF_PrecisionAnalyses: [
+    { name: "Report_File_ID", displayName: "Precision Report File ID", text: { allowMultipleLines: false, maxLength: 255 } },
+    { name: "Report_File_URL", displayName: "Precision Report File URL", text: { allowMultipleLines: true, linesForEditing: 3 } },
+  ],
+};
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function cleanText(v) { return v == null ? "" : String(v); }
@@ -226,7 +236,7 @@ async function handleBeginPrecisionFileUpload(siteId, accessToken, payload) {
     throw new Error("실제 DB에 등록된 XRF 측정 건만 파일을 첨부할 수 있습니다.");
   }
   const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
-  if (!precisionRows.some(row => cleanText(row?.fields?.field_1).trim() === measurementId)) {
+  if (kind === "report" && !precisionRows.some(row => cleanText(row?.fields?.field_1).trim() === measurementId)) {
     throw new Error("정밀분석 인계가 DB에 저장된 뒤 파일을 업로드하세요.");
   }
   const driveId = await precisionDriveId(siteId, accessToken);
@@ -289,11 +299,26 @@ async function handleFinishPrecisionFileUpload(siteId, accessToken, payload) {
   const rows = await precisionFolderFiles(driveId, folder, accessToken);
   const file = rows.find(row => row.item.id === driveItemId && row.item.name === storedName)?.metadata;
   if (!file || file.size < 1) throw new Error("문서 라이브러리에 업로드된 파일을 확인하지 못했습니다.");
+  const measurementRows = await readList(siteId, "XRF_Measurements", accessToken);
+  const measurement = measurementRows.find(row => cleanText(row?.fields?.Title).trim() === measurementId);
+  if (!measurement) throw new Error("XRF 측정 행을 찾지 못해 원본 파일을 연결할 수 없습니다.");
   const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
   const header = precisionRows.find(row => cleanText(row?.fields?.field_1).trim() === measurementId);
-  if (!header) throw new Error("정밀분석 인계 기록을 찾지 못해 파일을 연결하지 못했습니다.");
-  await patchListItem(siteId, "XRF_PrecisionAnalyses", header.id,
-    file.kind === "report" ? { field_5: file.name, field_6: false } : { field_6: false }, accessToken);
+  if (file.kind === "source") {
+    await patchListItemExistingFields(siteId, "XRF_Measurements", measurement.id, {
+      field_6: file.name,
+      Source_File_ID: file.id,
+      Source_File_URL: file.webUrl,
+    }, accessToken);
+  } else {
+    if (!header) throw new Error("정밀분석 인계 기록을 찾지 못해 성적서 파일을 연결할 수 없습니다.");
+    await patchListItemExistingFields(siteId, "XRF_PrecisionAnalyses", header.id, {
+      field_5: file.name,
+      field_6: false,
+      Report_File_ID: file.id,
+      Report_File_URL: file.webUrl,
+    }, accessToken);
+  }
   return file;
 }
 
@@ -307,6 +332,43 @@ async function graphGetAll(firstUrl, accessToken) {
     nextUrl = payload?.["@odata.nextLink"] || null;
   }
   return rows;
+}
+
+async function patchListItemExistingFields(siteId, listName, itemId, fields, accessToken) {
+  const columns = await graphGetAll(`${listUrl(siteId, listName)}/columns?$top=200`, accessToken);
+  const names = new Set(columns.map(column => cleanText(column?.name).trim()));
+  const supported = Object.fromEntries(Object.entries(fields).filter(([name]) => names.has(name)));
+  if (!Object.keys(supported).length) throw new Error(`${listName}에 저장 가능한 파일 참조 열이 없습니다.`);
+  return patchListItem(siteId, listName, itemId, supported, accessToken);
+}
+
+async function handleEnsureFileReferenceColumns(siteId, accessToken) {
+  const created = [];
+  const existing = [];
+  for (const [listName, definitions] of Object.entries(FILE_REFERENCE_COLUMNS)) {
+    const columns = await graphGetAll(`${listUrl(siteId, listName)}/columns?$top=200`, accessToken);
+    const names = new Set(columns.map(column => cleanText(column?.name).trim()));
+    for (const definition of definitions) {
+      if (names.has(definition.name)) {
+        existing.push(`${listName}.${definition.name}`);
+        continue;
+      }
+      const response = await fetchWithRetry(`${listUrl(siteId, listName)}/columns`, {
+        method: "POST",
+        headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          description: "MXKPCS document-library file reference",
+          enforceUniqueValues: false,
+          hidden: false,
+          indexed: false,
+          ...definition,
+        }),
+      }, { retry5xx: false, retryNetwork: false });
+      const column = await response.json();
+      created.push(`${listName}.${column?.name || definition.name}`);
+    }
+  }
+  return { created, existing };
 }
 
 function listUrl(siteId, listName) {
@@ -905,6 +967,7 @@ export default async function handler(req, res) {
     else if (action === "beginPrecisionFileUpload") result = await handleBeginPrecisionFileUpload(siteId, accessToken, payload);
     else if (action === "uploadPrecisionFileChunk") result = await handlePrecisionFileChunk(payload);
     else if (action === "finishPrecisionFileUpload") result = await handleFinishPrecisionFileUpload(siteId, accessToken, payload);
+    else if (action === "ensureFileReferenceColumns") result = await handleEnsureFileReferenceColumns(siteId, accessToken);
     else if (action === "deleteRecord") result = await handleDeleteRecord(siteId, accessToken, payload);
     else if (action === "writeProbe") result = await handleWriteProbe(siteId, accessToken);
     else throw new Error(`지원하지 않는 action: ${action}`);

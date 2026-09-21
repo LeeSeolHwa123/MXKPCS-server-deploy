@@ -573,6 +573,8 @@ function buildSharePointMeasurementMap(measurementRows,elementRows){
       attemptNo:Number(f.field_4||1),
       parentMeasurementId:f.field_5||null,
       sourceFileName:f.field_6||"",
+      sourceFileId:f.Source_File_ID||"",
+      sourceFileUrl:f.Source_File_URL||"",
       sourceSheet:f.field_7||"",
       elements:elementsByMeasurement[id]||{},
       _spItemId:row?.id||null
@@ -609,6 +611,8 @@ function decorateRuntimeItemWithMeasurements(baseItem,itemId,measurementMap){
     xrfLevel:measurementXrfLevel(m),
     elements:m?.elements||{},
     sourceFileName:m?.sourceFileName||"",
+    sourceFileId:m?.sourceFileId||"",
+    sourceFileUrl:m?.sourceFileUrl||"",
     sourceSheet:m?.sourceSheet||""
   }));
 
@@ -934,6 +938,8 @@ function buildSharePointPrecisionOverrides(precisionRows,precisionElementRows){
       requestedAt:dateOnly(f.Requested_At||row?.createdDateTime),
       requestedBy:sharePointPlainText(f.Requested_By||row?.createdBy?.user?.displayName||""),
       resultFileId:resultFile,
+      reportFileId:f.Report_File_ID||"",
+      reportFileUrl:f.Report_File_URL||"",
       uploadStatus:resultFile?"UPLOADED":"WAITING",
       finalConfirm:f.field_6===true?"확인":"",
       elementResults:elementsByPrecision[precisionId]||{}
@@ -6370,6 +6376,7 @@ export default function App(){
   const [adminUploadFileNameByCode,setAdminUploadFileNameByCode]=useState({});
   const [adminUploadResultByCode,setAdminUploadResultByCode]=useState({});
   const [periodUploadState,setPeriodUploadState]=useState({key:"",fileName:"",error:"",saved:false});
+  const reqUploadFileRef=useRef(null);
   const measurementSavePendingRef=useRef(false);
   const [measurementSavePending,setMeasurementSavePending]=useState(false);
   const [reqForm,setReqForm]=useState({
@@ -6724,13 +6731,14 @@ export default function App(){
   const handleRequesterXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
     if(!file) return;
+    reqUploadFileRef.current=file;
     setReqUploadFileName(file.name);
     setReqUploadResult(emptyUploadedXrfResult(file.name,{pending:true}));
     const result=await parseUploadedXrfFile(file);
     setReqUploadResult(result);
     e.target.value="";
   },[]);
-  const commitParsedMeasurement=useCallback(async(targetItem,result,targetPeriod=null,sourceLabel="XRF 결과 업로드")=>{
+  const commitParsedMeasurement=useCallback(async(targetItem,result,targetPeriod=null,sourceLabel="XRF 결과 업로드",sourceFile=null)=>{
     if(!targetItem || !result?.parsed) return null;
     if(targetItem.__readOnlyFixture){
       if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
@@ -6986,11 +6994,21 @@ export default function App(){
     }
     if(!saved) return null;
 
+    let sourceFileUploadError="";
+    if(sourceFile){
+      try{
+        await uploadPrecisionBinary(saved.measurementId||measurementId,"source",sourceFile);
+      }catch(error){
+        sourceFileUploadError=error?.message||String(error);
+        if(typeof window!=="undefined") window.alert(`XRF 측정값은 저장됐지만 원본 파일 저장에 실패했습니다.\n${sourceFileUploadError}`);
+      }
+    }
+
     const targetStateKey=itemStateKey(targetItem);
     setRequestItems(prev=>prev.map(item=>itemStateKey(item)===targetStateKey?{...updatedItem,_sourceCode:itemStateKey(item)}:item));
     setItemOverrides(prev=>({...prev,[targetStateKey]:{...(prev[targetStateKey]||{}),...updatedItem,_sourceCode:targetStateKey}}));
     setApprovalOverrides(prev=>({...prev,[targetItem.code]:policyApproval}));
-    return {updatedItem,measurementId,periodNo};
+    return {updatedItem,measurementId,periodNo,sourceFileUploadError};
   },[currentPortfolioPeriodNo,persistSharePointAction]);
 
   const buildRequesterPartNumber=useCallback((handlingDept)=>{
@@ -7016,7 +7034,7 @@ export default function App(){
     },0);
     return `${base}-${String(maxSuffix+1).padStart(2,"0")}`;
   },[realBaseItems,buildRequesterPartNumber,reqForm.handlingDept]);
-  const submitRequesterNewItem=useCallback(()=>{
+  const submitRequesterNewItem=useCallback(async()=>{
     const adminDirect=String(regType||"").startsWith("admin-");
     const requestType=regType==="admin-new"?"new":regType==="admin-replace"?"replacement":regType==="admin-discontinue"?"discontinue":(regType||"new");
     const effectiveXrfMode=adminDirect && requestType!=="discontinue" ? "upload" : reqXrfMode;
@@ -7317,7 +7335,7 @@ export default function App(){
       setRequestItems(prev=>prev.map(item=>itemStateKey(item)===selectedStateKey?{...item,...replacementTerminalPatch}:item));
     }
 
-    void persistSharePointAction("createRequest",{
+    const created=await persistSharePointAction("createRequest",{
       requestType:isReplacement?"Replacement":"New",
       status:uploadParsed?requestStatusFromApproval(approvalStatus):"Pending",
       targetItemId:selectedReplacementItem?.itemId||null,
@@ -7338,6 +7356,15 @@ export default function App(){
         elements:reqUploadResult.elements||{},requestStatus:requestStatusFromApproval(approvalStatus)
       }:null
     });
+    if(!created) return;
+    if(uploadParsed && reqUploadFileRef.current && created.measurement?.measurementId){
+      try{
+        await uploadPrecisionBinary(created.measurement.measurementId,"source",reqUploadFileRef.current);
+        await reloadSharePointDb();
+      }catch(error){
+        window.alert(`품목과 XRF 측정값은 저장됐지만 원본 파일 저장에 실패했습니다.\n${error?.message||error}`);
+      }
+    }
     // 업로드가 완료된 품목은 즉시 R 측정과 원소 분석을 확인할 수 있도록 XRF 분석 화면으로 이동합니다.
     // 측정 의뢰만 등록한 경우에는 리스트에 반영하고 관리자 업로드를 기다립니다.
     setSelKey(uploadParsed?code:null);
@@ -7346,9 +7373,10 @@ export default function App(){
     setRegStep(1);
     setRegType(null);
     setReqXrfMode("request");
+    reqUploadFileRef.current=null;
     setReqUploadFileName("");
     setReqUploadResult(emptyUploadedXrfResult());
-  },[buildReplacementPartNumber,buildRequesterPartNumber,reqForm,reqXrfMode,reqUploadResult,regType,selectableExistingItems,currentPortfolioPeriodNo,persistSharePointAction]);
+  },[buildReplacementPartNumber,buildRequesterPartNumber,reqForm,reqXrfMode,reqUploadResult,regType,selectableExistingItems,currentPortfolioPeriodNo,persistSharePointAction,reloadSharePointDb]);
 
   useEffect(()=>{
     const target=allItems.find(i=>i.code===reqForm.replacementTargetCode);
@@ -7711,7 +7739,7 @@ export default function App(){
       e.target.value="";
       return;
     }
-    const committed=await commitParsedMeasurement(sel,result,null,"관리자 최초 XRF 업로드");
+    const committed=await commitParsedMeasurement(sel,result,null,"관리자 최초 XRF 업로드",file);
     if(committed){
       setSelPeriodNum(committed.periodNo);
       setSelMeasurementId(committed.measurementId);
@@ -7738,7 +7766,7 @@ export default function App(){
       e.target.value="";
       return;
     }
-    const committed=await commitParsedMeasurement(sel,result,periodUploadTarget,`관리자 주기 ${periodLabel(periodUploadTarget)} XRF 업로드`);
+    const committed=await commitParsedMeasurement(sel,result,periodUploadTarget,`관리자 주기 ${periodLabel(periodUploadTarget)} XRF 업로드`,file);
     if(committed){
       setPeriodUploadState({key,fileName:file.name,error:"",saved:true});
       setSelPeriodNum(committed.periodNo);
@@ -7753,6 +7781,7 @@ export default function App(){
   const handleAdminDirectXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
     if(!file || measurementSavePendingRef.current) return;
+    reqUploadFileRef.current=file;
     setReqUploadFileName(file.name);
     setReqUploadResult(emptyUploadedXrfResult(file.name,{pending:true}));
     const result=await parseUploadedXrfFile(file);
@@ -7788,12 +7817,13 @@ export default function App(){
       return;
     }
 
-    const committed=await commitParsedMeasurement(target,result,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`);
+    const committed=await commitParsedMeasurement(target,result,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`,file);
     if(committed){
       setSelKey(target.code);
       setSelPeriodNum(committed.periodNo);
       setTab("xrf");
       setRegType(null);
+      reqUploadFileRef.current=null;
       setReqUploadResult(emptyUploadedXrfResult());
       setReqUploadFileName("");
     }else{
@@ -7832,12 +7862,13 @@ export default function App(){
         window.alert("측정 결과를 연결할 주기를 찾지 못했습니다.");
         return;
       }
-      const committed=await commitParsedMeasurement(target,reqUploadResult,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`);
+      const committed=await commitParsedMeasurement(target,reqUploadResult,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`,reqUploadFileRef.current);
       if(committed){
         setSelKey(target.code);
         setSelPeriodNum(committed.periodNo);
         setTab("xrf");
         setRegType(null);
+        reqUploadFileRef.current=null;
         setReqUploadResult(emptyUploadedXrfResult());
         setReqUploadFileName("");
       }else{

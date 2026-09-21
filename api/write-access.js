@@ -1,5 +1,35 @@
 import { checkWriteCode, clearWriteSessionCookie, verifyWriteSession, writeSessionCookie } from "./write-access-auth.js";
 
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_BLOCK_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 5;
+const loginFailures = new Map();
+
+function loginKey(req, email) {
+  const forwarded = String(req.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
+  const address = forwarded || String(req.socket?.remoteAddress || "unknown");
+  return `${address}|${String(email || "").trim().toLowerCase()}`;
+}
+
+function loginBlocked(key) {
+  const now = Date.now();
+  const state = loginFailures.get(key);
+  if (!state) return 0;
+  if (state.blockedUntil > now) return Math.ceil((state.blockedUntil - now) / 1000);
+  if (now - state.firstFailure > LOGIN_WINDOW_MS) loginFailures.delete(key);
+  return 0;
+}
+
+function recordLoginFailure(key) {
+  const now = Date.now();
+  const previous = loginFailures.get(key);
+  const state = !previous || now - previous.firstFailure > LOGIN_WINDOW_MS
+    ? { count: 1, firstFailure: now, blockedUntil: 0 }
+    : { ...previous, count: previous.count + 1 };
+  if (state.count >= LOGIN_MAX_FAILURES) state.blockedUntil = now + LOGIN_BLOCK_MS;
+  loginFailures.set(key, state);
+}
+
 function sendJson(res, status, body) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -42,8 +72,18 @@ export default async function handler(req, res) {
       return sendJson(res, 200, { ok: true, canWrite: false, email: null });
     }
     if (body.action !== "login") return sendJson(res, 400, { ok: false, error: "지원하지 않는 요청입니다." });
+    const key = loginKey(req, body.email);
+    const retryAfter = loginBlocked(key);
+    if (retryAfter) {
+      res.setHeader("Retry-After", String(retryAfter));
+      return sendJson(res, 429, { ok: false, error: "인증 시도가 너무 많습니다. 15분 후 다시 시도하세요." });
+    }
     const identity = checkWriteCode(body.email, body.code);
-    if (!identity) return sendJson(res, 401, { ok: false, error: "계정 또는 접근 코드가 올바르지 않습니다." });
+    if (!identity) {
+      recordLoginFailure(key);
+      return sendJson(res, 401, { ok: false, error: "계정 또는 접근 코드가 올바르지 않습니다." });
+    }
+    loginFailures.delete(key);
     res.setHeader("Set-Cookie", writeSessionCookie(identity, req));
     return sendJson(res, 200, { ok: true, canWrite: true, email: identity.email });
   } catch {
