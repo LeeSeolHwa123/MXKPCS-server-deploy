@@ -399,7 +399,6 @@ const ITEM_NAME_EN_FALLBACKS = Object.freeze({
 // 브라우저는 동일 호스트의 /api/xrf-sharepoint만 호출하고,
 // Microsoft Graph용 Client Secret은 서버 환경변수에만 보관합니다.
 const XRF_SHAREPOINT_API = "/api/xrf-sharepoint";
-const WRITE_ACCESS_API = "/api/write-access";
 
 async function fetchSharePointBootstrap(){
   const response=await fetch(XRF_SHAREPOINT_API,{
@@ -6448,10 +6447,6 @@ export default function App(){
   const [sharePointItems,setSharePointItems]=useState([]);
   const [dbLoading,setDbLoading]=useState(true);
   const [dbError,setDbError]=useState("");
-  const [dbReadOnly,setDbReadOnly]=useState(false);
-  const [dbAuthRequired,setDbAuthRequired]=useState(false);
-  const [writeAccessEmail,setWriteAccessEmail]=useState("");
-  const [writeAccessForm,setWriteAccessForm]=useState({open:false,email:"",code:"",error:"",busy:false});
   const [dbCounts,setDbCounts]=useState(null);
   const [selMeasurementId,setSelMeasurementId]=useState(null);
   const [xrfDetailView,setXrfDetailView]=useState("analysis");
@@ -6510,9 +6505,6 @@ export default function App(){
       setApprovalOverrides({});
       setItemOverrides({});
       setDbCounts(runtime.counts);
-      setDbReadOnly(payload.readOnly===true);
-      setDbAuthRequired(payload.authRequired===true);
-      setWriteAccessEmail(payload.writeAccessEmail||"");
     }catch(error){
       console.error(error);
       setDbError(error?.message||String(error));
@@ -6525,38 +6517,7 @@ export default function App(){
     reloadSharePointDb();
   },[reloadSharePointDb]);
 
-  const submitWriteAccess=useCallback(async(event)=>{
-    event.preventDefault();
-    if(writeAccessForm.busy) return;
-    setWriteAccessForm(prev=>({...prev,busy:true,error:""}));
-    try{
-      const response=await fetch(WRITE_ACCESS_API,{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",cache:"no-store",body:JSON.stringify({action:"login",email:writeAccessForm.email,code:writeAccessForm.code})});
-      const result=await response.json();
-      if(!response.ok||!result?.canWrite) throw new Error(result?.error||`HTTP ${response.status}`);
-      setWriteAccessForm(prev=>({...prev,open:false,code:"",error:"",busy:false}));
-      await reloadSharePointDb();
-    }catch(error){
-      setWriteAccessForm(prev=>({...prev,busy:false,error:error?.message||String(error)}));
-    }
-  },[writeAccessForm.email,writeAccessForm.code,writeAccessForm.busy,reloadSharePointDb]);
-
-  const logoutWriteAccess=useCallback(async()=>{
-    try{
-      const response=await fetch(WRITE_ACCESS_API,{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",cache:"no-store",body:JSON.stringify({action:"logout"})});
-      if(!response.ok) throw new Error(`HTTP ${response.status}`);
-    }catch(error){
-      if(typeof window!=="undefined") window.alert(lang==="en"?`Sign out failed: ${error?.message||error}`:`로그아웃 실패: ${error?.message||error}`);
-    }finally{
-      setWriteAccessForm(prev=>({...prev,code:"",open:false}));
-      await reloadSharePointDb();
-    }
-  },[lang,reloadSharePointDb]);
-
   const persistSharePointAction=useCallback(async(action,payload,{reload=true,silent=false}={})=>{
-    if(dbReadOnly){
-      if(!silent) setWriteAccessForm(prev=>({...prev,open:true,error:""}));
-      return null;
-    }
     if(VISUAL_UAT_MUTATION_ACTIONS.has(action) && containsVisualUatReference(payload)){
       if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
       return null;
@@ -6571,7 +6532,7 @@ export default function App(){
       if(reload) await reloadSharePointDb();
       return null;
     }
-  },[dbReadOnly,reloadSharePointDb]);
+  },[reloadSharePointDb]);
 
   // UI 언어는 표시 계층에서만 변환합니다. 데이터값/필터값/Workflow 비교값은 한국어 원본을 유지합니다.
   useEffect(()=>{
@@ -9003,22 +8964,6 @@ export default function App(){
         </div>
       )}
 
-      {writeAccessForm.open&&(
-        <div role="presentation" onMouseDown={()=>setWriteAccessForm(prev=>({...prev,open:false,code:"",error:""}))} style={{position:"fixed",inset:0,zIndex:10001,display:"flex",alignItems:"center",justifyContent:"center",padding:18,background:"rgba(10,16,16,.58)",boxSizing:"border-box"}}>
-          <form role="dialog" aria-modal="true" aria-labelledby="write-access-title" onSubmit={submitWriteAccess} onMouseDown={event=>event.stopPropagation()} style={{width:"min(400px,100%)",padding:22,background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
-            <div id="write-access-title" style={{fontSize:16,fontWeight:750,color:C.text1}}>{lang==="en"?"Write access":"쓰기 권한 인증"}</div>
-            <div style={{marginTop:7,fontSize:11,color:C.text3,lineHeight:1.5}}>{lang==="en"?"Enter an account email and the shared access code. A valid code grants write access for this session.":"계정 이메일과 공유받은 접근 코드를 입력하세요. 코드가 맞으면 이번 로그인에 쓰기 권한이 부여됩니다."}</div>
-            <label style={{display:"block",marginTop:16,fontSize:11,fontWeight:650}}>{lang==="en"?"Account email":"계정 이메일"}<input type="email" required autoComplete="username" value={writeAccessForm.email} onChange={event=>setWriteAccessForm(prev=>({...prev,email:event.target.value,error:""}))} style={{...inp,display:"block",width:"100%",marginTop:5,boxSizing:"border-box"}}/></label>
-            <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650}}>{lang==="en"?"Access code":"접근 코드"}<input type="password" required autoComplete="off" value={writeAccessForm.code} onChange={event=>setWriteAccessForm(prev=>({...prev,code:event.target.value,error:""}))} style={{...inp,display:"block",width:"100%",marginTop:5,boxSizing:"border-box"}}/></label>
-            {writeAccessForm.error&&<div role="alert" style={{marginTop:9,fontSize:11,color:C.redDk}}>{writeAccessForm.error}</div>}
-            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
-              <button type="button" disabled={writeAccessForm.busy} onClick={()=>setWriteAccessForm(prev=>({...prev,open:false,code:"",error:""}))} style={{padding:"8px 13px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,cursor:"pointer"}}>{lang==="en"?"Cancel":"취소"}</button>
-              <button type="submit" disabled={writeAccessForm.busy} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:7,background:C.charcoalDk,color:"#fff",fontWeight:650,cursor:writeAccessForm.busy?"wait":"pointer"}}>{writeAccessForm.busy?(lang==="en"?"Checking...":"확인 중..."):(lang==="en"?"Unlock":"인증")}</button>
-            </div>
-          </form>
-        </div>
-      )}
-
       <div style={{background:C.card,borderBottom:`1px solid ${C.bd}`}}>
         <div className="app-shell app-topbar">
           <button type="button" className="app-brand" onClick={()=>setEntered(false)} aria-label={lang==="en"?"Return to start screen":"시작 화면으로 돌아가기"} title={lang==="en"?"Return to start screen":"시작 화면으로 돌아가기"} style={{padding:0,border:0,background:"transparent",cursor:"pointer",fontFamily:FONT_SANS}}>
@@ -9027,11 +8972,6 @@ export default function App(){
           </button>
           <div className="app-topbar-alerts">
             <span style={{fontSize:11,color:C.text4}}>기준일 {TODAY_STR}</span>
-            {dbAuthRequired&&(
-              dbReadOnly
-                ? <button type="button" onClick={()=>setWriteAccessForm(prev=>({...prev,open:true,error:""}))} style={{padding:"7px 11px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,fontWeight:650,cursor:"pointer"}}>{lang==="en"?"Write access":"쓰기 권한 로그인"}</button>
-                : <div style={{display:"flex",alignItems:"center",gap:7,fontSize:11}}><span style={{color:C.text3}}>{lang==="en"?"Approved account":"승인 계정"}: {writeAccessEmail}</span><button type="button" onClick={logoutWriteAccess} style={{padding:"7px 9px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,cursor:"pointer"}}>{lang==="en"?"Sign out":"로그아웃"}</button></div>
-            )}
             <div className="language-toggle" data-i18n-skip="true" role="group" aria-label="Language">
               <button type="button" className={lang==="ko"?"active":""} aria-pressed={lang==="ko"} onClick={()=>setLang("ko")}>{lang==="en"?"Korean":"한국어"}</button>
               <button type="button" className={lang==="en"?"active":""} aria-pressed={lang==="en"} onClick={()=>setLang("en")}>English</button>
