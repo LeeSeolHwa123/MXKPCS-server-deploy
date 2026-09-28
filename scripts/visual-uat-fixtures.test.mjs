@@ -18,7 +18,7 @@ source+=`
 export {
   VISUAL_UAT_MODE,VISUAL_UAT_ITEMS,VISUAL_UAT_COMPLIANCE_ITEMS,VISUAL_UAT_PAGINATION_ITEMS,VISUAL_UAT_ALL_ITEMS,VISUAL_UAT_PRECISION_OVERRIDES,VISUAL_UAT_EXPECTATIONS,
   applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
-  deriveRuntimeWorkflow,visualUatSelfCheckRow,workflowForItem,
+  deriveRuntimeWorkflow,visualUatSelfCheckRow,workflowForItem,analysisWorkflowSummary,
   MATERIAL_LIST_PAGE_SIZE,isCancelledListItem,approvalStatusOfItemFallback,translateUiTextKoToEn
 };
 `;
@@ -51,6 +51,26 @@ const actualGroups=Object.fromEntries(Object.keys(expectedGroups).map(group=>[
   group,app.VISUAL_UAT_EXPECTATIONS.filter(row=>row.group===group).length
 ]));
 const structuralFailures=[];
+const workflowItems=visualItems.filter(item=>item.code.startsWith("VU-W"));
+const workflowSummary=app.analysisWorkflowSummary(workflowItems);
+const expectedWorkflowSummary={
+  xrfRemeasure:1,
+  precisionTransferRequired:2,
+  precisionResultWaiting:1,
+  precisionFollowupRequired:0,
+  precisionNgReview:1,
+  total:5
+};
+for(const [key,expected] of Object.entries(expectedWorkflowSummary)){
+  if(workflowSummary[key]!==expected) structuralFailures.push(`workflow summary ${key} ${workflowSummary[key]} !== ${expected}`);
+}
+const transferCompatibilitySummary=app.analysisWorkflowSummary([
+  {__workflow:{stage:"PRECISION_TRANSFER_REQUEST_REQUIRED"}},
+  {__workflow:{stage:"PRECISION_REQUEST_REQUIRED"}}
+]);
+if(transferCompatibilitySummary.precisionTransferRequired!==2 || transferCompatibilitySummary.total!==2){
+  structuralFailures.push("precision transfer/request workflow stages must share the same dashboard bucket");
+}
 if(app.translateUiTextKoToEn("사진 선택 (JPG, PNG, WEBP / 최대 10MB)")!=="Choose Photo (JPG, PNG, WEBP / max. 10 MB)"){
   structuralFailures.push("photo picker translation mismatch");
 }
