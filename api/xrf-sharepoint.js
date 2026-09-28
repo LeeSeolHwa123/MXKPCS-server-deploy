@@ -1,7 +1,7 @@
 // Node.js SharePoint API Handler
 // SharePoint XRF DB READ + WRITE gateway
 // Client secret must exist only in server-side environment variables.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { verifyWriteSession } from "./write-access-auth.js";
 
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
@@ -35,6 +35,7 @@ const RETRY_BASE_MS = 350;
 const PRECISION_FILE_CHUNK_BYTES = 8 * 320 * 1024; // 2.5 MiB; base64 JSON stays below Vercel's 4.5 MB request limit.
 const PRECISION_FILE_MAX_BYTES = 250 * 1024 * 1024;
 const ITEM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const PRECISION_HANDOFF_PASSWORD_HASH = Buffer.from("ac9689e2272427085e35b9d3e3e8bed88cb3434828b43b86fc0596cad4c6e270", "hex");
 const FILE_REFERENCE_COLUMNS = {
   XRF_Items: [
     { name: "Photo_File_Name", displayName: "Item Photo File Name", text: { allowMultipleLines: false, maxLength: 255 } },
@@ -1029,11 +1030,22 @@ function precisionIdForTrigger(triggerMeasurementId) {
   return raw.length <= 250 ? raw : `PREC_${Buffer.from(raw).toString("base64url").slice(0, 220)}`;
 }
 
+function verifyPrecisionHandoffPassword(value) {
+  const actual = createHash("sha256").update(String(value || "")).digest();
+  return actual.length === PRECISION_HANDOFF_PASSWORD_HASH.length
+    && timingSafeEqual(actual, PRECISION_HANDOFF_PASSWORD_HASH);
+}
+
 async function handleUpsertPrecision(siteId, accessToken, payload) {
   const triggerMeasurementId = cleanText(payload?.triggerMeasurementId).trim();
   if (!triggerMeasurementId) throw new Error("정밀분석 Trigger_Measurement_ID가 없습니다.");
   const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
   let header = precisionRows.find(r => cleanText(r?.fields?.field_1).trim() === triggerMeasurementId) || null;
+  if (!header && !verifyPrecisionHandoffPassword(payload?.precisionHandoffPassword)) {
+    const error = new Error("정밀분석 인계 비밀번호가 올바르지 않습니다.");
+    error.status = 403;
+    throw error;
+  }
   const precisionId = header?.fields?.Title || payload?.precisionId || precisionIdForTrigger(triggerMeasurementId);
   const override = payload?.override || {};
   const headerFields = {
