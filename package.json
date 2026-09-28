@@ -11,7 +11,7 @@
     "test:retry": "node scripts/retry-policy.test.mjs",
     "test:trend": "node scripts/xrf-trend-policy.test.mjs",
     "test:files": "node scripts/precision-file-upload.test.mjs",
-    "test:public-share": "node scripts/public-share-readonly.test.mjs",
+    "test:public-share": "node scripts/public-write-access.test.mjs",
     "test:photos": "node scripts/item-photo-upload.test.mjs",
     "photos:audit": "node scripts/import-item-photos.mjs",
     "photos:import": "node scripts/import-item-photos.mjs --apply",

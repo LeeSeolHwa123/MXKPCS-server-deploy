@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 const apiUrl = new URL("../api/xrf-sharepoint.js", import.meta.url);
 const source = await readFile(apiUrl, "utf8");
 const instrumented = source
-  .replace('import { verifyWriteSession } from "./write-access-auth.js";', "")
   .replace(
     "function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }",
     "function sleep() { return Promise.resolve(); }",
