@@ -40,6 +40,8 @@ assert.match(markup, /MXK/);
 assert.doesNotMatch(markup, /대시보드 열기/);
 assert.match(markup, /부자재 리스트/);
 assert.match(markup, /품목 \/ 변경 관리/);
+assert.match(markup, /Version 1\.0\.0/);
+assert.doesNotMatch(markup, /Build local/);
 assert.doesNotMatch(markup, /SharePoint DB를 불러오는 중입니다/);
 
 let selectedTab = "";
