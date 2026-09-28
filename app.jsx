@@ -1608,7 +1608,10 @@ const UI_EN_MAP = {
   "측정 추가 대상 품목":"Item for Additional Measurement",
   "변경 / 대체 등록":"Change / Replacement Registration",
   "사진":"Photo","품목 사진":"Item Photo","사진 없음":"No Photo",
-  "사진 선택":"Choose Photo",
+  "사진 선택":"Choose Photo","사진 선택 (JPG, PNG, WEBP / 최대 10MB)":"Choose Photo (JPG, PNG, WEBP / max. 10 MB)",
+  "선택한 품목 사진":"Selected Item Photo","품목 사진을 선택하세요.":"Select an item photo.",
+  "품목 사진은 10MB 이하 파일만 선택하세요.":"Select an item photo no larger than 10 MB.",
+  "품목 사진은 JPG, PNG, WEBP 형식만 선택하세요.":"Select an item photo in JPG, PNG, or WEBP format.",
   "XRF 결과 Excel 업로드":"Upload XRF Result Excel","XRF 원본 Excel 업로드":"Upload Original XRF Excel",
   "자동 산출 XRF":"Auto-derived XRF","업로드 파일":"Uploaded File","업로드된 파일 없음":"No Uploaded File",
   "업로드된 PDF 없음":"No Uploaded PDF","최근 업로드":"Latest Upload",
@@ -9824,7 +9827,7 @@ export default function App(){
                         <div style={{display:"grid",gridTemplateColumns:reqPhotoPreview?"120px 1fr":"1fr",gap:12,alignItems:"stretch"}}>
                           {reqPhotoPreview&&<img src={reqPhotoPreview} alt="선택한 품목 사진" style={{width:120,height:96,objectFit:"cover",borderRadius:8,border:`1px solid ${C.bd}`}}/>}
                           <label style={{...uploadBoxStyle,minHeight:96,borderRadius:8}}>
-                            <span>{reqPhotoFile?.name||"사진 선택 (JPG, PNG, WEBP / 최대 10MB)"}</span>
+                            <span data-i18n-skip="true">{reqPhotoFile?.name||(lang==="en"?"Choose Photo (JPG, PNG, WEBP / max. 10 MB)":"사진 선택 (JPG, PNG, WEBP / 최대 10MB)")}</span>
                             <input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={handleRequestPhoto} style={fileInputOverlay}/>
                           </label>
                         </div>
@@ -10005,7 +10008,7 @@ export default function App(){
                         <div style={{display:"grid",gridTemplateColumns:reqPhotoPreview?"120px 1fr":"1fr",gap:12,alignItems:"stretch"}}>
                           {reqPhotoPreview&&<img src={reqPhotoPreview} alt="선택한 품목 사진" style={{width:120,height:96,objectFit:"cover",borderRadius:8,border:`1px solid ${C.bd}`}}/>}
                           <label style={{...uploadBoxStyle,minHeight:96,borderRadius:8}}>
-                            <span>{reqPhotoFile?.name||"사진 선택 (JPG, PNG, WEBP / 최대 10MB)"}</span>
+                            <span data-i18n-skip="true">{reqPhotoFile?.name||(lang==="en"?"Choose Photo (JPG, PNG, WEBP / max. 10 MB)":"사진 선택 (JPG, PNG, WEBP / 최대 10MB)")}</span>
                             <input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={handleRequestPhoto} style={fileInputOverlay}/>
                           </label>
                         </div>

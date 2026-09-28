@@ -19,7 +19,7 @@ export {
   VISUAL_UAT_MODE,VISUAL_UAT_ITEMS,VISUAL_UAT_COMPLIANCE_ITEMS,VISUAL_UAT_PAGINATION_ITEMS,VISUAL_UAT_ALL_ITEMS,VISUAL_UAT_PRECISION_OVERRIDES,VISUAL_UAT_EXPECTATIONS,
   applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
   deriveRuntimeWorkflow,visualUatSelfCheckRow,workflowForItem,
-  MATERIAL_LIST_PAGE_SIZE,isCancelledListItem,approvalStatusOfItemFallback
+  MATERIAL_LIST_PAGE_SIZE,isCancelledListItem,approvalStatusOfItemFallback,translateUiTextKoToEn
 };
 `;
 
@@ -51,6 +51,9 @@ const actualGroups=Object.fromEntries(Object.keys(expectedGroups).map(group=>[
   group,app.VISUAL_UAT_EXPECTATIONS.filter(row=>row.group===group).length
 ]));
 const structuralFailures=[];
+if(app.translateUiTextKoToEn("사진 선택 (JPG, PNG, WEBP / 최대 10MB)")!=="Choose Photo (JPG, PNG, WEBP / max. 10 MB)"){
+  structuralFailures.push("photo picker translation mismatch");
+}
 if(app.VISUAL_UAT_MODE!==false) structuralFailures.push("SSR/normal mode must disable Visual UAT");
 if(uatApp.VISUAL_UAT_MODE!==true) structuralFailures.push("?uat=1 must enable Visual UAT");
 if(visualItems.length!==55) structuralFailures.push(`fixture count ${visualItems.length} !== 55`);
