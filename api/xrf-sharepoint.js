@@ -17,6 +17,7 @@ const LIST_IDS = {
   XRF_PrecisionAnalyses: "3c387146-a8c5-4b94-9bf3-251452b19a1c",
   XRF_PrecisionElementResults: "3fc979f1-4d6c-4d8a-9c75-3cab099d9971",
   XRF_ReportLibrary: "0462cdd6-f3ce-40bf-a814-471796a6147b",
+  XRF_ItemPhotoLibrary: "ef7471b3-dea2-447f-a54a-254cddc7ed1a",
 };
 
 const WRITABLE_LISTS = new Set([
@@ -33,16 +34,27 @@ const MAX_RETRIES = 4;
 const RETRY_BASE_MS = 350;
 const PRECISION_FILE_CHUNK_BYTES = 8 * 320 * 1024; // 2.5 MiB; base64 JSON stays below Vercel's 4.5 MB request limit.
 const PRECISION_FILE_MAX_BYTES = 250 * 1024 * 1024;
+const ITEM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 const FILE_REFERENCE_COLUMNS = {
+  XRF_Items: [
+    { name: "Photo_File_Name", displayName: "Item Photo File Name", text: { allowMultipleLines: false, maxLength: 255 } },
+    { name: "Photo_File_ID", displayName: "Item Photo File ID", text: { allowMultipleLines: false, maxLength: 255 } },
+    { name: "Photo_File_URL", displayName: "Item Photo File URL", text: { allowMultipleLines: true, linesForEditing: 3 } },
+  ],
+  XRF_Requests: [
+    { name: "Requester_Name", displayName: "Requester Name", text: { allowMultipleLines: false, maxLength: 255 } },
+  ],
   XRF_Measurements: [
     { name: "Source_File_ID", displayName: "XRF Source File ID", text: { allowMultipleLines: false, maxLength: 255 } },
     { name: "Source_File_URL", displayName: "XRF Source File URL", text: { allowMultipleLines: true, linesForEditing: 3 } },
+    { name: "Requester_Name", displayName: "Requester Name", text: { allowMultipleLines: false, maxLength: 255 } },
   ],
   XRF_PrecisionAnalyses: [
     { name: "Report_File_ID", displayName: "Precision Report File ID", text: { allowMultipleLines: false, maxLength: 255 } },
     { name: "Report_File_URL", displayName: "Precision Report File URL", text: { allowMultipleLines: true, linesForEditing: 3 } },
   ],
 };
+let graphTokenCache = { key: "", token: "", expiresAt: 0 };
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function cleanText(v) { return v == null ? "" : String(v); }
@@ -105,6 +117,10 @@ async function acquireGraphToken() {
   const clientId = process.env.MXKPCS_CLIENT_ID || DEFAULT_CLIENT_ID;
   const clientSecret = process.env.MXKPCS_CLIENT_SECRET;
   if (!clientSecret) throw new Error("서버 환경변수 MXKPCS_CLIENT_SECRET가 설정되어 있지 않습니다.");
+  const cacheKey = `${tenant}|${clientId}|${clientSecret.length}`;
+  if (graphTokenCache.key === cacheKey && graphTokenCache.token && Date.now() < graphTokenCache.expiresAt) {
+    return graphTokenCache.token;
+  }
 
   const body = new URLSearchParams({
     client_id: clientId,
@@ -119,6 +135,11 @@ async function acquireGraphToken() {
   );
   const payload = await response.json();
   if (!payload?.access_token) throw new Error("Microsoft Graph access token을 받지 못했습니다.");
+  graphTokenCache = {
+    key: cacheKey,
+    token: payload.access_token,
+    expiresAt: Date.now() + Math.max(60, Number(payload.expires_in || 3600) - 120) * 1000,
+  };
   return payload.access_token;
 }
 
@@ -155,6 +176,38 @@ function precisionFileMetadata(item) {
   };
 }
 
+function itemPhotoFolderName(itemId) {
+  const id = cleanText(itemId).trim();
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(id)) throw new Error("유효하지 않은 품목 ID입니다.");
+  return `ITEM_${id}`;
+}
+
+function itemPhotoUploadName(fileName) {
+  const name = cleanText(fileName).trim();
+  if (!name || name.length > 160 || /[\\/:*?"<>|\x00-\x1f]/.test(name) || name === "." || name === "..") {
+    throw new Error("사진 파일명을 확인하세요. 경로 문자와 160자를 넘는 이름은 사용할 수 없습니다.");
+  }
+  if (!/\.(jpe?g|png|webp)$/i.test(name)) throw new Error("품목 사진은 JPG, PNG, WEBP 형식만 업로드할 수 있습니다.");
+  return name;
+}
+
+function itemPhotoMetadata(item, itemId = "") {
+  const storedName = cleanText(item?.name).trim();
+  const legacyMatch = /^photo_[0-9a-f-]{36}_(.+)$/i.exec(storedName);
+  const displayName = legacyMatch?.[1] || storedName;
+  if (!item?.file || !/\.(jpe?g|png|webp)$/i.test(displayName)) return null;
+  return {
+    itemId,
+    id: item.id,
+    name: displayName,
+    storedName,
+    size: Number(item.size || 0),
+    mimeType: item.file?.mimeType || "application/octet-stream",
+    uploadedAt: item.lastModifiedDateTime || null,
+    webUrl: item.webUrl || null,
+  };
+}
+
 function validateUploadSessionUrl(raw) {
   const url = new URL(cleanText(raw));
   const host = url.hostname.toLowerCase();
@@ -171,6 +224,15 @@ async function precisionDriveId(siteId, accessToken) {
   });
   const drive = await response.json();
   if (!drive?.id || drive.driveType !== "documentLibrary") throw new Error("XRF_ReportLibrary 문서 라이브러리를 찾지 못했습니다.");
+  return drive.id;
+}
+
+async function itemPhotoDriveId(siteId, accessToken) {
+  const response = await fetchWithRetry(`${listUrl(siteId, "XRF_ItemPhotoLibrary")}/drive`, {
+    method: "GET", headers: graphHeaders(accessToken),
+  });
+  const drive = await response.json();
+  if (!drive?.id || drive.driveType !== "documentLibrary") throw new Error("XRF_ItemPhotoLibrary 문서 라이브러리를 찾지 못했습니다.");
   return drive.id;
 }
 
@@ -204,6 +266,161 @@ async function precisionFolderFiles(driveId, folder, accessToken) {
   return (await graphGetAll(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}/children?$top=200`, accessToken))
     .map(item => ({ item, metadata: precisionFileMetadata(item) }))
     .filter(row => row.metadata);
+}
+
+async function namedDriveFolder(driveId, folderName, accessToken, create = false) {
+  const root = `${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/root`;
+  const path = `${root}:/${encodeURIComponent(folderName)}`;
+  const find = async () => {
+    const response = await fetch(path, { method: "GET", headers: graphHeaders(accessToken) });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`문서 폴더 조회 실패: HTTP ${response.status}`);
+    const item = await response.json();
+    if (!item?.folder) throw new Error("문서 저장 경로가 폴더가 아닙니다.");
+    return item;
+  };
+  let folder = await find();
+  if (folder || !create) return folder;
+  const response = await fetch(`${root}/children`, {
+    method: "POST", headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+  });
+  if (response.status === 409) folder = await find();
+  else if (response.ok) folder = await response.json();
+  else throw new Error(`문서 폴더 생성 실패: HTTP ${response.status}`);
+  if (!folder?.id) throw new Error("문서 폴더 ID를 받지 못했습니다.");
+  return folder;
+}
+
+async function itemPhotoFolder(driveId, itemId, accessToken, create = false) {
+  return namedDriveFolder(driveId, itemPhotoFolderName(itemId), accessToken, create);
+}
+
+async function itemPhotoFolderFiles(driveId, folder, itemId, accessToken) {
+  if (!folder?.id) return [];
+  return (await graphGetAll(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}/children?$top=200`, accessToken))
+    .map(item => itemPhotoMetadata(item, itemId))
+    .filter(Boolean);
+}
+
+function latestItemPhoto(files) {
+  return (files || []).reduce((latest, file) => !latest || String(file.uploadedAt) > String(latest.uploadedAt) ? file : latest, null);
+}
+
+async function handleListItemPhotos(siteId, accessToken) {
+  const driveId = await itemPhotoDriveId(siteId, accessToken);
+  const rootRows = await graphGetAll(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/root/children?$top=200`, accessToken);
+  const folders = rootRows.filter(row => row?.folder && /^ITEM_[A-Za-z0-9_-]{1,120}$/.test(cleanText(row?.name)));
+  const entries = await Promise.all(folders.map(async folder => {
+    const itemId = cleanText(folder.name).slice(5);
+    const latest = latestItemPhoto(await itemPhotoFolderFiles(driveId, folder, itemId, accessToken));
+    return latest ? [itemId, latest] : null;
+  }));
+  return Object.fromEntries(entries.filter(Boolean));
+}
+
+async function handleBeginItemPhotoUpload(siteId, accessToken, payload) {
+  const itemId = cleanText(payload?.itemId).trim();
+  const storedName = itemPhotoUploadName(payload?.fileName);
+  const size = Number(payload?.size);
+  if (!Number.isSafeInteger(size) || size < 1 || size > ITEM_PHOTO_MAX_BYTES) {
+    throw new Error("품목 사진은 1바이트 이상, 10MB 이하만 업로드할 수 있습니다.");
+  }
+  const item = await findListItem(siteId, "XRF_Items", payload?.itemSpItemId, accessToken);
+  if (!item || cleanText(item?.fields?.Title).trim() !== itemId) {
+    throw new Error("실제 DB에 등록된 품목에만 사진을 업로드할 수 있습니다.");
+  }
+  const driveId = await itemPhotoDriveId(siteId, accessToken);
+  const folder = await itemPhotoFolder(driveId, itemId, accessToken, true);
+  const url = `${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}:/${encodeURIComponent(storedName)}:/createUploadSession`;
+  const response = await fetchWithRetry(url, {
+    method: "POST", headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "replace", name: storedName } }),
+  }, { retry5xx: false, retryNetwork: false });
+  const session = await response.json();
+  if (!session?.uploadUrl) throw new Error("Graph 사진 업로드 세션을 시작하지 못했습니다.");
+  return { uploadUrl: validateUploadSessionUrl(session.uploadUrl), storedName, chunkBytes: PRECISION_FILE_CHUNK_BYTES };
+}
+
+async function handleFinishItemPhotoUpload(siteId, accessToken, payload) {
+  const itemId = cleanText(payload?.itemId).trim();
+  const storedName = cleanText(payload?.storedName).trim();
+  const driveItemId = cleanText(payload?.driveItemId).trim();
+  itemPhotoFolderName(itemId);
+  if (!driveItemId || !storedName) throw new Error("완료된 사진의 Graph ID가 없습니다.");
+  const driveId = await itemPhotoDriveId(siteId, accessToken);
+  const folder = await itemPhotoFolder(driveId, itemId, accessToken);
+  const files = await itemPhotoFolderFiles(driveId, folder, itemId, accessToken);
+  const photo = files.find(file => file.id === driveItemId);
+  if (!photo || photo.size < 1) throw new Error("문서 라이브러리에 업로드된 사진을 확인하지 못했습니다.");
+  const item = await findListItem(siteId, "XRF_Items", payload?.itemSpItemId, accessToken);
+  if (!item) throw new Error("사진을 연결할 품목 행을 찾지 못했습니다.");
+  if (cleanText(item?.fields?.Title).trim() !== itemId) throw new Error("사진 품목 ID와 SharePoint 행이 일치하지 않습니다.");
+  await patchListItem(siteId, "XRF_Items", item.id, {
+    Photo_File_Name: photo.name,
+    Photo_File_ID: photo.id,
+    Photo_File_URL: photo.webUrl,
+  }, accessToken);
+  return photo;
+}
+
+async function handleNormalizeItemPhotoName(siteId, accessToken, payload) {
+  const itemId = cleanText(payload?.itemId).trim();
+  const driveItemId = cleanText(payload?.driveItemId).trim();
+  const desiredName = itemPhotoUploadName(payload?.fileName);
+  itemPhotoFolderName(itemId);
+  if (!driveItemId) throw new Error("정리할 사진의 Graph ID가 없습니다.");
+
+  const item = await findListItem(siteId, "XRF_Items", payload?.itemSpItemId, accessToken);
+  if (!item || cleanText(item?.fields?.Title).trim() !== itemId) {
+    throw new Error("사진 파일명을 정리할 품목 행을 확인하지 못했습니다.");
+  }
+  const driveId = await itemPhotoDriveId(siteId, accessToken);
+  const folder = await itemPhotoFolder(driveId, itemId, accessToken);
+  const files = await itemPhotoFolderFiles(driveId, folder, itemId, accessToken);
+  const current = files.find(file => file.id === driveItemId);
+  if (!current) throw new Error("품목 폴더에서 정리할 사진을 찾지 못했습니다.");
+
+  let normalized = current;
+  if (current.storedName !== desiredName) {
+    const response = await fetchWithRetry(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(driveItemId)}`, {
+      method: "PATCH",
+      headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ name: desiredName }),
+    }, { retry5xx: false, retryNetwork: false });
+    normalized = itemPhotoMetadata(await response.json(), itemId);
+    if (!normalized) throw new Error("정리된 사진 파일 정보를 확인하지 못했습니다.");
+  }
+
+  await patchListItem(siteId, "XRF_Items", item.id, {
+    Photo_File_Name: normalized.name,
+    Photo_File_ID: normalized.id,
+    Photo_File_URL: normalized.webUrl,
+  }, accessToken);
+  return { ...normalized, renamed: current.storedName !== desiredName };
+}
+
+async function sendItemPhoto(res, siteId, accessToken, itemId, requestedFileId = "") {
+  itemPhotoFolderName(itemId);
+  const driveId = await itemPhotoDriveId(siteId, accessToken);
+  const fileId = cleanText(requestedFileId).trim();
+  if (fileId && !/^[A-Za-z0-9!._-]{1,240}$/.test(fileId)) throw new Error("유효하지 않은 사진 파일 ID입니다.");
+  let photo = null;
+  if (!fileId) {
+    const folder = await itemPhotoFolder(driveId, itemId, accessToken);
+    photo = latestItemPhoto(await itemPhotoFolderFiles(driveId, folder, itemId, accessToken));
+  }
+  const resolvedFileId = fileId || photo?.id || "";
+  if (!resolvedFileId) return sendJson(res, 404, { ok: false, error: "등록된 품목 사진이 없습니다." });
+  const response = await fetchWithRetry(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(resolvedFileId)}/content`, {
+    method: "GET", headers: graphHeaders(accessToken),
+  });
+  const buffer = Buffer.from(await response.arrayBuffer());
+  res.statusCode = 200;
+  res.setHeader("Content-Type", response.headers.get("content-type") || photo?.mimeType || "application/octet-stream");
+  res.setHeader("Content-Length", String(buffer.length));
+  res.setHeader("Cache-Control", "private, max-age=300");
+  return res.end(buffer);
 }
 
 function latestPrecisionFiles(rows) {
@@ -334,11 +551,14 @@ async function graphGetAll(firstUrl, accessToken) {
   return rows;
 }
 
-async function patchListItemExistingFields(siteId, listName, itemId, fields, accessToken) {
+async function patchListItemExistingFields(siteId, listName, itemId, fields, accessToken, options = {}) {
   const columns = await graphGetAll(`${listUrl(siteId, listName)}/columns?$top=200`, accessToken);
   const names = new Set(columns.map(column => cleanText(column?.name).trim()));
   const supported = Object.fromEntries(Object.entries(fields).filter(([name]) => names.has(name)));
-  if (!Object.keys(supported).length) throw new Error(`${listName}에 저장 가능한 파일 참조 열이 없습니다.`);
+  if (!Object.keys(supported).length) {
+    if (options.allowEmpty) return null;
+    throw new Error(`${listName}에 저장 가능한 파일 참조 열이 없습니다.`);
+  }
   return patchListItem(siteId, listName, itemId, supported, accessToken);
 }
 
@@ -371,6 +591,19 @@ async function handleEnsureFileReferenceColumns(siteId, accessToken) {
   return { created, existing };
 }
 
+async function handleListColumns(siteId, accessToken, listName) {
+  if (!LIST_IDS[listName]) throw new Error("조회할 수 없는 SharePoint List입니다.");
+  return (await graphGetAll(`${listUrl(siteId, listName)}/columns?$top=200`, accessToken)).map(column => ({
+    id: column?.id || null,
+    name: column?.name || null,
+    displayName: column?.displayName || null,
+    hidden: column?.hidden === true,
+    readOnly: column?.readOnly === true,
+    type: column?.text ? "text" : column?.number ? "number" : column?.dateTime ? "dateTime"
+      : column?.boolean ? "boolean" : column?.hyperlinkOrPicture ? "hyperlinkOrPicture" : "other",
+  }));
+}
+
 function listUrl(siteId, listName) {
   const listId = LIST_IDS[listName];
   if (!listId) throw new Error(`알 수 없는 SharePoint List: ${listName}`);
@@ -392,6 +625,16 @@ function compactListItem(row) {
 async function readList(siteId, listName, accessToken) {
   const url = `${listUrl(siteId, listName)}/items?$expand=fields&$top=200`;
   return (await graphGetAll(url, accessToken)).map(compactListItem);
+}
+
+async function findListItem(siteId, listName, itemSpItemId, accessToken) {
+  if (itemSpItemId) {
+    const response = await fetchWithRetry(`${listUrl(siteId, listName)}/items/${encodeURIComponent(itemSpItemId)}?$expand=fields`, {
+      method: "GET", headers: graphHeaders(accessToken),
+    });
+    return compactListItem(await response.json());
+  }
+  return null;
 }
 
 function graphOperationError(context, error) {
@@ -521,6 +764,7 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
       field_5: nonEmpty(payload?.parentMeasurementId),
       field_6: nonEmpty(payload?.sourceFileName),
       field_7: nonEmpty(payload?.sourceSheet),
+      Requester_Name: nonEmpty(payload?.requesterName),
     }, accessToken);
     created.push(["XRF_Measurements", header.id]);
 
@@ -587,6 +831,7 @@ function requestFieldsFromPayload(requestId, payload, itemId) {
     Processed_By: payload.status && payload.status !== "Pending" ? nonEmpty(payload.actor || "admin") : null,
     Before_Target_Snapshot_JSON: payload.beforeTargetSnapshot ? JSON.stringify(payload.beforeTargetSnapshot) : null,
     Is_Migration: false,
+    Requester_Name: nonEmpty(form.requesterName),
   };
 }
 
@@ -643,6 +888,7 @@ async function handleCreateRequest(siteId, accessToken, payload) {
         parentMeasurementId: null,
         sourceFileName: payload.initialMeasurement.sourceFileName,
         sourceSheet: payload.initialMeasurement.sourceSheet,
+        requesterName: payload.form?.requesterName,
         elements: payload.initialMeasurement.elements,
       });
       if (payload?.initialMeasurement?.requestStatus && payload.initialMeasurement.requestStatus !== "Pending") {
@@ -897,6 +1143,7 @@ const SHARED_APPROVED_ACTIONS = new Set([
   "createRequest", "saveMeasurement", "updateItem", "processDiscontinue",
   "revertDiscontinue", "upsertPrecision", "beginPrecisionFileUpload",
   "uploadPrecisionFileChunk", "finishPrecisionFileUpload",
+  "beginItemPhotoUpload", "finishItemPhotoUpload",
 ]);
 
 export default async function handler(req, res) {
@@ -937,8 +1184,15 @@ export default async function handler(req, res) {
 
     if (req.method === "GET") {
       const params = new URL(req.url || "/", "http://localhost").searchParams;
+      if (params.has("columnsFor")) {
+        if (shared) return sendJson(res, 403, { ok: false, error: "공유 배포에서는 스키마 조회를 허용하지 않습니다." });
+        return sendJson(res, 200, { ok: true, columns: await handleListColumns(siteId, accessToken, params.get("columnsFor")) });
+      }
       if (params.has("precisionFilesFor")) {
         return sendJson(res, 200, { ok: true, files: await handleListPrecisionFiles(siteId, accessToken, params.get("precisionFilesFor")) });
+      }
+      if (params.has("itemPhotoFor")) {
+        return sendItemPhoto(res, siteId, accessToken, params.get("itemPhotoFor"), params.get("itemPhotoId"));
       }
       return sendJson(res, 200, { ...await readBootstrap(siteId, accessToken), readOnly, authRequired: shared, writeAccessEmail: session?.email || null });
     }
@@ -967,6 +1221,9 @@ export default async function handler(req, res) {
     else if (action === "beginPrecisionFileUpload") result = await handleBeginPrecisionFileUpload(siteId, accessToken, payload);
     else if (action === "uploadPrecisionFileChunk") result = await handlePrecisionFileChunk(payload);
     else if (action === "finishPrecisionFileUpload") result = await handleFinishPrecisionFileUpload(siteId, accessToken, payload);
+    else if (action === "beginItemPhotoUpload") result = await handleBeginItemPhotoUpload(siteId, accessToken, payload);
+    else if (action === "finishItemPhotoUpload") result = await handleFinishItemPhotoUpload(siteId, accessToken, payload);
+    else if (action === "normalizeItemPhotoName") result = await handleNormalizeItemPhotoName(siteId, accessToken, payload);
     else if (action === "ensureFileReferenceColumns") result = await handleEnsureFileReferenceColumns(siteId, accessToken);
     else if (action === "deleteRecord") result = await handleDeleteRecord(siteId, accessToken, payload);
     else if (action === "writeProbe") result = await handleWriteProbe(siteId, accessToken);

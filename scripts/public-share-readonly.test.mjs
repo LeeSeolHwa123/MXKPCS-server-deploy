@@ -76,7 +76,13 @@ try {
       return new Response(JSON.stringify({ access_token: "fake-token" }), { status: 200 });
     }
     assert.equal(options.method, "GET");
+    if (String(url).includes("/drives/photo-drive/root/children")) {
+      return new Response(JSON.stringify({ value: [] }), { status: 200 });
+    }
     assert.match(String(url), /graph\.microsoft\.com\/v1\.0\/sites\//);
+    if (String(url).includes("/lists/ef7471b3-dea2-447f-a54a-254cddc7ed1a/drive")) {
+      return new Response(JSON.stringify({ id: "photo-drive", driveType: "documentLibrary" }), { status: 200 });
+    }
     return new Response(JSON.stringify({ value: [] }), { status: 200 });
   };
   const anonymousGet = await invoke(sharePointHandler, "GET");
@@ -87,7 +93,8 @@ try {
   assert.equal(approvedGet.body.readOnly, false);
   assert.equal(approvedGet.body.writeAccessEmail, email);
   assert.equal(Object.keys(approvedGet.body.lists).length, 6);
-  assert.equal(graphCalls, 14);
+  // Item photo bytes are fetched lazily and the second bootstrap reuses the cached OAuth token.
+  assert.equal(graphCalls, 13);
 
   process.env.MXKPCS_WRITE_ACCESS_HASHES = "f".repeat(64);
   assert.equal((await invoke(accessHandler, "GET", undefined, cookie)).body.canWrite, false);

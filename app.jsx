@@ -17,7 +17,8 @@ const VISUAL_UAT_READ_ONLY_MESSAGE = "Visual UAT 테스트 데이터는 읽기 �
 const VISUAL_UAT_MUTATION_ACTIONS = new Set([
   "createRequest","saveMeasurement","updateItem","processDiscontinue",
   "revertDiscontinue","upsertPrecision","deleteRecord",
-  "beginPrecisionFileUpload","uploadPrecisionFileChunk","finishPrecisionFileUpload"
+  "beginPrecisionFileUpload","uploadPrecisionFileChunk","finishPrecisionFileUpload",
+  "beginItemPhotoUpload","finishItemPhotoUpload"
 ]);
 
 function containsVisualUatReference(value,depth=0){
@@ -474,6 +475,34 @@ async function uploadPrecisionBinary(measurementId,kind,file,onProgress){
   });
 }
 
+async function uploadItemPhotoBinary(itemId,file,onProgress,itemSpItemId=null){
+  if(!file?.size || file.size>10*1024*1024) throw new Error("품목 사진은 1바이트 이상, 10MB 이하만 업로드할 수 있습니다.");
+  if(!/^image\/(jpeg|png|webp)$/i.test(file.type||"") && !/\.(jpe?g|png|webp)$/i.test(file.name||"")){
+    throw new Error("품목 사진은 JPG, PNG, WEBP 형식만 업로드할 수 있습니다.");
+  }
+  const session=await mutateSharePoint("beginItemPhotoUpload",{itemId,itemSpItemId,fileName:file.name,size:file.size,mimeType:file.type||""});
+  let offset=0;
+  let driveItemId="";
+  while(offset<file.size){
+    const end=Math.min(offset+session.chunkBytes,file.size);
+    const bytes=new Uint8Array(await file.slice(offset,end).arrayBuffer());
+    let binary="";
+    for(let i=0;i<bytes.length;i+=32768) binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
+    const chunk=await mutateSharePoint("uploadPrecisionFileChunk",{
+      uploadUrl:session.uploadUrl,offset,totalSize:file.size,base64:btoa(binary)
+    });
+    offset=end;
+    onProgress?.(Math.round(offset/file.size*100));
+    if(chunk.complete){
+      if(offset!==file.size || !chunk.driveItemId) throw new Error("사진 업로드 완료 파일 ID를 확인하지 못했습니다.");
+      driveItemId=chunk.driveItemId;
+    }else if(offset===file.size || !chunk.nextExpectedRanges?.some(range=>Number(String(range).split("-")[0])===offset)){
+      throw new Error("Graph가 예상한 사진 업로드 위치와 일치하지 않습니다.");
+    }
+  }
+  return mutateSharePoint("finishItemPhotoUpload",{itemId,itemSpItemId,storedName:session.storedName,driveItemId});
+}
+
 function requestStatusFromApproval(approvalStatus){
   const key=String(approvalStatus||"").trim();
   if(key==="승인" || key==="사용 승인" || key==="단종 승인") return "Applied";
@@ -576,6 +605,7 @@ function buildSharePointMeasurementMap(measurementRows,elementRows){
       sourceFileId:f.Source_File_ID||"",
       sourceFileUrl:f.Source_File_URL||"",
       sourceSheet:f.field_7||"",
+      requesterName:f.Requester_Name||"",
       elements:elementsByMeasurement[id]||{},
       _spItemId:row?.id||null
     };
@@ -666,12 +696,13 @@ function decorateRuntimeItemWithMeasurements(baseItem,itemId,measurementMap){
   };
 }
 
-function buildSharePointMasterItems(itemRows,measurementMap){
+function buildSharePointMasterItems(itemRows,measurementMap,itemPhotos={}){
   return (itemRows||[]).map(row=>{
     const f=sharePointFields(row);
     const itemId=String(f.Title||"").trim();
     const lifecycle=String(f.field_9||"ExistingActive").trim()||"ExistingActive";
     const crType=String(f.field_8||"").trim();
+    const photo=itemPhotos?.[itemId]||null;
     const raw={
       itemId,
       _spItemId:row?.id||null,
@@ -696,7 +727,12 @@ function buildSharePointMasterItems(itemRows,measurementMap){
       actionNote:sharePointPlainText(f.field_13||""),
       replacementOf:f.Replacement_Of||null,
       replacementDate:dateOnly(f.Replacement_Date),
-      lifecycleEndDate:dateOnly(f.Lifecycle_End_Date)
+      lifecycleEndDate:dateOnly(f.Lifecycle_End_Date),
+      photoFileName:f.Photo_File_Name||photo?.name||"",
+      photoFileId:f.Photo_File_ID||photo?.id||"",
+      photoFileUrl:(photo?.id||f.Photo_File_ID)
+        ? `${XRF_SHAREPOINT_API}?itemPhotoFor=${encodeURIComponent(itemId)}&itemPhotoId=${encodeURIComponent(photo?.id||f.Photo_File_ID)}`
+        : ""
     };
     return decorateRuntimeItemWithMeasurements(normalizeItemRecord(raw),itemId,measurementMap);
   });
@@ -811,7 +847,8 @@ function buildSharePointRequestItems(requestRows,masterItems,measurementMap){
       revertReason:sharePointPlainText(f.Revert_Reason||""),
       beforeTargetSnapshot:parseSharePointJson(f.Before_Target_Snapshot_JSON),
       restoredTargetSnapshot:parseSharePointJson(f.Restored_Target_Snapshot_JSON),
-      note:sharePointPlainText(f.field_18||"")
+      note:sharePointPlainText(f.field_18||""),
+      requesterName:sharePointPlainText(f.Requester_Name||"")
     });
     rows.push(decorateRuntimeItemWithMeasurements(base,proposedItemId,measurementMap));
   }
@@ -840,6 +877,7 @@ function mergeSharePointRequestMetadata(masterItems,requestRows){
       requestType,
       processStatus:status,
       requestReason:sharePointPlainText(f.Request_Reason||""),
+      requesterName:sharePointPlainText(f.Requester_Name||""),
       processedAt:f.Processed_At||null,
       processedBy:sharePointPlainText(f.Processed_By||""),
       revertedAt:f.Reverted_At||null,
@@ -958,7 +996,7 @@ function buildRuntimeFromSharePoint(payload){
   const precisionElementRows=lists.XRF_PrecisionElementResults||lists.precisionElementResults||[];
 
   const measurementMap=buildSharePointMeasurementMap(measurementRows,elementRows);
-  const baseMasterItems=deriveReplacementRelations(buildSharePointMasterItems(itemRows,measurementMap));
+  const baseMasterItems=deriveReplacementRelations(buildSharePointMasterItems(itemRows,measurementMap,payload?.itemPhotos||{}));
   const masterItems=mergeSharePointRequestMetadata(baseMasterItems,requestRows);
   const requestItems=buildSharePointRequestItems(requestRows,masterItems,measurementMap);
   const precisionOverrides=buildSharePointPrecisionOverrides(precisionRows,precisionElementRows);
@@ -1119,6 +1157,10 @@ function normalizeItemRecord(raw){
     dept:pickField(raw,"dept","Handling_Dept") || "",
     materialCategory:pickField(raw,"materialCategory","Material_Category") || "",
     materialState:pickField(raw,"materialState","Material_State") || "",
+    requesterName:pickField(raw,"requesterName","Requester_Name") || "",
+    photoFileName:pickField(raw,"photoFileName","Photo_File_Name") || "",
+    photoFileId:pickField(raw,"photoFileId","Photo_File_ID") || "",
+    photoFileUrl:pickField(raw,"photoFileUrl","Photo_File_URL") || "",
     crType:pickField(raw,"crType","CR_Type") || "",
     crLevel:pickField(raw,"crLevel","CR_Type_Level") || crLevelFromType(pickField(raw,"crType","CR_Type") || ""),
     approvalStatus:pickField(raw,"approvalStatus","Approval_Status") || "측정 진행중",
@@ -1563,9 +1605,11 @@ const UI_EN_MAP = {
   "승인 · 등록":"Approve · Register","신규 등록 요청 제출":"Submit New Registration Request",
   "유형 다시 선택":"Choose Another Type","단종 처리 원복":"Restore Discontinuation",
   "단종 원복 완료":"Discontinuation Restored","단종 승인":"Approve Discontinuation",
-  "기존 주기 도래 · 측정 추가":"Existing Cycle Due · Add Measurement",
+  "기존 주기 도래 / 측정 추가":"Existing Cycle Due / Add Measurement",
   "측정 추가 대상 품목":"Item for Additional Measurement",
-  "변경 · 대체 등록":"Change / Replacement Registration",
+  "변경 / 대체 등록":"Change / Replacement Registration",
+  "사진":"Photo","품목 사진":"Item Photo","사진 없음":"No Photo",
+  "사진 선택":"Choose Photo",
   "XRF 결과 Excel 업로드":"Upload XRF Result Excel","XRF 원본 Excel 업로드":"Upload Original XRF Excel",
   "자동 산출 XRF":"Auto-derived XRF","업로드 파일":"Uploaded File","업로드된 파일 없음":"No Uploaded File",
   "업로드된 PDF 없음":"No Uploaded PDF","최근 업로드":"Latest Upload",
@@ -1724,11 +1768,11 @@ const UI_EN_MAP = {
   "예: 제품 포장용 엠보스":"e.g. Packaging emboss","예: ABC Chemical":"e.g. ABC Chemical",
   "예: Solid / Powder":"e.g. Solid / Powder","기타 상세 미입력":"Other details not entered",
   "예상 Approval_Status":"Expected Approval_Status","측정 후 산출":"Calculated after measurement",
-  "관리자 직접 등록 · 기존 주기 측정 추가":"Admin Direct Registration · Add Periodic Measurement",
-  "관리자 직접 등록 · 변경·대체 등록":"Admin Direct Registration · Change / Replacement",
-  "관리자 직접 등록 · 신규 도입":"Admin Direct Registration · New Item",
-  "관리자 직접 등록 · 단종 처리":"Admin Direct Registration · Discontinuation",
-  "관리자 직접 등록 · 기존 품목 대체 등록":"Admin Direct Registration · Replace Existing Item",
+  "관리자 직접 등록 / 기존 주기 측정 추가":"Admin Direct Registration / Add Periodic Measurement",
+  "관리자 직접 등록 / 변경/대체 등록":"Admin Direct Registration / Change / Replacement",
+  "관리자 직접 등록 / 신규 도입":"Admin Direct Registration / New Item",
+  "관리자 직접 등록 / 단종 처리":"Admin Direct Registration / Discontinuation",
+  "관리자 직접 등록 / 기존 품목 대체 등록":"Admin Direct Registration / Replace Existing Item",
   "의뢰자 등록 · 신규 도입":"Requester Registration · New Item",
   "의뢰자 등록 · 기존 품목 대체 등록":"Requester Registration · Replace Existing Item",
   "Cl + Br Content 합계 기준 · Internal Limit 1,050 ppm":"Sum of Cl and Br content · Internal Limit 1,050 ppm",
@@ -2783,7 +2827,7 @@ function samePartNumber(a,b){
 }
 const GENERATED_ITEM_ACTION_NOTE_LINES=new Set([
   "의뢰자 등록 · 신규 도입",
-  "관리자 직접 등록 · 신규 도입",
+  "관리자 직접 등록 / 신규 도입",
   "XRF 측정 의뢰 상태",
   "XRF 원본 업로드 완료",
 ]);
@@ -4646,6 +4690,7 @@ function listDDayValue(item){
 function listColumnValue(item,column,approvalStatus=""){
   if(!item) return "—";
   if(column==="category") return item.category||"—";
+  if(column==="photo") return item.photoFileUrl?"사진 있음":"사진 없음";
   if(column==="code") return item.code||"—";
   if(column==="name") return [item.name,item.nameEn].filter(Boolean).join(" / ")||"—";
   if(column==="dept") return item.dept||"—";
@@ -4678,7 +4723,7 @@ function itemMatchesListColumnFilter(item,column,selected,approvalStatus=""){
 function itemMatchesListSearch(item,search,approvalStatus=""){
   const query=String(search||"").trim().toLocaleLowerCase("ko-KR");
   if(!query) return true;
-  const searchableColumns=["category","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"];
+  const searchableColumns=["category","photo","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"];
   const searchableValues=searchableColumns.flatMap(column=>{
     const value=listColumnValue(item,column,approvalStatus);
     const label=FILTER_LABELS[column]?.[value];
@@ -6328,6 +6373,19 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
 
 const MATERIAL_LIST_PAGE_SIZE=100;
 
+function expandedPhotoDisplaySize(naturalWidth,naturalHeight){
+  const width=Math.max(1,Number(naturalWidth)||1);
+  const height=Math.max(1,Number(naturalHeight)||1);
+  const viewportWidth=typeof window!=="undefined"?window.innerWidth:1200;
+  const viewportHeight=typeof window!=="undefined"?window.innerHeight:800;
+  const maxWidth=Math.max(240,Math.min(1100,viewportWidth-28));
+  const maxHeight=Math.max(180,viewportHeight-150);
+  const fitScale=Math.min(maxWidth/width,maxHeight/height);
+  const minimumExpandedWidth=Math.min(720,maxWidth);
+  const scale=Math.max(fitScale,minimumExpandedWidth/width);
+  return {displayWidth:Math.round(width*scale),displayHeight:Math.round(height*scale)};
+}
+
 export default function App(){
   const appRootRef=useRef(null);
   const [entered,setEntered]=useState(false);
@@ -6335,7 +6393,7 @@ export default function App(){
     try{ return localStorage.getItem("xrf-ui-language")==="en"?"en":"ko"; }catch{return "ko";}
   });
   const [tab,setTab]=useState("list");
-  const [fs,setFs]=useState({category:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[]});
+  const [fs,setFs]=useState({category:[],photo:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[]});
   const [openFilter,setOpenFilter]=useState(null);
   const [fPos,setFPos]=useState({top:0,left:0});
   const [search,setSearch]=useState("");
@@ -6343,6 +6401,7 @@ export default function App(){
   const [visualUatOnly,setVisualUatOnly]=useState(false);
   const [selKey,setSelKey]=useState(null);
   const [rowSel,setRowSel]=useState(null);
+  const [photoPreview,setPhotoPreview]=useState(null);
   const [selPeriodNum,setSelPeriodNum]=useState(null);
   const [selPeriodPage,setSelPeriodPage]=useState(null);
   const [precisionSelCaseId,setPrecisionSelCaseId]=useState(null);
@@ -6373,6 +6432,9 @@ export default function App(){
   const [reqXrfMode,setReqXrfMode]=useState("request");
   const [reqUploadResult,setReqUploadResult]=useState(emptyUploadedXrfResult());
   const [reqUploadFileName,setReqUploadFileName]=useState("");
+  const [reqPhotoFile,setReqPhotoFile]=useState(null);
+  const [reqPhotoPreview,setReqPhotoPreview]=useState("");
+  const [reqPhotoProgress,setReqPhotoProgress]=useState(0);
   const [adminUploadFileNameByCode,setAdminUploadFileNameByCode]=useState({});
   const [adminUploadResultByCode,setAdminUploadResultByCode]=useState({});
   const [periodUploadState,setPeriodUploadState]=useState({key:"",fileName:"",error:"",saved:false});
@@ -6719,6 +6781,10 @@ export default function App(){
     return next;
   }),[]);
   const goNextRequesterStep=useCallback(()=>{
+    if(regStep===2 && regType!=="discontinue" && !reqPhotoFile){
+      window.alert("품목 사진을 선택하세요.");
+      return;
+    }
     if(regStep===2 && regType!=="discontinue" && isChemicalMaterialCategory(reqForm.materialCategory)
       && !isValidChemicalMaterialState(reqForm.materialState)){
       window.alert("Material_Category가 Chemical인 경우 Material_State를 필수로 선택하세요.");
@@ -6726,7 +6792,7 @@ export default function App(){
     }
     const maxStep=regType==="discontinue" ? 3 : 4;
     setRegStep(step=>Math.min(maxStep,step+1));
-  },[regStep,regType,reqForm.materialCategory,reqForm.materialState]);
+  },[regStep,regType,reqForm.materialCategory,reqForm.materialState,reqPhotoFile]);
   const setItemApproval=useCallback((code,status)=>setApprovalOverrides(prev=>({...prev,[code]:status})),[]);
   const handleRequesterXrfUpload=useCallback(async(e)=>{
     const file=e.target.files?.[0];
@@ -6737,6 +6803,29 @@ export default function App(){
     const result=await parseUploadedXrfFile(file);
     setReqUploadResult(result);
     e.target.value="";
+  },[]);
+  const clearRequestPhoto=useCallback(()=>{
+    setReqPhotoFile(null);
+    setReqPhotoPreview("");
+    setReqPhotoProgress(0);
+  },[]);
+  const handleRequestPhoto=useCallback((e)=>{
+    const file=e.target.files?.[0]||null;
+    e.target.value="";
+    if(!file) return;
+    if(file.size<1 || file.size>10*1024*1024){
+      window.alert("품목 사진은 10MB 이하 파일만 선택하세요.");
+      return;
+    }
+    if(!/^image\/(jpeg|png|webp)$/i.test(file.type||"") && !/\.(jpe?g|png|webp)$/i.test(file.name||"")){
+      window.alert("품목 사진은 JPG, PNG, WEBP 형식만 선택하세요.");
+      return;
+    }
+    setReqPhotoFile(file);
+    setReqPhotoProgress(0);
+    const reader=new FileReader();
+    reader.onload=()=>setReqPhotoPreview(String(reader.result||""));
+    reader.readAsDataURL(file);
   },[]);
   const commitParsedMeasurement=useCallback(async(targetItem,result,targetPeriod=null,sourceLabel="XRF 결과 업로드",sourceFile=null)=>{
     if(!targetItem || !result?.parsed) return null;
@@ -6981,6 +7070,7 @@ export default function App(){
         parentMeasurementId,
         sourceFileName:result.fileName||"",
         sourceSheet:result.sourceSheet||"",
+        requesterName:"",
         elements:result.elements||{},
         actor:"admin",
         itemPatch:{
@@ -7065,6 +7155,10 @@ export default function App(){
     }
     if(requestType!=="discontinue" && !String(reqForm.partNumber||"").trim()){
       window.alert("Part Number를 확인하세요.");
+      return;
+    }
+    if(requestType!=="discontinue" && !reqPhotoFile){
+      window.alert("품목 사진을 선택하세요.");
       return;
     }
     if(requestType==="discontinue" && reqForm.discontinueReason==="기타" && !discontinueReasonFinal){
@@ -7265,13 +7359,15 @@ export default function App(){
     const item={
       _sourceCode:code,
       code, name:reqForm.itemName||"신규 등록 요청 품목", nameEn:String(reqForm.itemNameEn||"").trim(), dept:reqForm.handlingDept, respDept:"PQE",
+      requesterName:"",
+      photoFileName:reqPhotoFile?.name||"",photoFileUrl:reqPhotoPreview||"",
       type:reqForm.type,
       materialCategory:reqForm.materialCategory, materialState:reqForm.materialState||"", manufacturer:reqForm.manufacturer,
       useDate:reqForm.useDate, crType:reqForm.crType, crLevel, approvalStatus,
       // 신규 Item의 Action_Note는 시스템 상태 문구로 자동 채우지 않습니다.
       // 요청 사유와 사용자 Note는 XRF_Requests의 전용 필드에 별도로 저장됩니다.
       actionNote:isReplacement?[
-        isReplacement?(adminDirect?"관리자 직접 등록 · 기존 품목 대체 등록":"의뢰자 등록 · 기존 품목 대체 등록"):(adminDirect?"관리자 직접 등록 · 신규 도입":"의뢰자 등록 · 신규 도입"),
+        isReplacement?(adminDirect?"관리자 직접 등록 / 기존 품목 대체 등록":"의뢰자 등록 · 기존 품목 대체 등록"):(adminDirect?"관리자 직접 등록 / 신규 도입":"의뢰자 등록 · 신규 도입"),
         effectiveXrfMode==="request"?"XRF 측정 의뢰 상태":"XRF 원본 업로드 완료",
         isReplacement?`대체 대상: ${selectedReplacementItem?.code||reqForm.replacementTargetCode||"미선택"} · ${selectedReplacementItem?.name||""}`:"",
         isReplacement?`대체 사유: ${replacementReasonFinal}`:"",
@@ -7345,7 +7441,7 @@ export default function App(){
       requestedDate:TODAY_STR,
       actor:"admin",
       xrfInputMode:effectiveXrfMode,
-      form:{...reqForm,partNumber:code},
+      form:{...reqForm,requesterName:"",partNumber:code},
       item:{
         name:item.name,nameEn:item.nameEn,type:item.type,dept:item.dept,materialCategory:item.materialCategory,
         materialState:item.materialState,crType:item.crType,lifecycle:item.lifecycle,isCurrent:item.isCurrent,
@@ -7357,14 +7453,24 @@ export default function App(){
       }:null
     });
     if(!created) return;
+    let uploadedRemoteFile=false;
+    if(reqPhotoFile && created.itemId){
+      try{
+        await uploadItemPhotoBinary(created.itemId,reqPhotoFile,setReqPhotoProgress,created.itemSpItemId);
+        uploadedRemoteFile=true;
+      }catch(error){
+        window.alert(`품목은 저장됐지만 사진 원본 저장에 실패했습니다.\n${error?.message||error}`);
+      }
+    }
     if(uploadParsed && reqUploadFileRef.current && created.measurement?.measurementId){
       try{
         await uploadPrecisionBinary(created.measurement.measurementId,"source",reqUploadFileRef.current);
-        await reloadSharePointDb();
+        uploadedRemoteFile=true;
       }catch(error){
         window.alert(`품목과 XRF 측정값은 저장됐지만 원본 파일 저장에 실패했습니다.\n${error?.message||error}`);
       }
     }
+    if(uploadedRemoteFile) await reloadSharePointDb();
     // 업로드가 완료된 품목은 즉시 R 측정과 원소 분석을 확인할 수 있도록 XRF 분석 화면으로 이동합니다.
     // 측정 의뢰만 등록한 경우에는 리스트에 반영하고 관리자 업로드를 기다립니다.
     setSelKey(uploadParsed?code:null);
@@ -7376,7 +7482,8 @@ export default function App(){
     reqUploadFileRef.current=null;
     setReqUploadFileName("");
     setReqUploadResult(emptyUploadedXrfResult());
-  },[buildReplacementPartNumber,buildRequesterPartNumber,reqForm,reqXrfMode,reqUploadResult,regType,selectableExistingItems,currentPortfolioPeriodNo,persistSharePointAction,reloadSharePointDb]);
+    clearRequestPhoto();
+  },[buildReplacementPartNumber,buildRequesterPartNumber,reqForm,reqXrfMode,reqUploadResult,reqPhotoFile,reqPhotoPreview,regType,selectableExistingItems,currentPortfolioPeriodNo,persistSharePointAction,reloadSharePointDb,clearRequestPhoto]);
 
   useEffect(()=>{
     const target=allItems.find(i=>i.code===reqForm.replacementTargetCode);
@@ -7481,6 +7588,7 @@ export default function App(){
       .sort((a,b)=>a.localeCompare(b,"ko",{numeric:true,sensitivity:"base"}));
     return {
       ...UNIQUE_VALS,
+      photo:uniqueSorted(listItems.map(item=>listColumnValue(item,"photo",approvalStatusOf(item)))),
       code:uniqueSorted(listItems.map(item=>listColumnValue(item,"code",approvalStatusOf(item)))),
       name:uniqueSorted(listItems.map(item=>listColumnValue(item,"name",approvalStatusOf(item)))),
       dept:uniqueSorted(listItems.map(item=>listColumnValue(item,"dept",approvalStatusOf(item)))),
@@ -7495,7 +7603,7 @@ export default function App(){
   const filtered=useMemo(()=>listItems.filter(item=>{
     if(VISUAL_UAT_MODE && visualUatOnly && !item.__visualUat) return false;
     const approvalStatus=approvalStatusOf(item);
-    for(const column of ["category","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"]){
+    for(const column of ["category","photo","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"]){
       if(!itemMatchesListColumnFilter(item,column,fs[column],approvalStatus)) return false;
     }
     if(fs.crLevel.length>0&&!fs.crLevel.includes(item.crLevel)) return false;
@@ -8282,7 +8390,7 @@ export default function App(){
     setItemEditForm(null);
   },[allItems,sharePointItems,isAdminUser,itemEditForm,rowSel,persistSharePointAction]);
 
-  const handleClearAll=()=>setFs({category:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[]});
+  const handleClearAll=()=>setFs({category:[],photo:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[]});
   const positionFilterPanel=useCallback((column)=>{
     if(!column || typeof window==="undefined") return;
     const anchor=appRootRef.current?.querySelector(`[data-filter-header="${column}"]`);
@@ -8357,7 +8465,7 @@ export default function App(){
   const gotoDueMonthList=(monthKey)=>{
     if(!monthKey) return;
     setSearch("");
-    setFs({category:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[monthKey]});
+    setFs({category:[],photo:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[monthKey]});
     setTab("list");
   };
   const hasFilters=Object.values(fs).some(v=>v.length>0);
@@ -8369,11 +8477,12 @@ export default function App(){
   const uploadBoxStyle={position:"relative",display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:`1px dashed ${C.bd2}`,background:C.card,color:C.text3,fontSize:12,fontWeight:600,cursor:"pointer",overflow:"hidden",textAlign:"center",padding:"0 12px",boxSizing:"border-box"};
   const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 / 변경 관리"}];
   const fhp={filterState:fs,openFilter,onOpen:handleOpen};
-  // 세로 방향은 페이지 자체가 스크롤하고, 14개 열의 최소 가독 폭보다 화면이 좁을 때만
+  // 세로 방향은 페이지 자체가 스크롤하고, 15개 열의 최소 가독 폭보다 화면이 좁을 때만
   // 표 컨테이너가 가로로 스크롤됩니다. 품목명은 축소하지 않고 셀 안에서 줄바꿈합니다.
   const listColumns=[
     {key:"cat", el:<FH label="분류" col="category" {...fhp}/>, w:80},
-    {key:"code",el:<FH label="품번" col="code" {...fhp}/>, w:112},
+    {key:"photo",el:<FH label="사진" col="photo" {...fhp}/>, w:72},
+    {key:"code",el:<FH label="품번" col="code" {...fhp}/>, w:86},
     {key:"name",el:<FH label="품목명" col="name" {...fhp}/>, w:180},
     {key:"dept",el:<FH label="부서" col="dept" {...fhp}/>, w:84},
     {key:"cyc",el:<FH label="주기" col="cycle" {...fhp}/>, w:62},
@@ -8634,6 +8743,16 @@ export default function App(){
           align-self:stretch;
           padding:2px 0;
         }
+        .xrf-hero-photo{
+          width:78px;
+          height:78px;
+          flex:0 0 78px;
+          border-radius:10px;
+          border:1px solid rgba(255,255,255,.22);
+          background:rgba(255,255,255,.08);
+          object-fit:cover;
+          align-self:center;
+        }
         .xrf-hero-title > div{
           overflow:hidden;
           text-overflow:ellipsis;
@@ -8762,6 +8881,22 @@ export default function App(){
         }
       `}</style>
       {openFilter&&<FilterPanel column={openFilter} pos={fPos} selected={fs[openFilter]||[]} values={listFilterValues[openFilter]||[]} onToggle={handleToggle} onClear={handleClear} onClose={()=>setOpenFilter(null)}/>}
+      {photoPreview&&(
+        <div role="presentation" onMouseDown={()=>setPhotoPreview(null)} onKeyDown={event=>{if(event.key==="Escape")setPhotoPreview(null);}} style={{position:"fixed",inset:0,zIndex:10020,display:"flex",alignItems:"center",justifyContent:"center",padding:"clamp(14px,3vw,34px)",background:"rgba(8,12,14,.82)",boxSizing:"border-box"}}>
+          <div role="dialog" aria-modal="true" aria-label={lang==="en"?"Item photo preview":"품목 사진 크게 보기"} onMouseDown={event=>event.stopPropagation()} style={{position:"relative",width:photoPreview.displayWidth?`${photoPreview.displayWidth}px`:"min(720px,calc(100vw - 28px))",maxWidth:"calc(100vw - 28px)",maxHeight:"calc(100dvh - 28px)",display:"flex",flexDirection:"column",background:C.card,border:`1px solid ${C.bd2}`,borderRadius:14,overflow:"hidden",boxShadow:"0 24px 70px rgba(0,0,0,.42)"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:14,padding:"12px 14px",borderBottom:`1px solid ${C.bd}`,background:C.card}}>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:750,color:C.text1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{photoPreview.code} · {photoPreview.itemName}</div>
+                <div style={{marginTop:2,fontSize:10.5,color:C.text4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{photoPreview.name}</div>
+              </div>
+              <button type="button" autoFocus onClick={()=>setPhotoPreview(null)} style={{flex:"0 0 auto",display:"inline-flex",alignItems:"center",gap:7,padding:"7px 11px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,fontWeight:650,cursor:"pointer"}}>{lang==="en"?"Close":"닫기"}<span aria-hidden="true" style={{fontSize:16,lineHeight:1}}>×</span></button>
+            </div>
+            <div style={{minHeight:0,width:"100%",alignSelf:"center",display:"block",padding:0,background:"#151b1e",overflow:"auto",boxSizing:"border-box"}}>
+              <img src={photoPreview.url} alt={photoPreview.name||`${photoPreview.code} 품목 사진`} onLoad={event=>{const size=expandedPhotoDisplaySize(event.currentTarget.naturalWidth,event.currentTarget.naturalHeight);setPhotoPreview(prev=>prev&&prev.url===photoPreview.url?{...prev,...size}:prev);}} style={{display:"block",width:photoPreview.displayWidth?`${photoPreview.displayWidth}px`:"100%",height:photoPreview.displayHeight?`${photoPreview.displayHeight}px`:"auto",maxWidth:"100%",objectFit:"fill",background:"#fff"}}/>
+            </div>
+          </div>
+        </div>
+      )}
       {discontinueDecisionAuth.open&&(
         <div role="presentation" onMouseDown={()=>{if(!discontinueDecisionAuth.pending) closeDiscontinueDecisionAuth();}} style={{position:"fixed",inset:0,zIndex:10001,display:"flex",alignItems:"center",justifyContent:"center",padding:18,background:"rgba(10,16,16,.58)",boxSizing:"border-box"}}>
           <form role="dialog" aria-modal="true" aria-labelledby="admin-discontinue-auth-title" onSubmit={submitDiscontinueDecisionAuth} onMouseDown={event=>event.stopPropagation()} onKeyDown={event=>{if(event.key==="Escape"&&!discontinueDecisionAuth.pending) closeDiscontinueDecisionAuth();}} style={{width:"min(430px,100%)",padding:"20px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
@@ -8926,13 +9061,13 @@ export default function App(){
                 <thead>
                   <tr style={{height:40}}>
                     {listColumns.map(({key,el})=>(
-                      <th key={key} style={{height:40,padding:"4px 3px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",lineHeight:1.15}}>{el}</th>
+                      <th key={key} style={{height:40,padding:"4px 6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",lineHeight:1.15}}>{el}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length===0?(
-                    <tr><td colSpan={14} style={{padding:"40px",textAlign:"center",color:C.text4,borderBottom:`1px solid ${C.bd}`}}>
+                    <tr><td colSpan={listColumns.length} style={{padding:"40px",textAlign:"center",color:C.text4,borderBottom:`1px solid ${C.bd}`}}>
                       조건에 맞는 품목이 없습니다.
                       <button onClick={handleClearAll} style={{marginLeft:10,padding:"4px 10px",background:"none",border:`1px solid ${C.bd}`,borderRadius:0,fontSize:11,cursor:"pointer",color:C.text3}}>초기화</button>
                     </td></tr>
@@ -8949,7 +9084,7 @@ export default function App(){
                     const hideTimeline=isDiscontinueItem || isDiscontinuedExisting || isReplaced || item.category==="changed";
                     const showTimeline=!hideTimeline && itemPeriods.length>0;
                     const rowOpacity=(isReplaced || isDiscontinueProcessed || isDiscontinuedExisting) ? 0.55 : 1;
-                    const tdS={height:UI.rowH,padding:"0 4px",borderBottom:`1px solid ${C.bd}`,verticalAlign:"middle",opacity:rowOpacity,boxSizing:"border-box",textAlign:"center"};
+                    const tdS={height:UI.rowH,padding:"0 6px",borderBottom:`1px solid ${C.bd}`,verticalAlign:"middle",opacity:rowOpacity,boxSizing:"border-box",textAlign:"center"};
                     const mutedCell=<span style={{fontSize:11,color:C.text4}}>—</span>;
                     const notTargetCell=<span title="대상 아님" style={{fontSize:12,color:C.text4,fontWeight:500}}>—</span>;
                     const isRowActive=rowSel===item.code;
@@ -8966,10 +9101,17 @@ export default function App(){
                             <CatDot cat={item.category} lang={lang}/>
                           </div>
                         </td>
-                        <td style={{...tdS,color:C.text3,fontSize:11,fontWeight:600,overflow:"hidden"}}>
+                        <td style={{...tdS,padding:"5px 6px",textAlign:"center"}}>
+                          {item.photoFileUrl?(
+                            <button type="button" onClick={e=>{e.stopPropagation();setPhotoPreview({url:item.photoFileUrl,name:item.photoFileName||"품목 사진",code:item.code,itemName:displayItemName(item,lang)});}} title={item.photoFileName||"품목 사진"} aria-label={`${item.code} 품목 사진 크게 보기`} style={{display:"inline-flex",padding:0,border:0,borderRadius:7,background:"transparent",cursor:"zoom-in"}}>
+                              <img src={item.photoFileUrl} alt={item.photoFileName||`${item.code} 품목 사진`} loading="lazy" style={{width:44,height:44,objectFit:"cover",borderRadius:7,border:`1px solid ${C.bd}`,background:C.alt}}/>
+                            </button>
+                          ):<span style={{fontSize:9.5,color:C.text4,lineHeight:1.2}}>사진 없음</span>}
+                        </td>
+                        <td style={{...tdS,color:C.text3,fontSize:11,fontWeight:600,overflow:"hidden",textAlign:"center"}}>
                           <AutoFitText value={item.code} title={item.code} baseFontSize={11} minFontSize={7} align="center" style={{fontWeight:600,color:C.text3}}/>
                         </td>
-                        <td data-i18n-skip="true" style={{...tdS,textAlign:"left",overflow:"visible",padding:"7px 10px"}}>
+                        <td data-i18n-skip="true" style={{...tdS,textAlign:"left",overflow:"visible",padding:"7px 6px"}}>
                           <div title={primaryItemName} style={{fontSize:12,fontWeight:600,color:C.text1,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
                             {primaryItemName}
                           </div>
@@ -8980,13 +9122,13 @@ export default function App(){
                         <td style={{...tdS,color:C.text3,fontSize:11}}><AutoFitText value={item.dept} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
                         <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={isCycleMuted||isEquipmentItem(item)?"—":(CYCLE_KO[itemCycleFromRisk(item)]||"—")} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
                         <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={item.firstDate||"—"} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
-                        <td style={{...tdS,padding:"0 8px",textAlign:"center"}}>{showTimeline?<DotCompact periods={itemPeriods}/>:mutedCell}</td>
+                        <td style={{...tdS,padding:"0 6px",textAlign:"center"}}>{showTimeline?<DotCompact periods={itemPeriods}/>:mutedCell}</td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center"}}>{isCycleMuted?mutedCell:<CompText item={item}/>}</td>
                         <td style={{...tdS,padding:"0 6px",cursor:"pointer",textAlign:"center"}} onClick={e=>{e.stopPropagation();gotoXrf(item.code);}} title="XRF 분석으로 이동">
                           {isDiscontinueItem?notTargetCell:<XrfWorkflowCell item={item}/>}
                         </td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center",cursor:itemHasPrecisionTrigger(item)||workflowForItem(item).precision||workflowForItem(item).precisionCases?.length?"pointer":"default"}} onClick={e=>{e.stopPropagation();const wf=workflowForItem(item);if(itemHasPrecisionTrigger(item)||wf.precision||wf.precisionCases?.length){setPrecisionSelCaseId(wf.caseData?.id||wf.activePrecisionCaseKey||wf.precisionCases?.[0]?.key||latestMeasurementOf(item)?.id||null);setSelKey(item.code);setTab("precision");}}}>{isDiscontinueItem?notTargetCell:<PrecisionWorkflowCell item={item}/>}</td>
-                        <td style={{...tdS,padding:"0 8px",textAlign:"center"}}><ApprovalBadge status={approvalStatusOf(item)} context={isDiscontinueItem?"discontinue":"use"} detail={item.approvalDetail||item.retestRequiredElements||latestMeasurementOf(item)?.retestRequiredElements}/></td>
+                        <td style={{...tdS,padding:"0 6px",textAlign:"center"}}><ApprovalBadge status={approvalStatusOf(item)} context={isDiscontinueItem?"discontinue":"use"} detail={item.approvalDetail||item.retestRequiredElements||latestMeasurementOf(item)?.retestRequiredElements}/></td>
                         <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={isCycleMuted?"—":(nextDue||"—")} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center"}}>{isCycleMuted||isReplaced?<span style={{color:C.text4,fontSize:11}}>—</span>:<DDayText dateStr={nextDue}/>}</td>
                         <td style={{...tdS,padding:"0 6px",whiteSpace:"nowrap",textAlign:"center"}}>
@@ -9039,6 +9181,9 @@ export default function App(){
             ):(
               <div style={{display:"flex",flexDirection:"column",...card,overflow:"hidden"}}>
                 <div className="xrf-hero" style={{background:C.charcoalDk}}>
+                  {sel.photoFileUrl
+                    ? <button type="button" onClick={()=>setPhotoPreview({url:sel.photoFileUrl,name:sel.photoFileName||"품목 사진",code:sel.code,itemName:displayItemName(sel,lang)})} title={sel.photoFileName||"품목 사진"} aria-label={`${sel.code} 품목 사진 크게 보기`} style={{display:"inline-flex",alignSelf:"center",padding:0,border:0,borderRadius:10,background:"transparent",cursor:"zoom-in"}}><img className="xrf-hero-photo" src={sel.photoFileUrl} alt={sel.photoFileName||`${sel.code} 품목 사진`}/></button>
+                    : <div className="xrf-hero-photo" style={{display:"flex",alignItems:"center",justifyContent:"center",color:"rgba(255,255,255,.45)",fontSize:10,textAlign:"center",padding:6,boxSizing:"border-box"}}>사진 없음</div>}
                   <div className="xrf-hero-title">
                     <div style={{fontSize:16,fontWeight:600,color:"#fff",marginBottom:3,letterSpacing:"-.2px"}}>{displayItemName(sel,lang)}</div>
                     <div style={{fontSize:12,color:"rgba(255,255,255,.72)",fontWeight:400}}>{sel.code} · {sel.dept}</div>
@@ -9580,7 +9725,7 @@ export default function App(){
                 </div>
                 <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
                   {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
-                    <button key={m} onClick={()=>{setRegMode(m);setRegStep(1);setRegType(null);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");}} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
+                    <button key={m} onClick={()=>{setRegMode(m);setRegStep(1);setRegType(null);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");clearRequestPhoto();}} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
                   ))}
                 </div>
               </div>
@@ -9608,7 +9753,7 @@ export default function App(){
                         ["replacement","기존 품목 대체 등록","현재 사용 중인 품목을 새로운 품목으로 변경하거나 대체합니다."],
                         ["discontinue","기존 품목 단종 / 사용 중지","신규 품목 추가 없이 기존 품목의 사용 중지 또는 단종을 요청합니다."]
                       ].map(([key,title,desc])=>(
-                        <button key={key} onClick={()=>{setRegType(key);setRegStep(2);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");}}
+                        <button key={key} onClick={()=>{setRegType(key);setRegStep(2);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");clearRequestPhoto();}}
                           style={{textAlign:"left",padding:"18px 18px",border:`2px solid ${regType===key?C.red:C.bd}`,background:regType===key?C.redBg:C.card,borderRadius:10,cursor:"pointer",minHeight:150}}>
                           <div style={{fontSize:14,fontWeight:800,color:C.text1,marginBottom:8}}>{title}</div>
                           <div style={{fontSize:11,color:C.text3,lineHeight:1.7}}>{desc}</div>
@@ -9675,6 +9820,16 @@ export default function App(){
                         )}
                       </div>
                       <div><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>CR_Type <span style={{color:C.red}}>*</span></div><select value={reqForm.crType} onChange={e=>updateRequestField("crType",e.target.value)} style={{...inp,width:"100%",boxSizing:"border-box"}}><option>직접접촉+잔류</option><option>직접접촉+비잔류</option><option>비접촉</option></select></div>
+                      <div style={{gridColumn:"1 / -1"}}>
+                        <div style={{fontSize:12,fontWeight:600,marginBottom:5}}>품목 사진 <span style={{color:C.red}}>*</span></div>
+                        <div style={{display:"grid",gridTemplateColumns:reqPhotoPreview?"120px 1fr":"1fr",gap:12,alignItems:"stretch"}}>
+                          {reqPhotoPreview&&<img src={reqPhotoPreview} alt="선택한 품목 사진" style={{width:120,height:96,objectFit:"cover",borderRadius:8,border:`1px solid ${C.bd}`}}/>}
+                          <label style={{...uploadBoxStyle,minHeight:96,borderRadius:8}}>
+                            <span>{reqPhotoFile?.name||"사진 선택 (JPG, PNG, WEBP / 최대 10MB)"}</span>
+                            <input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={handleRequestPhoto} style={fileInputOverlay}/>
+                          </label>
+                        </div>
+                      </div>
                       <div style={{gridColumn:"1 / -1"}}><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>요청 사유 / 비고</div><textarea value={reqForm.requestReason} onChange={e=>updateRequestField("requestReason",e.target.value)} placeholder="신규 도입 또는 대체 등록 사유를 입력하세요" style={{...inp,width:"100%",boxSizing:"border-box",minHeight:74,resize:"vertical"}}/></div>
                     </div>
                   </div>}
@@ -9764,7 +9919,7 @@ export default function App(){
                       ]:[
                         ["요청 유형",regType==="replacement"?"기존 품목 대체 등록":"신규 도입"],
                         ...(regType==="replacement"?[["대체 대상",selectedReplacementTarget?`${selectedReplacementTarget.code} · ${displayItemName(selectedReplacementTarget,lang)}`:"미선택"],["대체 사유",reqForm.replacementReason==="기타"?(reqForm.replacementReasonOther||"기타 상세 미입력"):reqForm.replacementReason],["기존 품목 처리",reqForm.oldItemDisposition],["전환 예정일",reqForm.replacementDate]]:[]),
-                        ["Part Number",reqForm.partNumber||"자동 발번"],["Item_Name",reqForm.itemName||"—"],["Item_Name_EN",reqForm.itemNameEn||"—"],["Type",`${ITEM_TYPE_KO[reqForm.type]||reqForm.type} (${reqForm.type})`],["Handling_Dept",reqForm.handlingDept],["Material_Category",reqForm.materialCategory],["Material_State",reqForm.materialState||"—"],["제조사",reqForm.manufacturer||"—"],["사용 예정 일자",reqForm.useDate],["CR_Type",reqForm.crType],["XRF 방식",reqXrfMode==="upload"?"XRF 원본 업로드":"XRF 측정 의뢰"],["업로드 파일",reqXrfMode==="upload"?(reqUploadFileName||"미선택"):"—"],["XRF Result",reqXrfMode==="upload"?(reqUploadResult.parsed?(reqUploadResult.xrfResult||reqUploadResult.xrfWorst):"파싱 대기"):"측정 후 산출"],["Judgment",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementJudgementSummary({elements:reqUploadResult.elements||{}}):"파싱 대기"):"측정 후 산출"],["후속조치",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementFollowupInfo({elements:reqUploadResult.elements||{},role:"Initial",attemptNo:1}).label:"파싱 대기"):"측정 후 산출"],["예상 Approval_Status",reqXrfMode==="request"||!reqUploadResult.parsed?"보류":(reqUploadResult.approvalStatus||deriveXrfApprovalStatus(reqUploadResult.xrfResult||reqUploadResult.xrfWorst))]
+                        ["Part Number",reqForm.partNumber||"자동 발번"],["품목 사진",reqPhotoFile?.name||"미선택"],["Item_Name",reqForm.itemName||"—"],["Item_Name_EN",reqForm.itemNameEn||"—"],["Type",`${ITEM_TYPE_KO[reqForm.type]||reqForm.type} (${reqForm.type})`],["Handling_Dept",reqForm.handlingDept],["Material_Category",reqForm.materialCategory],["Material_State",reqForm.materialState||"—"],["제조사",reqForm.manufacturer||"—"],["사용 예정 일자",reqForm.useDate],["CR_Type",reqForm.crType],["XRF 방식",reqXrfMode==="upload"?"XRF 원본 업로드":"XRF 측정 의뢰"],["업로드 파일",reqXrfMode==="upload"?(reqUploadFileName||"미선택"):"—"],["XRF Result",reqXrfMode==="upload"?(reqUploadResult.parsed?(reqUploadResult.xrfResult||reqUploadResult.xrfWorst):"파싱 대기"):"측정 후 산출"],["Judgment",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementJudgementSummary({elements:reqUploadResult.elements||{}}):"파싱 대기"):"측정 후 산출"],["후속조치",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementFollowupInfo({elements:reqUploadResult.elements||{},role:"Initial",attemptNo:1}).label:"파싱 대기"):"측정 후 산출"],["예상 Approval_Status",reqXrfMode==="request"||!reqUploadResult.parsed?"보류":(reqUploadResult.approvalStatus||deriveXrfApprovalStatus(reqUploadResult.xrfResult||reqUploadResult.xrfWorst))]
                       ]).map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.bd}`,fontSize:12}}><span style={{color:C.text4}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right"}}>{v}</span></div>)}
                     </div>
                     <button onClick={submitRequesterNewItem} style={{width:"100%",padding:"12px 0",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:13,fontWeight:600,cursor:"pointer"}}>
@@ -9785,11 +9940,11 @@ export default function App(){
                     <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:12}}>
                       {[
                         ["admin-new","신규 도입","새 품목을 즉시 등록하고 XRF 결과까지 반영"],
-                        ["admin-period","기존 주기 도래 · 측정 추가","기존 품목의 정기 XRF 결과를 추가 등록"],
-                        ["admin-replace","변경 · 대체 등록","기존 품목과 신규 대체품을 연결"],
+                        ["admin-period","기존 주기 도래 / 측정 추가","기존 품목의 정기 XRF 결과를 추가 등록"],
+                        ["admin-replace","변경 / 대체 등록","기존 품목과 신규 대체품을 연결"],
                         ["admin-discontinue","단종 처리","기존 품목의 사용 중지 또는 이력 전환"]
                       ].map(([key,title,desc])=>(
-                        <button key={key} onClick={()=>{setRegType(key);setRegStep(1);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");}}
+                        <button key={key} onClick={()=>{setRegType(key);setRegStep(1);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");clearRequestPhoto();}}
                           style={{textAlign:"left",padding:"16px",border:`1px solid ${C.bd}`,background:C.card,borderRadius:8,cursor:"pointer",minHeight:130}}>
                           <div style={{fontSize:13,fontWeight:800,color:C.text1,marginBottom:8}}>{title}</div>
                           <div style={{fontSize:11,color:C.text3,lineHeight:1.65}}>{desc}</div>
@@ -9802,11 +9957,11 @@ export default function App(){
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:14}}>
                       <div>
                         <div style={{fontSize:14,fontWeight:800,color:C.text1}}>
-                          {regType==="admin-new"?"관리자 직접 등록 · 신규 도입":regType==="admin-period"?"관리자 직접 등록 · 기존 주기 측정 추가":regType==="admin-replace"?"관리자 직접 등록 · 변경·대체 등록":"관리자 직접 등록 · 단종 처리"}
+                          {regType==="admin-new"?"관리자 직접 등록 / 신규 도입":regType==="admin-period"?"관리자 직접 등록 / 기존 주기 측정 추가":regType==="admin-replace"?"관리자 직접 등록 / 변경/대체 등록":"관리자 직접 등록 / 단종 처리"}
                         </div>
                         <div style={{fontSize:11,color:C.text4,lineHeight:1.6,marginTop:3}}>기본 정보, C&R 등급, XRF 결과, 위험도 산정, 승인 상태를 관리자가 직접 확인합니다.</div>
                       </div>
-                      <button onClick={()=>{setRegType(null);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");}} className="pill-btn" style={{padding:"7px 14px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3}}>유형 다시 선택</button>
+                      <button onClick={()=>{setRegType(null);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");clearRequestPhoto();}} className="pill-btn" style={{padding:"7px 14px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3}}>유형 다시 선택</button>
                     </div>
 
                     {(regType==="admin-period"||regType==="admin-replace"||regType==="admin-discontinue")&&<div style={{padding:"12px",background:C.bg,border:`1px solid ${C.bd}`,borderRadius:8,marginBottom:14}}>
@@ -9846,6 +10001,16 @@ export default function App(){
                         )}
                       </div>
                       <div><div style={{fontSize:12,fontWeight:600,marginBottom:5}}>CR_Type</div><select value={reqForm.crType} onChange={e=>updateRequestField("crType",e.target.value)} style={{...inp,width:"100%",boxSizing:"border-box"}}><option>직접접촉+잔류</option><option>직접접촉+비잔류</option><option>비접촉</option></select></div>
+                      <div style={{gridColumn:"1 / -1"}}>
+                        <div style={{fontSize:12,fontWeight:600,marginBottom:5}}>품목 사진 <span style={{color:C.red}}>*</span></div>
+                        <div style={{display:"grid",gridTemplateColumns:reqPhotoPreview?"120px 1fr":"1fr",gap:12,alignItems:"stretch"}}>
+                          {reqPhotoPreview&&<img src={reqPhotoPreview} alt="선택한 품목 사진" style={{width:120,height:96,objectFit:"cover",borderRadius:8,border:`1px solid ${C.bd}`}}/>}
+                          <label style={{...uploadBoxStyle,minHeight:96,borderRadius:8}}>
+                            <span>{reqPhotoFile?.name||"사진 선택 (JPG, PNG, WEBP / 최대 10MB)"}</span>
+                            <input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={handleRequestPhoto} style={fileInputOverlay}/>
+                          </label>
+                        </div>
+                      </div>
                     </div>}
 
                     {regType==="admin-discontinue"?(

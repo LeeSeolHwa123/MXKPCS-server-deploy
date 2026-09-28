@@ -9,7 +9,8 @@ const instrumented = source
     "function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }",
     "function sleep() { return Promise.resolve(); }",
   )
-  + "\nexport { fetchWithRetry, acquireGraphToken };\n";
+  + "\nfunction resetGraphTokenCache(){ graphTokenCache = { key: '', token: '', expiresAt: 0 }; }\n"
+  + "export { fetchWithRetry, acquireGraphToken, resetGraphTokenCache };\n";
 const policy = await import(`data:text/javascript;base64,${Buffer.from(instrumented).toString("base64")}`);
 
 const originalFetch = globalThis.fetch;
@@ -56,6 +57,7 @@ async function expectError(name, { method = "GET", steps, fetchPolicy, expectedC
 }
 
 async function expectTokenSuccess(name, steps, expectedCalls) {
+  policy.resetGraphTokenCache();
   const fake = fakeFetch(steps);
   globalThis.fetch = fake.fetch;
   process.env.MXKPCS_CLIENT_SECRET = "retry-policy-test-only";
