@@ -22,6 +22,9 @@ try {
   let storedName = "";
   let patchedFields = null;
   let renamedFileName = "";
+  let movedParentId = "";
+  let currentParentId = "photo-root";
+  let deletedLegacyFolder = false;
 
   globalThis.fetch = async (url, options = {}) => {
     const value = String(url);
@@ -35,33 +38,48 @@ try {
     if (value.includes("/lists/ef7471b3-dea2-447f-a54a-254cddc7ed1a/drive") && method === "GET") {
       return new Response(JSON.stringify({ id: "photo-drive", driveType: "documentLibrary" }), { status: 200 });
     }
-    if (value.includes("/drives/photo-drive/root:/ITEM_ITM_A_01") && method === "GET") {
-      return new Response(JSON.stringify({ id: "photo-folder", name: "ITEM_ITM_A_01", folder: {} }), { status: 200 });
-    }
-    if (value.includes("/createUploadSession") && method === "POST") {
+    if (value.includes("/drives/photo-drive/root:/A-01.jpg:/createUploadSession") && method === "POST") {
       storedName = JSON.parse(options.body).item.name;
       return new Response(JSON.stringify({ uploadUrl: "https://tenant.sharepoint.com/upload-session/photo-1" }), { status: 200 });
     }
     if (value === "https://tenant.sharepoint.com/upload-session/photo-1" && method === "PUT") {
       return new Response(JSON.stringify({ id: "photo-file-1" }), { status: 201 });
     }
-    if (value.includes("/drives/photo-drive/items/photo-folder/children") && method === "GET") {
-      return new Response(JSON.stringify({ value: [{
+    if (value.includes("/drives/photo-drive/items/photo-file-1") && method === "GET") {
+      return new Response(JSON.stringify({
         id: "photo-file-1", name: storedName, size: 4,
         lastModifiedDateTime: "2026-09-22T01:00:00Z",
         webUrl: "https://tenant.sharepoint.com/photo/A-01.jpg",
         file: { mimeType: "image/jpeg" },
-      }] }), { status: 200 });
+        parentReference: { id: currentParentId },
+      }), { status: 200 });
+    }
+    if (value.endsWith("/drives/photo-drive/root") && method === "GET") {
+      return new Response(JSON.stringify({ id: "photo-root", name: "root", folder: {} }), { status: 200 });
     }
     if (value.includes("/drives/photo-drive/items/photo-file-1") && method === "PATCH") {
-      renamedFileName = JSON.parse(options.body).name;
+      const patch = JSON.parse(options.body);
+      renamedFileName = patch.name;
+      movedParentId = patch.parentReference?.id || currentParentId;
+      currentParentId = movedParentId;
       storedName = renamedFileName;
       return new Response(JSON.stringify({
         id: "photo-file-1", name: storedName, size: 4,
         lastModifiedDateTime: "2026-09-22T01:00:00Z",
         webUrl: "https://tenant.sharepoint.com/photo/A-01.jpg",
         file: { mimeType: "image/jpeg" },
+        parentReference: { id: currentParentId },
       }), { status: 200 });
+    }
+    if (value.endsWith("/drives/photo-drive/items/photo-folder") && method === "GET") {
+      return new Response(JSON.stringify({ id: "photo-folder", name: "ITEM_ITM_A_01", folder: {} }), { status: 200 });
+    }
+    if (value.includes("/drives/photo-drive/items/photo-folder/children") && method === "GET") {
+      return new Response(JSON.stringify({ value: [] }), { status: 200 });
+    }
+    if (value.endsWith("/drives/photo-drive/items/photo-folder") && method === "DELETE") {
+      deletedLegacyFolder = true;
+      return new Response(null, { status: 204 });
     }
     if (value.includes("/lists/651d2a7e-d6b9-43ce-9c44-2991682eb058/columns") && method === "GET") {
       return new Response(JSON.stringify({ value: ["Photo_File_Name", "Photo_File_ID", "Photo_File_URL"].map(name => ({ name })) }), { status: 200 });
@@ -73,7 +91,7 @@ try {
     throw new Error(`Unexpected fetch: ${method} ${value}`);
   };
 
-  const begin = await invoke("beginItemPhotoUpload", { itemId: "ITM_A_01", itemSpItemId: "65", fileName: "A-01.jpg", size: 4 });
+  const begin = await invoke("beginItemPhotoUpload", { itemId: "ITM_A_01", itemSpItemId: "65", fileName: "camera-original.jpg", size: 4 });
   assert.equal(begin.status, 200);
   assert.equal(begin.body.result.storedName, "A-01.jpg");
   const chunk = await invoke("uploadPrecisionFileChunk", {
@@ -97,13 +115,18 @@ try {
     Photo_File_URL: "https://tenant.sharepoint.com/photo/A-01.jpg",
   });
   storedName = "photo_11111111-1111-4111-8111-111111111111_A-01.jpg";
+  currentParentId = "photo-folder";
   const normalize = await invoke("normalizeItemPhotoName", {
     itemId: "ITM_A_01", itemSpItemId: "65", driveItemId: "photo-file-1", fileName: "A-01.jpg",
   });
   assert.equal(normalize.status, 200);
   assert.equal(normalize.body.result.renamed, true);
+  assert.equal(normalize.body.result.moved, true);
+  assert.equal(normalize.body.result.deletedEmptyFolder, true);
   assert.equal(normalize.body.result.name, "A-01.jpg");
   assert.equal(renamedFileName, "A-01.jpg");
+  assert.equal(movedParentId, "photo-root");
+  assert.equal(deletedLegacyFolder, true);
   console.log("item-photo-upload: PASS");
 } finally {
   globalThis.fetch = originalFetch;

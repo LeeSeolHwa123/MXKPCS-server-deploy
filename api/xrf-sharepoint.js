@@ -182,13 +182,31 @@ function itemPhotoFolderName(itemId) {
   return `ITEM_${id}`;
 }
 
-function itemPhotoUploadName(fileName) {
+function validatedItemPhotoSourceName(fileName) {
   const name = cleanText(fileName).trim();
   if (!name || name.length > 160 || /[\\/:*?"<>|\x00-\x1f]/.test(name) || name === "." || name === "..") {
     throw new Error("사진 파일명을 확인하세요. 경로 문자와 160자를 넘는 이름은 사용할 수 없습니다.");
   }
   if (!/\.(jpe?g|png|webp)$/i.test(name)) throw new Error("품목 사진은 JPG, PNG, WEBP 형식만 업로드할 수 있습니다.");
   return name;
+}
+
+function itemPhotoPartNumber(partNumber) {
+  const value = cleanText(partNumber).trim();
+  if (!value || value.length > 120 || /[\\/:*?"<>|#%\x00-\x1f]/.test(value) || value === "." || value === "..") {
+    throw new Error("사진 파일명으로 사용할 품번을 확인하세요.");
+  }
+  return value;
+}
+
+function itemPhotoUploadName(partNumber, sourceFileName) {
+  const sourceName = validatedItemPhotoSourceName(sourceFileName);
+  const extension = /\.(jpe?g|png|webp)$/i.exec(sourceName)?.[0]?.toLowerCase();
+  return `${itemPhotoPartNumber(partNumber)}${extension}`;
+}
+
+function itemPhotoBaseName(fileName) {
+  return cleanText(fileName).trim().replace(/\.(jpe?g|png|webp)$/i, "");
 }
 
 function itemPhotoMetadata(item, itemId = "") {
@@ -205,6 +223,7 @@ function itemPhotoMetadata(item, itemId = "") {
     mimeType: item.file?.mimeType || "application/octet-stream",
     uploadedAt: item.lastModifiedDateTime || null,
     webUrl: item.webUrl || null,
+    parentId: item.parentReference?.id || null,
   };
 }
 
@@ -303,6 +322,13 @@ async function itemPhotoFolderFiles(driveId, folder, itemId, accessToken) {
     .filter(Boolean);
 }
 
+async function itemPhotoDriveItem(driveId, driveItemId, itemId, accessToken) {
+  const response = await fetchWithRetry(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(driveItemId)}`, {
+    method: "GET", headers: graphHeaders(accessToken),
+  });
+  return itemPhotoMetadata(await response.json(), itemId);
+}
+
 function latestItemPhoto(files) {
   return (files || []).reduce((latest, file) => !latest || String(file.uploadedAt) > String(latest.uploadedAt) ? file : latest, null);
 }
@@ -310,18 +336,29 @@ function latestItemPhoto(files) {
 async function handleListItemPhotos(siteId, accessToken) {
   const driveId = await itemPhotoDriveId(siteId, accessToken);
   const rootRows = await graphGetAll(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/root/children?$top=200`, accessToken);
+  const itemRows = await readList(siteId, "XRF_Items", accessToken);
+  const rootFiles = rootRows.map(row => itemPhotoMetadata(row)).filter(Boolean);
   const folders = rootRows.filter(row => row?.folder && /^ITEM_[A-Za-z0-9_-]{1,120}$/.test(cleanText(row?.name)));
-  const entries = await Promise.all(folders.map(async folder => {
+  const legacyEntries = await Promise.all(folders.map(async folder => {
     const itemId = cleanText(folder.name).slice(5);
     const latest = latestItemPhoto(await itemPhotoFolderFiles(driveId, folder, itemId, accessToken));
     return latest ? [itemId, latest] : null;
   }));
-  return Object.fromEntries(entries.filter(Boolean));
+  const photos = Object.fromEntries(legacyEntries.filter(Boolean));
+  for (const row of itemRows) {
+    const itemId = cleanText(row?.fields?.Title).trim();
+    const partNumber = cleanText(row?.fields?.field_1).trim();
+    const linkedId = cleanText(row?.fields?.Photo_File_ID).trim();
+    if (!itemId || !partNumber) continue;
+    const matches = rootFiles.filter(file => file.id === linkedId || itemPhotoBaseName(file.storedName).toLowerCase() === partNumber.toLowerCase());
+    const latest = latestItemPhoto(matches);
+    if (latest) photos[itemId] = { ...latest, itemId };
+  }
+  return photos;
 }
 
 async function handleBeginItemPhotoUpload(siteId, accessToken, payload) {
   const itemId = cleanText(payload?.itemId).trim();
-  const storedName = itemPhotoUploadName(payload?.fileName);
   const size = Number(payload?.size);
   if (!Number.isSafeInteger(size) || size < 1 || size > ITEM_PHOTO_MAX_BYTES) {
     throw new Error("품목 사진은 1바이트 이상, 10MB 이하만 업로드할 수 있습니다.");
@@ -330,9 +367,9 @@ async function handleBeginItemPhotoUpload(siteId, accessToken, payload) {
   if (!item || cleanText(item?.fields?.Title).trim() !== itemId) {
     throw new Error("실제 DB에 등록된 품목에만 사진을 업로드할 수 있습니다.");
   }
+  const storedName = itemPhotoUploadName(item?.fields?.field_1, payload?.fileName);
   const driveId = await itemPhotoDriveId(siteId, accessToken);
-  const folder = await itemPhotoFolder(driveId, itemId, accessToken, true);
-  const url = `${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folder.id)}:/${encodeURIComponent(storedName)}:/createUploadSession`;
+  const url = `${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/root:/${encodeURIComponent(storedName)}:/createUploadSession`;
   const response = await fetchWithRetry(url, {
     method: "POST", headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
     body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "replace", name: storedName } }),
@@ -346,16 +383,14 @@ async function handleFinishItemPhotoUpload(siteId, accessToken, payload) {
   const itemId = cleanText(payload?.itemId).trim();
   const storedName = cleanText(payload?.storedName).trim();
   const driveItemId = cleanText(payload?.driveItemId).trim();
-  itemPhotoFolderName(itemId);
   if (!driveItemId || !storedName) throw new Error("완료된 사진의 Graph ID가 없습니다.");
-  const driveId = await itemPhotoDriveId(siteId, accessToken);
-  const folder = await itemPhotoFolder(driveId, itemId, accessToken);
-  const files = await itemPhotoFolderFiles(driveId, folder, itemId, accessToken);
-  const photo = files.find(file => file.id === driveItemId);
-  if (!photo || photo.size < 1) throw new Error("문서 라이브러리에 업로드된 사진을 확인하지 못했습니다.");
   const item = await findListItem(siteId, "XRF_Items", payload?.itemSpItemId, accessToken);
   if (!item) throw new Error("사진을 연결할 품목 행을 찾지 못했습니다.");
   if (cleanText(item?.fields?.Title).trim() !== itemId) throw new Error("사진 품목 ID와 SharePoint 행이 일치하지 않습니다.");
+  const desiredName = itemPhotoUploadName(item?.fields?.field_1, storedName);
+  const driveId = await itemPhotoDriveId(siteId, accessToken);
+  const photo = await itemPhotoDriveItem(driveId, driveItemId, itemId, accessToken);
+  if (!photo || photo.size < 1 || photo.storedName !== desiredName) throw new Error("문서 라이브러리에 업로드된 품번 사진을 확인하지 못했습니다.");
   await patchListItem(siteId, "XRF_Items", item.id, {
     Photo_File_Name: photo.name,
     Photo_File_ID: photo.id,
@@ -367,7 +402,6 @@ async function handleFinishItemPhotoUpload(siteId, accessToken, payload) {
 async function handleNormalizeItemPhotoName(siteId, accessToken, payload) {
   const itemId = cleanText(payload?.itemId).trim();
   const driveItemId = cleanText(payload?.driveItemId).trim();
-  const desiredName = itemPhotoUploadName(payload?.fileName);
   itemPhotoFolderName(itemId);
   if (!driveItemId) throw new Error("정리할 사진의 Graph ID가 없습니다.");
 
@@ -375,18 +409,24 @@ async function handleNormalizeItemPhotoName(siteId, accessToken, payload) {
   if (!item || cleanText(item?.fields?.Title).trim() !== itemId) {
     throw new Error("사진 파일명을 정리할 품목 행을 확인하지 못했습니다.");
   }
+  const desiredName = itemPhotoUploadName(item?.fields?.field_1, payload?.fileName);
   const driveId = await itemPhotoDriveId(siteId, accessToken);
-  const folder = await itemPhotoFolder(driveId, itemId, accessToken);
-  const files = await itemPhotoFolderFiles(driveId, folder, itemId, accessToken);
-  const current = files.find(file => file.id === driveItemId);
-  if (!current) throw new Error("품목 폴더에서 정리할 사진을 찾지 못했습니다.");
+  const current = await itemPhotoDriveItem(driveId, driveItemId, itemId, accessToken);
+  if (!current) throw new Error("정리할 품목 사진을 찾지 못했습니다.");
+  const rootResponse = await fetchWithRetry(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/root`, {
+    method: "GET", headers: graphHeaders(accessToken),
+  });
+  const root = await rootResponse.json();
+  if (!root?.id) throw new Error("사진 라이브러리 루트 ID를 확인하지 못했습니다.");
+  const moved = current.parentId !== root.id;
+  const renamed = current.storedName !== desiredName;
 
   let normalized = current;
-  if (current.storedName !== desiredName) {
+  if (renamed || moved) {
     const response = await fetchWithRetry(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(driveItemId)}`, {
       method: "PATCH",
       headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
-      body: JSON.stringify({ name: desiredName }),
+      body: JSON.stringify({ name: desiredName, ...(moved ? { parentReference: { id: root.id } } : {}) }),
     }, { retry5xx: false, retryNetwork: false });
     normalized = itemPhotoMetadata(await response.json(), itemId);
     if (!normalized) throw new Error("정리된 사진 파일 정보를 확인하지 못했습니다.");
@@ -397,7 +437,23 @@ async function handleNormalizeItemPhotoName(siteId, accessToken, payload) {
     Photo_File_ID: normalized.id,
     Photo_File_URL: normalized.webUrl,
   }, accessToken);
-  return { ...normalized, renamed: current.storedName !== desiredName };
+  let deletedEmptyFolder = false;
+  if (moved && current.parentId) {
+    const legacyFolderResponse = await fetchWithRetry(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(current.parentId)}`, {
+      method: "GET", headers: graphHeaders(accessToken),
+    });
+    const legacyFolder = await legacyFolderResponse.json();
+    if (legacyFolder?.folder && cleanText(legacyFolder?.name) === itemPhotoFolderName(itemId)) {
+      const remaining = await graphGetAll(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(current.parentId)}/children?$top=2`, accessToken);
+      if (!remaining.length) {
+        await fetchWithRetry(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(current.parentId)}`, {
+          method: "DELETE", headers: graphHeaders(accessToken),
+        }, { retry5xx: false, retryNetwork: false });
+        deletedEmptyFolder = true;
+      }
+    }
+  }
+  return { ...normalized, renamed, moved, deletedEmptyFolder };
 }
 
 async function sendItemPhoto(res, siteId, accessToken, itemId, requestedFileId = "") {
@@ -407,8 +463,17 @@ async function sendItemPhoto(res, siteId, accessToken, itemId, requestedFileId =
   if (fileId && !/^[A-Za-z0-9!._-]{1,240}$/.test(fileId)) throw new Error("유효하지 않은 사진 파일 ID입니다.");
   let photo = null;
   if (!fileId) {
-    const folder = await itemPhotoFolder(driveId, itemId, accessToken);
-    photo = latestItemPhoto(await itemPhotoFolderFiles(driveId, folder, itemId, accessToken));
+    const itemRows = await readList(siteId, "XRF_Items", accessToken);
+    const item = itemRows.find(row => cleanText(row?.fields?.Title).trim() === cleanText(itemId).trim());
+    const partNumber = cleanText(item?.fields?.field_1).trim();
+    if (partNumber) {
+      const rootRows = await graphGetAll(`${GRAPH_ROOT}/drives/${encodeURIComponent(driveId)}/root/children?$top=200`, accessToken);
+      photo = latestItemPhoto(rootRows.map(row => itemPhotoMetadata(row, itemId)).filter(file => file && itemPhotoBaseName(file.storedName).toLowerCase() === partNumber.toLowerCase()));
+    }
+    if (!photo) {
+      const folder = await itemPhotoFolder(driveId, itemId, accessToken);
+      photo = latestItemPhoto(await itemPhotoFolderFiles(driveId, folder, itemId, accessToken));
+    }
   }
   const resolvedFileId = fileId || photo?.id || "";
   if (!resolvedFileId) return sendJson(res, 404, { ok: false, error: "등록된 품목 사진이 없습니다." });
