@@ -5022,6 +5022,10 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
   const [fileProgress,setFileProgress]=useState(0);
   const [fileError,setFileError]=useState("");
   const [fileMetadataLoading,setFileMetadataLoading]=useState(true);
+  const [handoffAuthOpen,setHandoffAuthOpen]=useState(false);
+  const [handoffPassword,setHandoffPassword]=useState("");
+  const [handoffBusy,setHandoffBusy]=useState(false);
+  const [handoffError,setHandoffError]=useState("");
   useEffect(()=>{
     let active=true;
     setStoredFiles({source:null,report:null});
@@ -5033,6 +5037,12 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
       if(active) setFileError(error?.message||String(error));
     }).finally(()=>{if(active) setFileMetadataLoading(false);});
     return ()=>{active=false;};
+  },[selected.key]);
+  useEffect(()=>{
+    setHandoffAuthOpen(false);
+    setHandoffPassword("");
+    setHandoffBusy(false);
+    setHandoffError("");
   },[selected.key]);
   const resultFileName=storedFiles.report?.name||String(selected.precision?.resultFileId||"").trim();
   const sourceFileName=storedFiles.source?.name||String(selected.sourceFileName||"").trim();
@@ -5099,6 +5109,20 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
     void handleFileUpload("report",file);
     e.target.value="";
   };
+  const submitPrecisionHandoff=async(event)=>{
+    event.preventDefault();
+    if(!handoffPassword || handoffBusy) return;
+    setHandoffBusy(true);
+    setHandoffError("");
+    const completed=await markPrecisionRequested(selected.key,handoffPassword);
+    setHandoffBusy(false);
+    setHandoffPassword("");
+    if(completed){
+      setHandoffAuthOpen(false);
+      return;
+    }
+    setHandoffError(lang==="en"?"Check the password and try again.":"비밀번호를 확인한 뒤 다시 시도하세요.");
+  };
   const resultExplain=!isRequested
     ? "정밀분석 인계 버튼을 먼저 클릭해야 합니다. 인계 후 성적서 PDF를 업로드하면 결과 입력이 활성화됩니다."
     : !hasPrecisionReportPdf
@@ -5108,7 +5132,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         : derivedResult==="NG"
           ? "법적 기준치를 초과한 대상 원소가 있습니다."
           : "성적서 내용을 기준으로 대상 원소의 함유 여부와 함유량을 입력하면 정밀 결과가 자동 산출됩니다.";
-  return <div style={{...card,overflow:"hidden"}}>
+  return <><div style={{...card,overflow:"hidden"}}>
     <div className="xrf-hero" style={{background:C.charcoalDk}}>
       <div className="xrf-hero-title">
         <AutoFitText value={displayItemName(selected.item,lang)} title={displayItemName(selected.item,lang)} baseFontSize={16} minFontSize={8} align="left" style={{fontWeight:600,color:"#fff",letterSpacing:"-.2px"}}/>
@@ -5142,7 +5166,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         {infoRows.map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.bd}`,fontSize:11,gap:12}}>
           <span style={{color:C.text3,flex:"0 0 auto"}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right",minWidth:0,flex:"1 1 auto"}}><AutoFitText value={v} title={String(v)} baseFontSize={11} minFontSize={7} align="right" style={{fontWeight:600,color:C.text1}}/></span>
         </div>)}
-        <button disabled={isRequested} onClick={()=>!isRequested&&markPrecisionRequested(selected.key)} className="pill-btn" style={{marginTop:12,width:"100%",padding:"10px",border:`1px solid ${isRequested?A.green.ln:A.blue.solid}`,background:isRequested?A.green.bg:A.blue.solid,color:isRequested?A.green.tx:"#fff",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:isRequested?"default":"pointer"}}>
+        <button disabled={isRequested} onClick={()=>{if(!isRequested){setHandoffPassword("");setHandoffError("");setHandoffAuthOpen(true);}}} className="pill-btn" style={{marginTop:12,width:"100%",padding:"10px",border:`1px solid ${isRequested?A.green.ln:A.blue.solid}`,background:isRequested?A.green.bg:A.blue.solid,color:isRequested?A.green.tx:"#fff",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:isRequested?"default":"pointer"}}>
           {isRequested?"정밀분석 인계 완료":"정밀분석 인계"}
         </button>
       </div>
@@ -5215,7 +5239,20 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         </button>
       </div>
     </div>
-  </div>;
+  </div>
+  {handoffAuthOpen&&<div role="presentation" onMouseDown={()=>{if(!handoffBusy)setHandoffAuthOpen(false);}} style={{position:"fixed",inset:0,zIndex:1200,display:"flex",alignItems:"center",justifyContent:"center",padding:20,background:"rgba(15,23,32,.58)",backdropFilter:"blur(2px)"}}>
+    <form role="dialog" aria-modal="true" aria-labelledby="precision-handoff-auth-title" onSubmit={submitPrecisionHandoff} onMouseDown={event=>event.stopPropagation()} style={{width:"min(380px,100%)",padding:22,background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
+      <div id="precision-handoff-auth-title" style={{fontSize:16,fontWeight:750,color:C.text1}}>{lang==="en"?"Precision Transfer Authorization":"정밀분석 인계 인증"}</div>
+      <div style={{marginTop:7,fontSize:11,color:C.text3,lineHeight:1.6}}>{lang==="en"?"Enter the administrator password to continue the transfer.":"정밀분석 인계를 진행하려면 관리자 비밀번호를 입력하세요."}</div>
+      <input type="password" autoFocus autoComplete="off" value={handoffPassword} disabled={handoffBusy} onChange={event=>{setHandoffPassword(event.target.value);setHandoffError("");}} placeholder={lang==="en"?"Password":"비밀번호"} style={{...inp,width:"100%",marginTop:14,boxSizing:"border-box"}}/>
+      {handoffError&&<div role="alert" style={{marginTop:8,fontSize:11,color:C.redDk}}>{handoffError}</div>}
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+        <button type="button" disabled={handoffBusy} onClick={()=>{setHandoffAuthOpen(false);setHandoffPassword("");setHandoffError("");}} style={{padding:"8px 14px",border:`1px solid ${C.bd2}`,borderRadius:UI.rs,background:C.card,color:C.text2,fontWeight:650,cursor:handoffBusy?"wait":"pointer"}}>{lang==="en"?"Cancel":"취소"}</button>
+        <button type="submit" disabled={!handoffPassword||handoffBusy} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontWeight:650,opacity:(!handoffPassword||handoffBusy)?0.58:1,cursor:!handoffPassword||handoffBusy?"not-allowed":"pointer"}}>{handoffBusy?(lang==="en"?"Checking...":"확인 중..."):(lang==="en"?"Transfer":"인계")}</button>
+      </div>
+    </form>
+  </div>}
+  </>;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -6752,7 +6789,29 @@ export default function App(){
       return next;
     });
   },[allItems,persistSharePointAction]);
-  const markPrecisionRequested=useCallback((key)=>updatePrecisionOverride(key,{requestStatus:"REQUESTED",requestedAt:TODAY_STR,requestedBy:"admin"}),[updatePrecisionOverride]);
+  const markPrecisionRequested=useCallback(async(key,password)=>{
+    const fixtureOwner=allItems.find(item=>item.__visualUat && !!measurementById(item,key));
+    if(fixtureOwner){
+      if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return false;
+    }
+    const owner=allItems.find(item=>!!measurementById(item,key)) || null;
+    const wf=owner?workflowForItem(owner):null;
+    const targets=owner?precisionTargetsForWorkflow(owner,wf):[];
+    const precision=wf?.precision || {required:true,targetElements:targets,elements:{}};
+    const existingOverride=runtimePrecisionOverrides[key]||{};
+    const requestOverride={...existingOverride,requestStatus:"REQUESTED",requestedAt:TODAY_STR,requestedBy:"admin"};
+    const result=await persistSharePointAction("upsertPrecision",{
+      triggerMeasurementId:key,
+      precisionId:existingOverride.precisionId||precision.precisionId||null,
+      requestSpItemId:owner?._spRequestItemId||null,
+      finalResult:derivePrecisionResult(targets,precision,requestOverride.elementResults||{}),
+      actor:"admin",
+      precisionHandoffPassword:password,
+      override:requestOverride
+    });
+    return !!result;
+  },[allItems,persistSharePointAction,runtimePrecisionOverrides]);
   useEffect(()=>()=>{ if(precisionSaveTimerRef.current) clearTimeout(precisionSaveTimerRef.current); },[]);
   useEffect(()=>{
     setApprovalOverrides(prev=>{
