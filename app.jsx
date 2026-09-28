@@ -6088,6 +6088,7 @@ const SPLASH_BG     = `linear-gradient(180deg, ${SPLASH_BG_TOP} 0%, ${SPLASH_BG_
 const SPLASH_DIM   = "rgba(255,255,255,.74)";
 const SPLASH_DIM_2 = "rgba(255,255,255,.55)";
 const SPLASH_LINE  = "rgba(255,255,255,.12)";
+const APP_VERSION=typeof __APP_VERSION__==="string"?__APP_VERSION__:"1.0.0";
 
 function SplashIcon({name}){
   const p={fill:"none",stroke:"currentColor",strokeWidth:1.5,
@@ -6158,11 +6159,14 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
         .mxk-splash-header { flex:0 0 auto; }
         .mxk-splash-main { min-height:0; overflow:hidden; display:grid; grid-template-columns:minmax(0,1.16fr) minmax(410px,.84fr); grid-template-rows:auto auto; align-content:center; align-items:center; column-gap:clamp(28px,4vw,76px); row-gap:clamp(16px,2.7dvh,28px); }
         .mxk-splash-content { grid-column:2; grid-row:1; align-self:end; min-width:0; text-align:left; }
+        .mxk-splash-title-row { display:flex; align-items:flex-end; gap:13px; flex-wrap:wrap; }
+        .mxk-splash-version { margin-bottom:7px; color:rgba(255,255,255,.58); font-size:10px; font-weight:600; letter-spacing:.4px; white-space:nowrap; }
         .mxk-splash-hero-wrap { position:relative; grid-column:1; grid-row:1 / span 2; align-self:center; width:100%; min-width:0; display:flex; justify-content:center; }
         .mxk-splash-hero { width:100%; min-height:250px; }
         .mxk-splash-menu { grid-column:2; grid-row:2; align-self:start; display:grid; grid-template-columns:1fr; gap:8px; width:100%; max-width:530px; }
         .mxk-splash-orbit-mobile { display:none; }
         .mxk-splash-footer { flex:0 0 auto; }
+        .mxk-splash-footer-meta { display:flex; align-items:center; gap:16px; flex-wrap:nowrap; padding:0 clamp(12px,4vw,52px) clamp(7px,1.5dvh,16px); font-size:10px; color:${SPLASH_DIM_2}; }
         .mxk-splash-menu-item { position:relative; appearance:none; -webkit-appearance:none; display:flex; align-items:center; gap:14px; width:100%; min-height:56px; padding:5px 14px; border:1px solid rgba(255,255,255,.16); border-radius:12px; background:rgba(255,255,255,.035); color:#fff; cursor:pointer; text-align:left; transition:color .18s ease, background .18s ease, border-color .18s ease, transform .18s ease; }
         .mxk-splash-menu-icon { display:grid; flex:0 0 auto; place-items:center; align-self:center; width:42px; height:42px; box-sizing:border-box; border:1px solid transparent; border-radius:12px; transition:background .18s ease, border-color .18s ease, box-shadow .18s ease; }
         .mxk-splash-menu-icon svg { display:block; }
@@ -6178,7 +6182,9 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
         @media (max-width:980px) {
           .mxk-splash-main { display:flex; flex-direction:column; align-items:center; justify-content:center; }
           .mxk-splash-content { width:100%; max-width:780px; text-align:center; }
+          .mxk-splash-title-row { justify-content:center; }
           .mxk-splash-title { font-size:clamp(40px,6vw,64px) !important; }
+          .mxk-splash-version { margin-bottom:5px; }
           .mxk-splash-subtitle { font-size:clamp(15px,2.6vw,21px) !important; }
           .mxk-splash-rule { margin-left:auto !important; margin-right:auto !important; }
           .mxk-splash-copy { margin:0 auto; font-size:calc(clamp(12px,1.6vw,14px) - 1.5pt) !important; }
@@ -6205,6 +6211,7 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
           .mxk-splash-orbit-mobile { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 12px; width:min(380px,100%); margin-top:4px; text-align:center; }
           .mxk-splash-orbit-mobile strong { display:block; color:#fff; font-size:10.5px; font-weight:600; letter-spacing:.3px; line-height:1.25; }
           .mxk-splash-orbit-mobile span { display:block; color:rgba(255,255,255,.67); font-size:10px; line-height:1.25; }
+          .mxk-splash-footer-meta { gap:8px; font-size:9px; }
         }
         @media (max-height:650px) {
           .mxk-splash-main { row-gap:12px; }
@@ -6250,10 +6257,13 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
         boxSizing:"border-box",padding:"clamp(6px,1.5dvh,18px) clamp(20px,4vw,64px) clamp(8px,1.5dvh,18px)"}}>
 
         <div className="mxk-splash-content">
-          <h1 className="mxk-splash-title" data-i18n-skip="true" style={{margin:0,fontSize:"clamp(56px,min(5.7vw,10dvh),88px)",fontWeight:800,
-            letterSpacing:"-2.5px",lineHeight:1,color:"#fff"}}>
-            MXK<span style={{color:C.red}}>PCS</span>
-          </h1>
+          <div className="mxk-splash-title-row" data-i18n-skip="true">
+            <h1 className="mxk-splash-title" style={{margin:0,fontSize:"clamp(56px,min(5.7vw,10dvh),88px)",fontWeight:800,
+              letterSpacing:"-2.5px",lineHeight:1,color:"#fff"}}>
+              MXK<span style={{color:C.red}}>PCS</span>
+            </h1>
+            <span className="mxk-splash-version">Version {APP_VERSION}</span>
+          </div>
           <div className="mxk-splash-subtitle" data-i18n-skip="true" style={{marginTop:"clamp(9px,1.5dvh,15px)",fontSize:"clamp(20px,2vw,27px)",
             fontWeight:500,letterSpacing:"-.2px",color:"rgba(255,255,255,.9)"}}>Product Compliance System</div>
           <div className="mxk-splash-rule" aria-hidden="true" style={{width:48,height:2,background:C.red,margin:"clamp(13px,2dvh,20px) 0 clamp(10px,1.5dvh,15px)"}}/>
@@ -6421,8 +6431,7 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
 
       {/* 푸터 */}
       <div className="mxk-splash-footer" style={{position:"relative"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,
-          flexWrap:"nowrap",padding:"0 clamp(12px,4vw,52px) clamp(7px,1.5dvh,16px)",fontSize:10,color:SPLASH_DIM_2}}>
+        <div className="mxk-splash-footer-meta">
           <span data-i18n-skip="true" style={{display:"inline-flex",alignItems:"center",gap:9}}>
             <span style={{letterSpacing:".6px"}}>Developer</span>
             <span style={{color:SPLASH_DIM,fontWeight:600}}>{developer}</span>

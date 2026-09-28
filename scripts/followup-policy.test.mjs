@@ -17,6 +17,7 @@ const exportedPolicyFunctions = [
 
 const cacheDir = await mkdtemp(join(tmpdir(), "xrf-followup-policy-"));
 const server = await createServer({
+  configFile: false,
   appType: "custom",
   cacheDir,
   esbuild: { jsx: "transform", jsxFactory: "__testJsx", jsxFragment: "__testFragment" },
