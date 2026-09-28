@@ -1,0 +1,32 @@
+{
+  "name": "xrf-dashboard-runner",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:followup": "node scripts/followup-policy.test.mjs",
+    "test:retry": "node scripts/retry-policy.test.mjs",
+    "test:trend": "node scripts/xrf-trend-policy.test.mjs",
+    "test:files": "node scripts/precision-file-upload.test.mjs",
+    "test:public-share": "node scripts/public-share-readonly.test.mjs",
+    "test:photos": "node scripts/item-photo-upload.test.mjs",
+    "photos:audit": "node scripts/import-item-photos.mjs",
+    "photos:import": "node scripts/import-item-photos.mjs --apply",
+    "photos:normalize": "node scripts/normalize-item-photo-names.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "vite": "^8.1.3"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
+  }
+}

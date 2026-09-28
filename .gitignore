@@ -1,0 +1,13 @@
+.vercel
+.env*
+node_modules/
+dist/
+.tools/
+.agents/
+db_export/
+db_test_backup/
+item_photos_import/
+.codex_pycache/
+*.log
+app(260903 기준 최종 파일)*.jsx
+app_26.08.31 수정 전 코드.py
