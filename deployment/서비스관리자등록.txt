@@ -1,0 +1,5 @@
+등록할때
+powershell -ExecutionPolicy Bypass -File .\deployment\install-service.ps1 -Port 2100 -OpenFirewall
+
+제거할때
+powershell -ExecutionPolicy Bypass -File .\deployment\uninstall-service.ps1

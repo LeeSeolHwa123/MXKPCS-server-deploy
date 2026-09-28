@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "start": "node server.js",
     "test:followup": "node scripts/followup-policy.test.mjs",
     "test:retry": "node scripts/retry-policy.test.mjs",
     "test:trend": "node scripts/xrf-trend-policy.test.mjs",
