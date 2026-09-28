@@ -2077,6 +2077,34 @@ function baseWorkflowForItem(item){
 function workflowForItem(item){
   return item?.__workflow || baseWorkflowForItem(item);
 }
+const ANALYSIS_WORKFLOW_GROUP_STAGES=Object.freeze({
+  xrfRemeasure:["XRF_REMEASURE_REQUIRED"],
+  precisionTransferRequired:["PRECISION_TRANSFER_REQUEST_REQUIRED","PRECISION_REQUEST_REQUIRED"],
+  precisionResultWaiting:["PRECISION_TRANSFER_RESULT_WAITING","PRECISION_RESULT_WAITING"],
+  precisionFollowupRequired:["PRECISION_FOLLOWUP_REQUIRED"],
+  precisionNgReview:["PRECISION_NG_REVIEW"]
+});
+function analysisWorkflowSummary(items=[]){
+  const summary={
+    xrfRemeasure:0,
+    precisionTransferRequired:0,
+    precisionResultWaiting:0,
+    precisionFollowupRequired:0,
+    precisionNgReview:0,
+    total:0
+  };
+  (items||[]).forEach(item=>{
+    const stage=workflowForItem(item)?.stage;
+    for(const [key,stages] of Object.entries(ANALYSIS_WORKFLOW_GROUP_STAGES)){
+      if(stages.includes(stage)){
+        summary[key]++;
+        summary.total++;
+        break;
+      }
+    }
+  });
+  return summary;
+}
 function workflowOverrideKey(item,wf){
   return wf?.caseData?.id || latestMeasurementOf(item)?.id || item?.latestMeasurementId || item?.code || "";
 }
@@ -9591,9 +9619,7 @@ export default function App(){
           const crCounts={H:active.filter(i=>riskBasisCrLevelOf(i)==="H").length,M:active.filter(i=>riskBasisCrLevelOf(i)==="M").length,L:active.filter(i=>riskBasisCrLevelOf(i)==="L").length};
           const cellColors={H:{bg:C.redBg,c:C.red,l:"사용 불허 Risk"},M:{H:{bg:C.xWarnBg,c:C.xWarn,l:"월 1회"},M:{bg:C.xWarnBg,c:C.xWarn,l:"반기"},L:{bg:C.xWarnBg,c:C.xWarn,l:"반기"}},L:{H:{bg:C.xOkBg,c:C.xOk,l:"반기"},M:{bg:C.xOkBg,c:C.xOk,l:"반기"},L:{bg:C.xOkBg,c:C.xOk,l:"연 1회"}}};
           const highRisk=active.filter(i=>["H","Not Allowed"].includes(itemFinalRisk(i)));
-          const workflowRows=active.map(item=>({item,wf:workflowForItem(item)})).filter(r=>r.wf.stage!=="APPROVED" && r.wf.stage!=="XRF_REQUIRED" && r.wf.stage!=="RISK_NOT_ALLOWED");
-          const workflowCounts={XRF_REMEASURE_REQUIRED:0,PRECISION_TRANSFER_REQUEST_REQUIRED:0,PRECISION_TRANSFER_RESULT_WAITING:0,PRECISION_FOLLOWUP_REQUIRED:0,PRECISION_REQUEST_REQUIRED:0,PRECISION_RESULT_WAITING:0,PRECISION_NG_REVIEW:0};
-          active.forEach(i=>{const s=workflowForItem(i).stage;if(s in workflowCounts) workflowCounts[s]++;});
+          const workflowCounts=analysisWorkflowSummary(active);
           const cycleCounts={Monthly:active.filter(i=>itemCycleFromRisk(i)==="Monthly").length,Semiannual:active.filter(i=>itemCycleFromRisk(i)==="Semiannual").length,Annual:active.filter(i=>itemCycleFromRisk(i)==="Annual").length};
           const lifecycleCounts={};allItems.forEach(i=>{lifecycleCounts[i.lifecycle]=(lifecycleCounts[i.lifecycle]||0)+1;});
           const precisionActionStages=new Set([
@@ -9613,7 +9639,7 @@ export default function App(){
             return ["H","Not Allowed"].includes(finalRisk) || latestXrf==="NG" || complianceKey==="overdue";
           }).slice(0,30);
           return <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["활성 품목",active.length,C.charcoal],["High Risk",highRisk.length,C.red],["주기 미이행",stats.overdue,C.redDk],["후속분석 진행중",workflowRows.length,C.orange]].map(([l,n,c])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{fontSize:25,fontWeight:700,color:c,lineHeight:1}}>{n}</div><div style={{fontSize:11,fontWeight:700,color:C.text1,marginTop:5}}>{l}</div></div>)}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["활성 품목",active.length,C.charcoal],["High Risk",highRisk.length,C.red],["주기 미이행",stats.overdue,C.redDk],["후속분석 진행중",workflowCounts.total,C.orange]].map(([l,n,c])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{fontSize:25,fontWeight:700,color:c,lineHeight:1}}>{n}</div><div style={{fontSize:11,fontWeight:700,color:C.text1,marginTop:5}}>{l}</div></div>)}</div>
             <div className="chart-grid" style={{display:"grid",gridTemplateColumns:"1.15fr 1fr 1fr",gap:14}}>
               <ChartCard title="측정 도래 예정" hint={`${TODAY_STR} 기준 향후 6개월`}>
                 <DueLoadChart buckets={dash.buckets} onPick={b=>b.total>0&&gotoDueMonthList(b.key)}/>
@@ -9629,7 +9655,7 @@ export default function App(){
             <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 현황표" tabIndex={0} style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접+잔류`],["M",`${crCounts.M}건 · 직접+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
               <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>주기 관리 현황</div>{[["월 1회",cycleCounts.Monthly],["반기 1회",cycleCounts.Semiannual],["연 1회",cycleCounts.Annual],["미이행",stats.overdue],["측정권장 (월 D-15 / 반기·연 D-30)",stats.dueSoon],["현재 이행",active.filter(i=>getCS(i)==="ok").length]].map(([l,n])=><div key={l} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11}}><span style={{color:C.text2}}>{l}</span><strong style={{color:l==="미이행"?C.red:C.charcoal}}>{n}건</strong></div>)}</div>
-              <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>분석 Workflow 현황</div>{[["XRF 재측정",workflowCounts.XRF_REMEASURE_REQUIRED,"xrf"],["정밀분석 인계 필요",workflowCounts.PRECISION_TRANSFER_REQUEST_REQUIRED,"precision"],["정밀분석 결과 대기",workflowCounts.PRECISION_TRANSFER_RESULT_WAITING+workflowCounts.PRECISION_RESULT_WAITING,"precision"],["정밀분석 후속조치 필요",workflowCounts.PRECISION_FOLLOWUP_REQUIRED,"precision"],["정밀분석 NG · 반려",workflowCounts.PRECISION_NG_REVIEW,"precision"]].map(([l,n,target])=><div key={l} onClick={()=>{if(n){setTab(target);}}} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11,cursor:n?"pointer":"default",background:n?C.alt:"transparent"}}><span style={{color:n?C.text2:C.text4}}>{l}</span><strong style={{color:n?C.orange:C.text4}}>{n}건</strong></div>)}</div>
+              <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>분석 Workflow 현황</div>{[["XRF 재측정",workflowCounts.xrfRemeasure,"xrf"],["정밀분석 인계 필요",workflowCounts.precisionTransferRequired,"precision"],["정밀분석 결과 대기",workflowCounts.precisionResultWaiting,"precision"],["정밀분석 후속조치 필요",workflowCounts.precisionFollowupRequired,"precision"],["정밀분석 NG · 반려",workflowCounts.precisionNgReview,"precision"]].map(([l,n,target])=><div key={l} onClick={()=>{if(n){setTab(target);}}} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11,cursor:n?"pointer":"default",background:n?C.alt:"transparent"}}><span style={{color:n?C.text2:C.text4}}>{l}</span><strong style={{color:n?C.orange:C.text4}}>{n}건</strong></div>)}</div>
             </div>
             <div style={{...card,padding:"18px 20px"}}>
               <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:12,marginBottom:5,flexWrap:"wrap"}}>
