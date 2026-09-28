@@ -66,10 +66,16 @@ const targets = (bootstrap?.lists?.XRF_Items || [])
   .filter(row => row.itemSpItemId && row.itemId && row.driveItemId && row.fileName);
 
 let renamed = 0;
+let moved = 0;
+let deletedEmptyFolders = 0;
+let changed = 0;
 for (const target of targets) {
   const result = await request("POST", { action: "normalizeItemPhotoName", payload: target });
   if (result.renamed) renamed += 1;
-  console.log(`${result.renamed ? "RENAMED" : "UNCHANGED"} ${target.partNumber} -> ${result.storedName}`);
+  if (result.moved) moved += 1;
+  if (result.deletedEmptyFolder) deletedEmptyFolders += 1;
+  if (result.renamed || result.moved) changed += 1;
+  console.log(`${result.moved ? "MOVED" : result.renamed ? "RENAMED" : "UNCHANGED"} ${target.partNumber} -> ${result.storedName}`);
 }
 
-console.log(JSON.stringify({ checked: targets.length, renamed, unchanged: targets.length - renamed }, null, 2));
+console.log(JSON.stringify({ checked: targets.length, renamed, moved, deletedEmptyFolders, unchanged: targets.length - changed }, null, 2));
