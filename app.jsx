@@ -5042,7 +5042,7 @@ function DetailArrowButton({active=false, title="상세 보기"}){
     onPointerLeave={()=>setPressed(false)}
     style={{width:26,height:26,background:active?C.charcoalDk:(pressed?C.bg:C.card),border:`1px solid ${active?C.charcoalDk:C.bd2}`,borderRadius:UI.rs,fontSize:12,cursor:"pointer",color:active?"#fff":C.text3,fontWeight:500,boxShadow:"none",transform:active?"translateX(2px)":(pressed?"scale(.94)":"none"),transition:"background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .12s ease"}}>→</button>;
 }
-function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverride, markPrecisionRequested, reloadSharePointDb}){
+function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverride, markPrecisionRequested, reloadSharePointDb, onPhotoPreview}){
   const isRequested=selected.precision.requestStatus==="REQUESTED";
   const isConfirmed=selected.finalConfirm==="확인";
   const targets=selected.targets||[];
@@ -5164,6 +5164,9 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
           : "성적서 내용을 기준으로 대상 원소의 함유 여부와 함유량을 입력하면 정밀 결과가 자동 산출됩니다.";
   return <><div style={{...card,overflow:"hidden"}}>
     <div className="xrf-hero" style={{background:C.charcoalDk}}>
+      {selected.item?.photoFileUrl
+        ? <button type="button" onClick={()=>onPhotoPreview?.({url:selected.item.photoFileUrl,name:selected.item.photoFileName||"품목 사진",code:selected.item.code,itemName:displayItemName(selected.item,lang)})} title={selected.item.photoFileName||"품목 사진"} aria-label={`${selected.item.code} 품목 사진 크게 보기`} style={{display:"inline-flex",alignSelf:"center",padding:0,border:0,borderRadius:10,background:"transparent",cursor:"zoom-in"}}><img className="xrf-hero-photo" src={selected.item.photoFileUrl} alt={selected.item.photoFileName||`${selected.item.code} 품목 사진`}/></button>
+        : <div className="xrf-hero-photo" style={{display:"flex",alignItems:"center",justifyContent:"center",color:"rgba(255,255,255,.45)",fontSize:10,textAlign:"center",padding:6,boxSizing:"border-box"}}>사진 없음</div>}
       <div className="xrf-hero-title">
         <AutoFitText value={displayItemName(selected.item,lang)} title={displayItemName(selected.item,lang)} baseFontSize={16} minFontSize={8} align="left" style={{fontWeight:600,color:"#fff",letterSpacing:"-.2px"}}/>
         <AutoFitText value={`${selected.item.code} · ${selected.item.dept} · ${selected.measurement?.date||selected.measurement?.measuredDate||"측정일 미확인"}`} baseFontSize={12} minFontSize={7} align="left" style={{color:"rgba(255,255,255,.72)",marginTop:3,fontWeight:400}}/>
@@ -9616,7 +9619,7 @@ export default function App(){
               <button onClick={()=>setTab("precision")} className="pill-btn" style={{padding:"8px 15px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,fontWeight:500,color:C.text3}}>목록으로</button>
             </div>
             {selected
-              ? <PrecisionDetailPanel key={selected.key} selected={selected} lang={lang} card={card} inp={inp} updatePrecisionOverride={updatePrecisionOverride} markPrecisionRequested={markPrecisionRequested} reloadSharePointDb={reloadSharePointDb}/>
+              ? <PrecisionDetailPanel key={selected.key} selected={selected} lang={lang} card={card} inp={inp} updatePrecisionOverride={updatePrecisionOverride} markPrecisionRequested={markPrecisionRequested} reloadSharePointDb={reloadSharePointDb} onPhotoPreview={setPhotoPreview}/>
               : <div style={{...card,padding:28,textAlign:"center",color:C.text4,fontSize:12}}>선택된 정밀분석 항목이 없습니다.</div>}
           </div>;
         })()}
