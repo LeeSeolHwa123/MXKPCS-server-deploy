@@ -4806,6 +4806,23 @@ function itemMatchesListSearch(item,search,approvalStatus=""){
   return searchableValues.some(value=>String(value||"").toLocaleLowerCase("ko-KR").includes(query));
 }
 
+function excelSafeCell(value){
+  if(value==null) return "";
+  if(typeof value==="number" || typeof value==="boolean") return value;
+  let text=String(value).replace(/\r\n?/g,"\n");
+  if(text.length>32767) text=text.slice(0,32767);
+  // Excel에서 셀 문자열이 수식으로 실행되지 않도록 외부/사용자 입력값을 보호합니다.
+  return /^[\t\n ]*[=+\-@]/.test(text) ? `'${text}` : text;
+}
+
+function localizedListExportValue(column,value,lang="ko"){
+  const fallback=value==null || value==="" ? "—" : value;
+  const label=FILTER_LABELS[column]?.[fallback] || fallback;
+  if(lang!=="en") return label;
+  if(label==="사진 있음") return "Photo Attached";
+  return translateUiTextKoToEn(label);
+}
+
 function isCancelledListItem(item,approvalStatus=""){
   return item?.lifecycle==="Cancelled"
     || approvalFilterKey(approvalStatus||approvalStatusOfItemFallback(item))==="cancelled"
@@ -6491,6 +6508,47 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
 
 
 const MATERIAL_LIST_PAGE_SIZE=100;
+const MATERIAL_LIST_FILTER_KEYS=["category","photo","code","name","dept","cycle","firstDate","xrf","compliance","precision","crLevel","risk","retest","approval","lifecycle","nextDue","dDay","dueMonth"];
+
+function createEmptyMaterialListFilters(){
+  return Object.fromEntries(MATERIAL_LIST_FILTER_KEYS.map(key=>[key,[]]));
+}
+
+function readSharedMaterialListView(){
+  if(typeof window==="undefined") return null;
+  try{
+    const params=new URL(window.location.href).searchParams;
+    if(params.get("xrfView")!=="list") return null;
+    const filters=createEmptyMaterialListFilters();
+    const rawFilters=params.get("xrfFilters");
+    if(rawFilters && rawFilters.length<=20000){
+      try{
+        const parsed=JSON.parse(rawFilters);
+        if(parsed && typeof parsed==="object" && !Array.isArray(parsed)){
+          MATERIAL_LIST_FILTER_KEYS.forEach(key=>{
+            if(Array.isArray(parsed[key])){
+              filters[key]=parsed[key]
+                .filter(value=>typeof value==="string" || typeof value==="number")
+                .slice(0,100)
+                .map(value=>String(value).slice(0,500));
+            }
+          });
+        }
+      }catch(error){
+        console.warn("Shared material-list filters were invalid and were ignored",error);
+      }
+    }
+    const sharedLang=params.get("xrfLang");
+    return {
+      filters,
+      search:String(params.get("xrfSearch")||"").slice(0,500),
+      lang:sharedLang==="en"?"en":sharedLang==="ko"?"ko":null,
+    };
+  }catch(error){
+    console.warn("Shared material-list view could not be restored",error);
+    return null;
+  }
+}
 
 function expandedPhotoDisplaySize(naturalWidth,naturalHeight){
   const width=Math.max(1,Number(naturalWidth)||1);
@@ -6507,15 +6565,17 @@ function expandedPhotoDisplaySize(naturalWidth,naturalHeight){
 
 export default function App(){
   const appRootRef=useRef(null);
-  const [entered,setEntered]=useState(false);
+  const [initialSharedListView]=useState(()=>readSharedMaterialListView());
+  const [entered,setEntered]=useState(()=>Boolean(initialSharedListView));
   const [lang,setLang]=useState(()=>{
+    if(initialSharedListView?.lang) return initialSharedListView.lang;
     try{ return localStorage.getItem("xrf-ui-language")==="en"?"en":"ko"; }catch{return "ko";}
   });
   const [tab,setTab]=useState("list");
-  const [fs,setFs]=useState({category:[],photo:[],code:[],name:[],dept:[],cycle:[],firstDate:[],xrf:[],compliance:[],precision:[],crLevel:[],risk:[],retest:[],approval:[],lifecycle:[],nextDue:[],dDay:[],dueMonth:[]});
+  const [fs,setFs]=useState(()=>initialSharedListView?.filters||createEmptyMaterialListFilters());
   const [openFilter,setOpenFilter]=useState(null);
   const [fPos,setFPos]=useState({top:0,left:0});
-  const [search,setSearch]=useState("");
+  const [search,setSearch]=useState(()=>initialSharedListView?.search||"");
   const [listPage,setListPage]=useState(0);
   const [visualUatOnly,setVisualUatOnly]=useState(false);
   const [selKey,setSelKey]=useState(null);
@@ -7765,6 +7825,126 @@ export default function App(){
     if(ra!==rb) return ra-rb;
     return a.idx-b.idx;
   }).map(({item})=>item),[listItems,fs,search,visualUatOnly,approvalStatusOf]);
+
+  const handleShareCurrentView=useCallback(async()=>{
+    if(typeof window==="undefined") return;
+    const activeFilterCount=Object.values(fs).filter(value=>Array.isArray(value)&&value.length>0).length;
+    const title=lang==="en" ? "XRF Auxiliary Material List" : "XRF 부자재 리스트";
+    const summary=lang==="en"
+      ? `${filtered.length} filtered result(s)${activeFilterCount?` · ${activeFilterCount} active filter(s)`:""}${search?` · Search: ${search}`:""}`
+      : `필터 결과 ${filtered.length}건${activeFilterCount?` · 적용 필터 ${activeFilterCount}개`:""}${search?` · 검색: ${search}`:""}`;
+    let url=window.location.href;
+    try{
+      const shareUrl=new URL(window.location.href);
+      const sharedFilters={};
+      MATERIAL_LIST_FILTER_KEYS.forEach(key=>{
+        if(Array.isArray(fs[key]) && fs[key].length>0) sharedFilters[key]=fs[key];
+      });
+      shareUrl.searchParams.set("xrfView","list");
+      shareUrl.searchParams.set("xrfLang",lang);
+      if(search) shareUrl.searchParams.set("xrfSearch",search);
+      else shareUrl.searchParams.delete("xrfSearch");
+      if(Object.keys(sharedFilters).length>0) shareUrl.searchParams.set("xrfFilters",JSON.stringify(sharedFilters));
+      else shareUrl.searchParams.delete("xrfFilters");
+      url=shareUrl.toString();
+    }catch(error){
+      console.warn("Share URL state could not be encoded",error);
+    }
+    const shareContent=`${title}\n${summary}\n${url}`;
+
+    if(typeof navigator!=="undefined" && typeof navigator.share==="function"){
+      try{
+        await navigator.share({title,text:summary,url});
+        return;
+      }catch(error){
+        // 사용자가 공유 창을 닫은 경우에는 오류 안내나 복사 동작을 이어가지 않습니다.
+        if(error?.name==="AbortError") return;
+      }
+    }
+
+    let copied=false;
+    if(typeof navigator!=="undefined" && window.isSecureContext && navigator.clipboard?.writeText){
+      try{
+        await navigator.clipboard.writeText(shareContent);
+        copied=true;
+      }catch(_error){
+        copied=false;
+      }
+    }
+    if(!copied && typeof document!=="undefined"){
+      let textarea=null;
+      try{
+        textarea=document.createElement("textarea");
+        textarea.value=shareContent;
+        textarea.setAttribute("readonly","");
+        Object.assign(textarea.style,{position:"fixed",left:"-9999px",top:"0",opacity:"0"});
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        copied=Boolean(document.execCommand?.("copy"));
+      }catch(_error){
+        copied=false;
+      }finally{
+        textarea?.remove();
+      }
+    }
+
+    if(copied){
+      window.alert(lang==="en" ? "The current view link and filter summary were copied." : "현재 화면 링크와 필터 요약을 복사했습니다.");
+      return;
+    }
+    window.prompt(
+      lang==="en" ? "Copy the current view link manually." : "현재 화면 링크를 직접 복사해 주세요.",
+      url
+    );
+  },[filtered.length,fs,lang,search]);
+
+  const handleExportFilteredExcel=useCallback(()=>{
+    if(filtered.length===0){
+      window.alert(lang==="en" ? "There are no filtered results to export." : "내보낼 필터 결과가 없습니다.");
+      return;
+    }
+    try{
+      if(!XLSX?.utils?.aoa_to_sheet || !XLSX?.utils?.book_new || !XLSX?.writeFile){
+        throw new Error("Excel export module is unavailable.");
+      }
+      const headers=lang==="en"
+        ? ["Category","Photo","Part No.","Item Name (Korean)","Item Name (English)","Department","Cycle","First Registered","Current Status","XRF","Precision Analysis","Approval Status","Next Due","D-DAY"]
+        : ["분류","사진","품번","품목명","영문 품목명","부서","주기","최초 등록","현재 상태","XRF","정밀분석","승인 상태","다음 마감","D-DAY"];
+      const rows=filtered.map(item=>{
+        const approvalStatus=approvalStatusOf(item);
+        const values=[
+          localizedListExportValue("category",listColumnValue(item,"category",approvalStatus),lang),
+          localizedListExportValue("photo",listColumnValue(item,"photo",approvalStatus),lang),
+          item.code||"—",
+          item.name||"—",
+          item.nameEn||ITEM_NAME_EN_FALLBACKS[item.code]||"—",
+          item.dept||"—",
+          localizedListExportValue("cycle",listColumnValue(item,"cycle",approvalStatus),lang),
+          item.firstDate||"—",
+          localizedListExportValue("compliance",listColumnValue(item,"compliance",approvalStatus),lang),
+          localizedListExportValue("xrf",displayXrfText(listColumnValue(item,"xrf",approvalStatus)),lang),
+          localizedListExportValue("precision",listColumnValue(item,"precision",approvalStatus),lang),
+          localizedListExportValue("approval",listColumnValue(item,"approval",approvalStatus),lang),
+          listNextDueValue(item),
+          listDDayValue(item),
+        ];
+        return values.map(excelSafeCell);
+      });
+      const worksheet=XLSX.utils.aoa_to_sheet([headers,...rows]);
+      worksheet["!cols"]=[12,10,16,28,30,16,15,15,18,14,18,20,15,11].map(wch=>({wch}));
+      if(worksheet["!ref"]) worksheet["!autofilter"]={ref:worksheet["!ref"]};
+      const workbook=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook,worksheet,lang==="en"?"Filtered Materials":"필터 결과");
+      const fileName=lang==="en"
+        ? `XRF_Filtered_Materials_${TODAY_STR}_${filtered.length}.xlsx`
+        : `XRF_부자재_필터결과_${TODAY_STR}_${filtered.length}건.xlsx`;
+      XLSX.writeFile(workbook,fileName,{compression:true});
+    }catch(error){
+      console.error("Filtered Excel export failed",error);
+      window.alert(lang==="en" ? "Excel export failed. Please try again." : "Excel 내보내기에 실패했습니다. 다시 시도해 주세요.");
+    }
+  },[approvalStatusOf,filtered,lang]);
 
   const listTotalPages=Math.max(1,Math.ceil(filtered.length/MATERIAL_LIST_PAGE_SIZE));
   useEffect(()=>setListPage(0),[fs,search,visualUatOnly]);
@@ -9188,6 +9368,22 @@ export default function App(){
                 <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filtered.length}</strong>건 · 운영 {stats.total}건 · 이력 {stats.history}건</span>
                 {hasFilters&&<button onClick={handleClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
                 <div style={{marginLeft:"auto"}}/>
+                <button type="button" data-i18n-skip="true" onClick={handleShareCurrentView}
+                  title={lang==="en"?"Share the current page link and filter summary":"현재 페이지 링크와 필터 요약 공유"}
+                  style={{height:34,padding:"0 12px",background:C.card,color:C.text2,border:`1px solid ${C.bd2}`,borderRadius:UI.rs,fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:6}}>
+                  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4"/>
+                  </svg>
+                  {lang==="en"?"Share":"공유"}
+                </button>
+                <button type="button" data-i18n-skip="true" onClick={handleExportFilteredExcel} disabled={filtered.length===0}
+                  title={lang==="en"?"Export all filtered results to an Excel file":"필터가 적용된 전체 결과를 Excel 파일로 내보내기"}
+                  style={{height:34,padding:"0 12px",background:C.card,color:C.text2,border:`1px solid ${C.bd2}`,borderRadius:UI.rs,fontSize:11,fontWeight:600,cursor:filtered.length===0?"not-allowed":"pointer",opacity:filtered.length===0?.48:1,whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:6}}>
+                  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 3.5h8l4 4V20.5H6z"/><path d="M14 3.5v4h4M9 11l5 6M14 11l-5 6"/>
+                  </svg>
+                  Excel
+                </button>
                 <button onClick={()=>{setTab("reg");setRegMode("requester");setRegStep(1);setRegType(null);setReqXrfMode("request");}}
                   style={{height:34,padding:"0 16px",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}>
                   <span style={{fontSize:15,lineHeight:1}}>+</span> 품목 / 변경 관리
