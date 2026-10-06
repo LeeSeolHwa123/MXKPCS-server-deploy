@@ -1087,6 +1087,14 @@ function normalizeMeasurementRole(value){
   const role=String(value??"").trim();
   return role==="Cycle_Reset" ? "Periodic" : role;
 }
+function measurementTypeDisplay(measurement,period){
+  const role=normalizeMeasurementRole(measurement?.role||measurement?.measurementRole||"");
+  if(!role) return "—";
+  const sequence=role==="Periodic"
+    ? Number(period?.num ?? measurement?.periodNo)
+    : Number(measurement?.attemptNo);
+  return `${role}${Number.isFinite(sequence) && sequence>0 ? ` #${sequence}` : ""}`;
+}
 function normalizeMeasurementRecord(raw, fallbackId=""){
   const id=String(pickField(raw,"id","Measurement_ID","measurementId") || fallbackId);
   const sourceRole=pickField(raw,"role","Measurement_Role","measurementRole");
@@ -1526,6 +1534,7 @@ const UI_EN_MAP = {
   "XRF 후속조치":"XRF Follow-up","XRF 재측정":"XRF Remeasurement","XRF 결과":"XRF Result",
   "XRF 방식":"XRF Method","XRF 방식 선택":"Select XRF Method","XRF 측정 의뢰":"XRF Measurement Request",
   "XRF 측정 대기":"Awaiting XRF Measurement","XRF 결과 업로드":"Upload XRF Result",
+  "XRF 보고서 첨부":"Attach XRF Report","미이행 보고서 첨부":"Attach Overdue Report",
   "XRF 원본 업로드":"Upload Original XRF","XRF 원본 파일":"Original XRF File",
   "XRF 측정 ID":"XRF Measurement ID","XRF 원본 보고서":"Original XRF Report",
   "XRF NG 판정":"XRF NG","재측정 후 ?? 판정":"?? After Remeasurement",
@@ -3229,7 +3238,16 @@ function buildRollingPeriods(item){
     annualMeasurementsByYear.forEach(rows=>rows.sort((a,b)=>String(a.date).localeCompare(String(b.date))));
   }
 
-  for(let n=1;n<=60;n++){
+  // 오래된 R 기준일의 월 1회 품목도 현재월과 향후 24개월까지 Pn이 끊기지 않게 생성합니다.
+  // 고정 60회 제한은 5년이 지난 월간 품목의 현재 도래 일정을 모두 누락시켰습니다.
+  const baseDateValue=parseISODate(baseDate);
+  const elapsedMonths=baseDateValue
+    ? Math.max(0,(TODAY.getFullYear()-baseDateValue.getFullYear())*12 + TODAY.getMonth()-baseDateValue.getMonth())
+    : 0;
+  const requiredFuturePeriods=months===1 ? 24 : 2;
+  const periodLimit=Math.max(60,Math.ceil(elapsedMonths/months)+requiredFuturePeriods+2);
+
+  for(let n=1;n<=periodLimit;n++){
     const prevDue=n===1 ? baseDate : addMonthsISO(baseDate,months*(n-1));
     const due=addMonthsISO(baseDate,months*n);
     if(!due) break;
@@ -3583,6 +3601,14 @@ function nextDueOfItem(item){
 
   const nextOpen=periods.find(p=>!p.measured && !dateLt(p.due,TODAY_STR));
   return nextOpen?.due || null;
+}
+function openDuePeriodsInMonth(item,monthKey){
+  if(!monthKey || !isComplianceTarget(item)) return [];
+  return itemStatusPeriods(item).filter(p=>
+    !p?.measured
+    && !!p?.due
+    && String(p.due).slice(0,7)===monthKey
+  );
 }
 function isPeriodOverdue(item,p){
   if(p?.isReference || !p?.due) return false;
@@ -4183,20 +4209,24 @@ function FilterChips({filterState, onClear, onClearAll}){
   );
 }
 
-function FH({label, col, filterState, openFilter, onOpen}){
+function FH({label, col, filterState, openFilter, onOpen, lang="ko"}){
   const isAct=filterState[col]?.length>0;
   const cnt=filterState[col]?.length||0;
+  const displayLabel=lang==="en"?translateUiTextKoToEn(label):label;
+  const canWrapAtSpace=String(displayLabel).trim().includes(" ");
   return(
-    <div data-filter-header={col} onClick={e=>onOpen(col,e)}
-      style={{position:"relative",display:"inline-grid",gridTemplateColumns:"minmax(0,auto) auto",alignItems:"center",justifyContent:"center",columnGap:4,cursor:"pointer",userSelect:"none",width:"100%",minWidth:0}}>
-      <span style={{minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:10,letterSpacing:.5,textTransform:"uppercase",whiteSpace:"normal",lineHeight:1.15,textAlign:"center",overflowWrap:"normal"}}>{label}</span>
-      <span style={{fontSize:9,color:isAct?C.red:C.charcoalLt,fontWeight:700,lineHeight:1,alignSelf:"center",flexShrink:0}}>{isAct?`▼${cnt}`:"▼"}</span>
-      {isAct&&col!=="category"&&<span style={{width:4,height:4,borderRadius:"50%",background:C.red,flexShrink:0,position:"absolute",right:2}}/>}
+    <div data-filter-header={col} data-i18n-skip="true" onClick={e=>onOpen(col,e)}
+      style={{position:"relative",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
+      <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.15,textAlign:"center",overflowWrap:"normal",wordBreak:"keep-all"}}>{displayLabel}</span>
+      <span aria-hidden="true" style={{position:"absolute",right:0,top:"50%",transform:"translateY(-50%)",width:lang==="en"?16:14,textAlign:"center",fontSize:8,color:isAct?C.red:C.charcoalLt,fontWeight:700,lineHeight:1}}>{isAct?`▼${cnt}`:"▼"}</span>
+      {isAct&&col!=="category"&&<span style={{width:4,height:4,borderRadius:"50%",background:C.red,position:"absolute",left:1,top:"50%",transform:"translateY(-50%)"}}/>}
     </div>
   );
 }
-function PlainH({label, align="center"}){
-  return <span style={{display:"block",width:"100%",textAlign:align,color:C.charcoalLt,fontWeight:600,fontSize:10,letterSpacing:.5,textTransform:"uppercase",whiteSpace:"normal",lineHeight:1.15}}>{label}</span>;
+function PlainH({label, align="center", lang="ko"}){
+  const displayLabel=lang==="en"?translateUiTextKoToEn(label):label;
+  const canWrapAtSpace=String(displayLabel).trim().includes(" ");
+  return <span data-i18n-skip="true" style={{display:"block",width:"100%",textAlign:align,color:C.charcoalLt,fontWeight:600,fontSize:10,letterSpacing:lang==="en"?.25:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.2,overflowWrap:"normal",wordBreak:"keep-all"}}>{displayLabel}</span>;
 }
 
 function DotCompact({periods, selectedPeriodNum, onSelectPeriod}){
@@ -4347,7 +4377,7 @@ function DotFull({periods, windowDays, selectedPeriodNum, onSelectPeriod, pageMe
     </div>
   );
 }
-function PeriodTable({periods, selectedPeriodNum, onSelectPeriod, uploadTargetNum=null, uploadAllowed=false, uploadState=null, onUpload=null, uploadKey=""}){
+function PeriodTable({item, periods, selectedPeriodNum, onSelectPeriod, uploadTargetNum=null, uploadAllowed=false, uploadState=null, onUpload=null, uploadKey=""}){
   const SR={reference:{c:C.charcoal,bg:C.charcoalBg,l:"기준"},compliant:{c:C.charcoal,bg:C.charcoalBg,l:"이행"},measured:{c:C.charcoal,bg:C.charcoalBg,l:"측정 완료"},early:{c:C.charcoalMd,bg:C.charcoalBg,l:"조기측정"},late:{c:C.redDk,bg:C.redBg,l:"지연측정"},overdue:{c:C.red,bg:C.redBg,l:"미이행"},due_soon:{c:C.red,bg:C.redBg,l:"측정권장"},upcoming:{c:C.text4,bg:C.alt,l:"예정"}};
   const th={padding:"6px 9px",background:C.bg,border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,fontSize:10,letterSpacing:.2,textAlign:"center"};
   const td={padding:"7px 9px",borderBottom:`1px solid ${C.bd}`,fontSize:11,verticalAlign:"middle",textAlign:"center"};
@@ -4356,9 +4386,9 @@ function PeriodTable({periods, selectedPeriodNum, onSelectPeriod, uploadTargetNu
     <div className="responsive-table-scroll table-scroll-medium" role="region" aria-label="주기별 이행 현황 표" tabIndex={0}>
       <table style={{width:"100%",minWidth:0,maxWidth:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
         <colgroup>
-          <col style={{width:"12%"}}/><col style={{width:"20%"}}/><col style={{width:"27%"}}/><col style={{width:"16%"}}/><col style={{width:"25%"}}/>
+          <col style={{width:"10%"}}/><col style={{width:"17%"}}/><col style={{width:"20%"}}/><col style={{width:"14%"}}/><col style={{width:"14%"}}/><col style={{width:"25%"}}/>
         </colgroup>
-        <thead><tr>{["주기","기준·도래일","측정일","상태","XRF 결과 업로드"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+        <thead><tr>{["주기","기준·도래일","측정일","상태","XRF 결과","XRF 보고서 첨부"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
         <tbody>
           {periods?.map(p=>{
             const st=normStatus(p.status);
@@ -4371,6 +4401,11 @@ function PeriodTable({periods, selectedPeriodNum, onSelectPeriod, uploadTargetNu
             const uploadTitle=stateMatches
               ? (uploadState.error || (uploadState.saved?`${uploadState.fileName} · 저장 완료`:uploadState.fileName))
               : "선택 주기의 XRF 결과 파일 업로드";
+            const linkedMeasurements=item?periodMeasurementsOf(item,p):[];
+            const latestMeasurement=linkedMeasurements[linkedMeasurements.length-1]||null;
+            const xrfResult=latestMeasurement?measurementXrfResult(latestMeasurement):"";
+            const sourceFileName=String(latestMeasurement?.sourceFileName||"").trim();
+            const sourceFileUrl=String(latestMeasurement?.sourceFileUrl||"").trim();
             return(
               <tr key={p.num} onClick={canClick?()=>onSelectPeriod(p.num):undefined}
                 style={{background:isSel?C.charcoalBg:(["overdue","late"].includes(st)?C.redBg:"transparent"),cursor:canClick?"pointer":"default",outline:isSel?`1px solid ${C.red}`:"none",outlineOffset:-1}}>
@@ -4380,13 +4415,18 @@ function PeriodTable({periods, selectedPeriodNum, onSelectPeriod, uploadTargetNu
                   <AutoFitText value={`${periodMeasuredText(p)}${p.daysOver>0?` (+${p.daysOver}일)`:""}`} baseFontSize={11} minFontSize={7} align="center" style={{color:p.measured?C.text1:C.text3,fontWeight:p.measured?550:450}}/>
                 </td>
                 <td style={td}><span style={{fontSize:10,fontWeight:600,color:meta.c,background:meta.bg,padding:"3px 7px",borderRadius:6,border:`1px solid ${C.bd}`,whiteSpace:"nowrap"}}>{meta.l}</span></td>
+                <td style={td}>{xrfResult?<Chip v={displayXrfText(xrfResult)} small result/>:<span style={{fontSize:11,color:C.text4}}>—</span>}</td>
                 <td style={td} onClick={e=>e.stopPropagation()}>
                   {isUploadTarget && uploadAllowed && onUpload ? (
                     <label title={uploadTitle} style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center",minHeight:28,padding:"0 12px",border:`1px solid ${C.bd2}`,borderRadius:UI.rs,background:C.bg,color:C.text1,fontSize:11,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",overflow:"hidden"}}>
-                      {stateMatches ? (uploadState.saved?"저장 완료":uploadState.error?"오류 확인":"읽는 중") : "XRF 결과 업로드"}
+                      {stateMatches ? (uploadState.saved?"저장 완료":uploadState.error?"오류 확인":"읽는 중") : (st==="overdue"?"미이행 보고서 첨부":"XRF 보고서 첨부")}
                       <input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json" onChange={onUpload} style={inputOverlay}/>
                     </label>
-                  ) : null}
+                  ) : sourceFileName ? (
+                    sourceFileUrl
+                      ? <a href={sourceFileUrl} target="_blank" rel="noopener noreferrer" title={sourceFileName} style={{display:"block",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:10.5,color:C.blue}}>{sourceFileName}</a>
+                      : <span title={sourceFileName} style={{display:"block",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:10.5,color:C.text2}}>{sourceFileName}</span>
+                  ) : <span style={{fontSize:11,color:C.text4}}>—</span>}
                 </td>
               </tr>
             );
@@ -6503,6 +6543,7 @@ export default function App(){
   const [itemEditForm,setItemEditForm]=useState(null);
   const [itemEditAuth,setItemEditAuth]=useState({open:false,item:null,password:"",error:""});
   const [discontinueDecisionAuth,setDiscontinueDecisionAuth]=useState({open:false,item:null,password:"",error:"",verified:false,pending:false});
+  const [adminRegistrationAuth,setAdminRegistrationAuth]=useState({open:false,password:"",error:""});
   const [regMode,setRegMode]=useState("requester");
   const [reqXrfMode,setReqXrfMode]=useState("request");
   const [reqUploadResult,setReqUploadResult]=useState(emptyUploadedXrfResult());
@@ -6872,6 +6913,36 @@ export default function App(){
     setReqPhotoPreview("");
     setReqPhotoProgress(0);
   },[]);
+  const resetRegistrationView=useCallback((mode)=>{
+    setRegMode(mode);
+    setRegStep(1);
+    setRegType(null);
+    setReqUploadResult(emptyUploadedXrfResult());
+    setReqUploadFileName("");
+    clearRequestPhoto();
+  },[clearRequestPhoto]);
+  const closeAdminRegistrationAuth=useCallback(()=>{
+    setAdminRegistrationAuth({open:false,password:"",error:""});
+  },[]);
+  const handleRegistrationModeClick=useCallback((mode)=>{
+    if(mode==="admin"){
+      // 관리자 화면은 비밀번호가 확인되기 전에는 렌더링하지 않습니다.
+      setRegMode("requester");
+      setAdminRegistrationAuth({open:true,password:"",error:""});
+      return;
+    }
+    closeAdminRegistrationAuth();
+    resetRegistrationView("requester");
+  },[closeAdminRegistrationAuth,resetRegistrationView]);
+  const submitAdminRegistrationAuth=useCallback((event)=>{
+    event?.preventDefault?.();
+    if(adminRegistrationAuth.password!==ADMIN_ITEM_EDIT_PASSWORD){
+      setAdminRegistrationAuth(prev=>({...prev,error:"관리자 비밀번호가 올바르지 않습니다."}));
+      return;
+    }
+    closeAdminRegistrationAuth();
+    resetRegistrationView("admin");
+  },[adminRegistrationAuth.password,closeAdminRegistrationAuth,resetRegistrationView]);
   const handleRequestPhoto=useCallback((e)=>{
     const file=e.target.files?.[0]||null;
     e.target.value="";
@@ -7594,7 +7665,9 @@ export default function App(){
   const dash=useMemo(()=>{
     const ops=realItems.filter(i=>isOperationalManagedItem(i));
 
-    // ① 향후 6개월 측정 도래 예정 + 기한 초과
+    // ① 향후 6개월의 모든 미측정 주기를 월별로 집계합니다.
+    // 품목당 다음 마감 1건만 보던 방식은 월 1회 품목을 첫 달에만 표시하므로,
+    // 각 월에 실제로 도래하는 Pn을 확인해 월별로 품목을 한 번씩 더합니다.
     const buckets=[];
     const base=new Date(TODAY.getFullYear(),TODAY.getMonth(),1);
     for(let k=0;k<6;k++){
@@ -7603,10 +7676,12 @@ export default function App(){
         label:`${d.getMonth()+1}월`,total:0,overdue:0});
     }
     ops.forEach(i=>{
-      const due=nextDueOfItem(i); if(!due) return;
-      const b=buckets.find(x=>due.slice(0,7)===x.key); if(!b) return;
-      b.total++;
-      if(getCS(i)==="overdue") b.overdue++;
+      buckets.forEach(b=>{
+        const monthPeriods=openDuePeriodsInMonth(i,b.key);
+        if(!monthPeriods.length) return;
+        b.total++;
+        if(monthPeriods.some(p=>isPeriodOverdue(i,p))) b.overdue++;
+      });
     });
 
     // ② 이행 상태 구성
@@ -7673,11 +7748,8 @@ export default function App(){
     if(fs.risk.length>0&&!fs.risk.includes(itemFinalRisk(item))) return false;
     if(fs.retest.length>0&&!fs.retest.includes(itemRetestRequired(item)?"review":"trusted")) return false;
     if(fs.lifecycle.length>0&&!fs.lifecycle.includes(item.lifecycle)) return false;
-    if((fs.dueMonth||[]).length>0){
-      const due=nextDueOfItem(item);
-      const dueMonth=due ? String(due).slice(0,7) : "";
-      if(!fs.dueMonth.includes(dueMonth)) return false;
-    }
+    if((fs.dueMonth||[]).length>0
+      && !fs.dueMonth.some(monthKey=>openDuePeriodsInMonth(item,monthKey).length>0)) return false;
     if(!itemMatchesListSearch(item,search,approvalStatus)) return false;
     return true;
   }).map((item,idx)=>({item,idx})).sort((a,b)=>{
@@ -7780,10 +7852,20 @@ export default function App(){
       const measurement=latestAttempt?measurementById(sel,latestAttempt.id||latestAttempt.measurementId):null;
       return pendingXrfRemeasureElements(measurement).length>0;
     }) || null;
-    // 선택한 R/Pn에 1차 ??가 있으면 다른 주기보다 해당 측정의 Retest를 우선합니다.
-    if(selected && pendingRemeasurePeriod && Number(selected.num)===Number(pendingRemeasurePeriod.num)) return selected;
+    const selectedAttempts=selected?measurementAttemptsForPeriod(sel,selected):[];
+    const selectedLatestAttempt=selectedAttempts[selectedAttempts.length-1]||null;
+    const selectedLatestMeasurement=selectedLatestAttempt
+      ? measurementById(sel,selectedLatestAttempt.id||selectedLatestAttempt.measurementId)
+      : null;
+    const selectedNeedsRemeasure=pendingXrfRemeasureElements(selectedLatestMeasurement).length>0;
+    const selectedIsOpen=!!selected
+      && !selected?.isSupplementalMeasurement
+      && !(selected?.isReference || Number(selected?.num)===0)
+      && selectedAttempts.length===0;
+    // 사용자가 미측정 Pn(미이행 포함)을 직접 선택하면 다른 주기의 재측정 대기보다
+    // 선택한 Pn을 우선해 보고서를 첨부할 수 있게 합니다.
+    if(selectedIsOpen || selectedNeedsRemeasure) return selected;
     if(pendingRemeasurePeriod) return pendingRemeasurePeriod;
-    if(selected && !selected?.isSupplementalMeasurement && !(selected?.isReference || Number(selected?.num)===0)) return selected;
     return currentCompliancePeriod(sel)
       || selAllPeriods.find(p=>!(p?.isReference||Number(p?.num)===0)&&!p?.measurementId&&!p?.measured)
       || null;
@@ -8539,27 +8621,32 @@ export default function App(){
   const fileInputOverlay={position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%"};
   const uploadBoxStyle={position:"relative",display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:`1px dashed ${C.bd2}`,background:C.card,color:C.text3,fontSize:12,fontWeight:600,cursor:"pointer",overflow:"hidden",textAlign:"center",padding:"0 12px",boxSizing:"border-box"};
   const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 / 변경 관리"}];
-  const fhp={filterState:fs,openFilter,onOpen:handleOpen};
-  // 세로 방향은 페이지 자체가 스크롤하고, 15개 열의 최소 가독 폭보다 화면이 좁을 때만
-  // 표 컨테이너가 가로로 스크롤됩니다. 품목명은 축소하지 않고 셀 안에서 줄바꿈합니다.
+  const fhp={filterState:fs,openFilter,onOpen:handleOpen,lang};
+  // 한국어와 영문은 단어 길이가 크게 달라 별도 열 폭을 사용합니다.
+  // 영문 레이아웃은 충분한 최소 폭을 확보하고 표 컨테이너에서 가로 스크롤합니다.
+  const listColumnWidths=lang==="en"
+    ? {cat:76,photo:60,code:82,name:160,dept:100,cyc:78,first:90,dot:108,comp:96,xrf:78,precision:94,approval:102,nd:90,dd:62,btn:32}
+    : {cat:68,photo:54,code:78,name:160,dept:78,cyc:60,first:80,dot:104,comp:74,xrf:72,precision:88,approval:84,nd:82,dd:58,btn:30};
   const listColumns=[
-    {key:"cat", el:<FH label="분류" col="category" {...fhp}/>, w:80},
-    {key:"photo",el:<FH label="사진" col="photo" {...fhp}/>, w:72},
-    {key:"code",el:<FH label="품번" col="code" {...fhp}/>, w:86},
-    {key:"name",el:<FH label="품목명" col="name" {...fhp}/>, w:180},
-    {key:"dept",el:<FH label="부서" col="dept" {...fhp}/>, w:84},
-    {key:"cyc",el:<FH label="주기" col="cycle" {...fhp}/>, w:62},
-    {key:"first",el:<FH label="최초 등록" col="firstDate" {...fhp}/>, w:84},
-    {key:"dot",el:<div style={{display:"flex",alignItems:"center",justifyContent:"center",width:"100%"}}><PlainH label="이행 현황"/></div>, w:118},
-    {key:"comp",el:<FH label="현재 상태" col="compliance" {...fhp}/>, w:78},
-    {key:"xrf",el:<FH label="XRF" col="xrf" {...fhp}/>, w:84},
-    {key:"precision",el:<FH label="정밀분석" col="precision" {...fhp}/>, w:100},
-    {key:"approval",el:<FH label="승인 상태" col="approval" {...fhp}/>, w:92},
-    {key:"nd",el:<FH label="다음 마감" col="nextDue" {...fhp}/>, w:90},
-    {key:"dd",el:<FH label="D-DAY" col="dDay" {...fhp}/>, w:60},
-    {key:"btn",el:null, w:34},
+    {key:"cat", el:<FH label="분류" col="category" {...fhp}/>, w:listColumnWidths.cat},
+    {key:"photo",el:<FH label="사진" col="photo" {...fhp}/>, w:listColumnWidths.photo},
+    {key:"code",el:<FH label="품번" col="code" {...fhp}/>, w:listColumnWidths.code},
+    {key:"name",el:<FH label="품목명" col="name" {...fhp}/>, w:listColumnWidths.name},
+    {key:"dept",el:<FH label="부서" col="dept" {...fhp}/>, w:listColumnWidths.dept},
+    {key:"cyc",el:<FH label="주기" col="cycle" {...fhp}/>, w:listColumnWidths.cyc},
+    {key:"first",el:<FH label="최초 등록" col="firstDate" {...fhp}/>, w:listColumnWidths.first},
+    {key:"dot",el:<div style={{display:"flex",alignItems:"center",justifyContent:"center",width:"100%"}}><PlainH label="이행 현황" lang={lang}/></div>, w:listColumnWidths.dot},
+    {key:"comp",el:<FH label="현재 상태" col="compliance" {...fhp}/>, w:listColumnWidths.comp},
+    {key:"xrf",el:<FH label="XRF" col="xrf" {...fhp}/>, w:listColumnWidths.xrf},
+    {key:"precision",el:<FH label="정밀분석" col="precision" {...fhp}/>, w:listColumnWidths.precision},
+    {key:"approval",el:<FH label="승인 상태" col="approval" {...fhp}/>, w:listColumnWidths.approval},
+    {key:"nd",el:<FH label="다음 마감" col="nextDue" {...fhp}/>, w:listColumnWidths.nd},
+    {key:"dd",el:<FH label="D-DAY" col="dDay" {...fhp}/>, w:listColumnWidths.dd},
+    {key:"btn",el:null, w:listColumnWidths.btn},
   ];
   const listTableWeight=listColumns.reduce((sum,c)=>sum+c.w,0);
+  const listHeaderHeight=lang==="en"?68:40;
+  const listRowHeight=lang==="en"?76:UI.rowH;
   const requesterStepLabels = regType==="discontinue"
     ? ["요청 유형 선택","단종 정보 입력","요청 완료"]
     : ["요청 유형 선택","기본정보 입력","XRF 방식 선택","요청 완료"];
@@ -9006,6 +9093,20 @@ export default function App(){
           </form>
         </div>
       )}
+      {adminRegistrationAuth.open&&(
+        <div role="presentation" onMouseDown={closeAdminRegistrationAuth} style={{position:"fixed",inset:0,zIndex:10001,display:"flex",alignItems:"center",justifyContent:"center",padding:18,background:"rgba(10,16,16,.58)",boxSizing:"border-box"}}>
+          <form role="dialog" aria-modal="true" aria-labelledby="admin-registration-auth-title" onSubmit={submitAdminRegistrationAuth} onMouseDown={event=>event.stopPropagation()} onKeyDown={event=>{if(event.key==="Escape") closeAdminRegistrationAuth();}} style={{width:"min(380px,100%)",padding:"20px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
+            <div id="admin-registration-auth-title" style={{fontSize:15,fontWeight:750,color:C.text1}}>관리자 직접 등록 인증</div>
+            <div style={{marginTop:6,fontSize:11,color:C.text3,lineHeight:1.55}}>관리자 직접 등록을 사용하려면 관리자 비밀번호를 입력하세요.</div>
+            <input type="password" value={adminRegistrationAuth.password} onChange={event=>setAdminRegistrationAuth(prev=>({...prev,password:event.target.value,error:""}))} autoFocus autoComplete="current-password" aria-label="관리자 비밀번호" style={{...inp,width:"100%",marginTop:14,boxSizing:"border-box"}}/>
+            {adminRegistrationAuth.error&&<div role="alert" style={{marginTop:7,fontSize:11,color:C.redDk}}>{adminRegistrationAuth.error}</div>}
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+              <button type="button" onClick={closeAdminRegistrationAuth} style={{padding:"7px 13px",border:`1px solid ${C.bd2}`,borderRadius:7,background:C.card,color:C.text2,fontSize:11,fontWeight:600,cursor:"pointer"}}>취소</button>
+              <button type="submit" style={{padding:"7px 15px",border:`1px solid ${C.charcoal}`,borderRadius:7,background:C.charcoal,color:"#fff",fontSize:11,fontWeight:650,cursor:"pointer"}}>확인</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <div style={{background:C.card,borderBottom:`1px solid ${C.bd}`}}>
         <div className="app-shell app-topbar">
@@ -9095,15 +9196,15 @@ export default function App(){
               <FilterChips filterState={fs} onClear={handleClear} onClearAll={handleClearAll}/>
             </div>
 
-            <div className="responsive-table-scroll table-scroll-wide material-list-table" role="region" aria-label="부자재 목록 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
+            <div className="responsive-table-scroll table-scroll-wide material-list-table" data-list-layout={lang} role="region" aria-label="부자재 목록 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
               <table style={{width:"100%",minWidth:listTableWeight,maxWidth:"none",borderCollapse:"collapse",tableLayout:"fixed"}}>
                 <colgroup>
                   {listColumns.map(c=><col key={c.key} style={{width:`${(c.w/listTableWeight)*100}%`}}/>)}
                 </colgroup>
                 <thead>
-                  <tr style={{height:40}}>
+                  <tr style={{height:listHeaderHeight}}>
                     {listColumns.map(({key,el})=>(
-                      <th key={key} style={{height:40,padding:"4px 6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",lineHeight:1.15}}>{el}</th>
+                      <th key={key} style={{height:listHeaderHeight,padding:lang==="en"?"5px 3px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",overflowWrap:"normal",wordBreak:"keep-all",lineHeight:1.15}}>{el}</th>
                     ))}
                   </tr>
                 </thead>
@@ -9126,12 +9227,18 @@ export default function App(){
                     const hideTimeline=isDiscontinueItem || isDiscontinuedExisting || isReplaced || item.category==="changed";
                     const showTimeline=!hideTimeline && itemPeriods.length>0;
                     const rowOpacity=(isReplaced || isDiscontinueProcessed || isDiscontinuedExisting) ? 0.55 : 1;
-                    const tdS={height:UI.rowH,padding:"0 6px",borderBottom:`1px solid ${C.bd}`,verticalAlign:"middle",opacity:rowOpacity,boxSizing:"border-box",textAlign:"center"};
+                    const tdS={height:listRowHeight,padding:"0 6px",borderBottom:`1px solid ${C.bd}`,verticalAlign:"middle",opacity:rowOpacity,boxSizing:"border-box",textAlign:"center"};
                     const mutedCell=<span style={{fontSize:11,color:C.text4}}>—</span>;
                     const notTargetCell=<span title="대상 아님" style={{fontSize:12,color:C.text4,fontWeight:500}}>—</span>;
                     const isRowActive=rowSel===item.code;
                     const primaryItemName=displayItemName(item,lang)||"—";
                     const secondaryItemName=lang==="en"?(item.name||"—"):(item.nameEn||ITEM_NAME_EN_FALLBACKS[item.code]||"—");
+                    const departmentText=lang==="en"?translateUiTextKoToEn(item.dept||"—"):(item.dept||"—");
+                    const cycleText=isCycleMuted||isEquipmentItem(item)
+                      ? "—"
+                      : (lang==="en"
+                        ? translateUiTextKoToEn(CYCLE_KO[itemCycleFromRisk(item)]||"—")
+                        : (CYCLE_KO[itemCycleFromRisk(item)]||"—"));
                     return(
                       <tr key={item.code}
                         onClick={()=>setRowSel(prev=>prev===item.code?null:item.code)}
@@ -9161,8 +9268,12 @@ export default function App(){
                             {secondaryItemName}
                           </div>
                         </td>
-                        <td style={{...tdS,color:C.text3,fontSize:11}}><AutoFitText value={item.dept} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
-                        <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={isCycleMuted||isEquipmentItem(item)?"—":(CYCLE_KO[itemCycleFromRisk(item)]||"—")} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
+                        <td data-i18n-skip="true" style={{...tdS,color:C.text3,fontSize:11,padding:lang==="en"?"5px 4px":"0 6px"}}>
+                          <div title={departmentText} style={{width:"100%",whiteSpace:String(departmentText).trim().includes(" ")?"normal":"nowrap",overflowWrap:"normal",wordBreak:"keep-all",lineHeight:1.3,textAlign:"center"}}>{departmentText}</div>
+                        </td>
+                        <td data-i18n-skip="true" style={{...tdS,color:C.text3,fontSize:11,textAlign:"center",padding:lang==="en"?"5px 4px":"0 6px"}}>
+                          <div title={cycleText} style={{width:"100%",whiteSpace:String(cycleText).trim().includes(" ")?"normal":"nowrap",overflowWrap:"normal",wordBreak:"keep-all",lineHeight:1.3,textAlign:"center"}}>{cycleText}</div>
+                        </td>
                         <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={item.firstDate||"—"} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center"}}>{showTimeline?<DotCompact periods={itemPeriods}/>:mutedCell}</td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center"}}>{isCycleMuted?mutedCell:<CompText item={item}/>}</td>
@@ -9358,6 +9469,7 @@ export default function App(){
                     <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${C.bd}`}}>
                       <div style={{...T.section,marginBottom:10}}>이행 상세</div>
                       <PeriodTable
+                        item={sel}
                         periods={selPeriods}
                         selectedPeriodNum={selPeriodNum}
                         onSelectPeriod={handleSelectPeriod}
@@ -9450,7 +9562,7 @@ export default function App(){
                       {[
                         ["Meas.Date",    currentMeasurement?.date||"—"],
                         ["Sample Name",  sel.code],
-                        ["Measurement Type", currentMeasurement?.role ? `${normalizeMeasurementRole(currentMeasurement.role)}${currentMeasurement?.attemptNo?` #${currentMeasurement.attemptNo}`:""}` : "—"],
+                        ["Measurement Type", measurementTypeDisplay(currentMeasurement,currentPeriodMeta)],
                         ["측정 방법",    "by ED-XRF"],
                       ].map(([k,v])=>(
                         <div key={k} style={{padding:"10px 10px",background:C.alt,border:`1px solid ${C.bd}`,borderRadius:8,minWidth:0,textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
@@ -9765,7 +9877,7 @@ export default function App(){
                 </div>
                 <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
                   {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
-                    <button key={m} onClick={()=>{setRegMode(m);setRegStep(1);setRegType(null);setReqUploadResult(emptyUploadedXrfResult());setReqUploadFileName("");clearRequestPhoto();}} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
+                    <button key={m} onClick={()=>handleRegistrationModeClick(m)} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
                   ))}
                 </div>
               </div>
