@@ -4823,6 +4823,13 @@ function localizedListExportValue(column,value,lang="ko"){
   return translateUiTextKoToEn(label);
 }
 
+function materialListSelectionKey(item){
+  if(item?._spItemId) return `item:${item._spItemId}`;
+  if(item?._spRequestItemId) return `request:${item._spRequestItemId}`;
+  if(item?.itemId) return `itemId:${item.itemId}`;
+  return `code:${itemStateKey(item)}|${item?.requestType||""}|${item?.firstDate||""}`;
+}
+
 function isCancelledListItem(item,approvalStatus=""){
   return item?.lifecycle==="Cancelled"
     || approvalFilterKey(approvalStatus||approvalStatusOfItemFallback(item))==="cancelled"
@@ -6580,6 +6587,8 @@ export default function App(){
   const [visualUatOnly,setVisualUatOnly]=useState(false);
   const [selKey,setSelKey]=useState(null);
   const [rowSel,setRowSel]=useState(null);
+  const [selectedListItemKeys,setSelectedListItemKeys]=useState([]);
+  const [selectionAddQuery,setSelectionAddQuery]=useState("");
   const [photoPreview,setPhotoPreview]=useState(null);
   const [selPeriodNum,setSelPeriodNum]=useState(null);
   const [selPeriodPage,setSelPeriodPage]=useState(null);
@@ -7899,11 +7908,7 @@ export default function App(){
     );
   },[filtered.length,fs,lang,search]);
 
-  const handleExportFilteredExcel=useCallback(()=>{
-    if(filtered.length===0){
-      window.alert(lang==="en" ? "There are no filtered results to export." : "내보낼 필터 결과가 없습니다.");
-      return;
-    }
+  const writeMaterialItemsExcel=useCallback((items,mode="filtered")=>{
     try{
       if(!XLSX?.utils?.aoa_to_sheet || !XLSX?.utils?.book_new || !XLSX?.writeFile){
         throw new Error("Excel export module is unavailable.");
@@ -7911,7 +7916,7 @@ export default function App(){
       const headers=lang==="en"
         ? ["Category","Photo","Part No.","Item Name (Korean)","Item Name (English)","Department","Cycle","First Registered","Current Status","XRF","Precision Analysis","Approval Status","Next Due","D-DAY"]
         : ["분류","사진","품번","품목명","영문 품목명","부서","주기","최초 등록","현재 상태","XRF","정밀분석","승인 상태","다음 마감","D-DAY"];
-      const rows=filtered.map(item=>{
+      const rows=items.map(item=>{
         const approvalStatus=approvalStatusOf(item);
         const values=[
           localizedListExportValue("category",listColumnValue(item,"category",approvalStatus),lang),
@@ -7935,16 +7940,25 @@ export default function App(){
       worksheet["!cols"]=[12,10,16,28,30,16,15,15,18,14,18,20,15,11].map(wch=>({wch}));
       if(worksheet["!ref"]) worksheet["!autofilter"]={ref:worksheet["!ref"]};
       const workbook=XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook,worksheet,lang==="en"?"Filtered Materials":"필터 결과");
+      const selectedMode=mode==="selected";
+      XLSX.utils.book_append_sheet(workbook,worksheet,lang==="en"?(selectedMode?"Selected Materials":"Filtered Materials"):(selectedMode?"선택 항목":"필터 결과"));
       const fileName=lang==="en"
-        ? `XRF_Filtered_Materials_${TODAY_STR}_${filtered.length}.xlsx`
-        : `XRF_부자재_필터결과_${TODAY_STR}_${filtered.length}건.xlsx`;
+        ? `XRF_${selectedMode?"Selected":"Filtered"}_Materials_${TODAY_STR}_${items.length}.xlsx`
+        : `XRF_부자재_${selectedMode?"선택항목":"필터결과"}_${TODAY_STR}_${items.length}건.xlsx`;
       XLSX.writeFile(workbook,fileName,{compression:true});
     }catch(error){
-      console.error("Filtered Excel export failed",error);
+      console.error("Material Excel export failed",error);
       window.alert(lang==="en" ? "Excel export failed. Please try again." : "Excel 내보내기에 실패했습니다. 다시 시도해 주세요.");
     }
-  },[approvalStatusOf,filtered,lang]);
+  },[approvalStatusOf,lang]);
+
+  const handleExportFilteredExcel=useCallback(()=>{
+    if(filtered.length===0){
+      window.alert(lang==="en" ? "There are no filtered results to export." : "내보낼 필터 결과가 없습니다.");
+      return;
+    }
+    writeMaterialItemsExcel(filtered,"filtered");
+  },[filtered,lang,writeMaterialItemsExcel]);
 
   const listTotalPages=Math.max(1,Math.ceil(filtered.length/MATERIAL_LIST_PAGE_SIZE));
   useEffect(()=>setListPage(0),[fs,search,visualUatOnly]);
@@ -7953,6 +7967,55 @@ export default function App(){
     const start=listPage*MATERIAL_LIST_PAGE_SIZE;
     return filtered.slice(start,start+MATERIAL_LIST_PAGE_SIZE);
   },[filtered,listPage]);
+  const selectedListItemKeySet=useMemo(()=>new Set(selectedListItemKeys),[selectedListItemKeys]);
+  const selectedListItems=useMemo(
+    ()=>listItems.filter(item=>selectedListItemKeySet.has(materialListSelectionKey(item))),
+    [listItems,selectedListItemKeySet]
+  );
+  const selectionAddMatches=useMemo(()=>{
+    const query=String(selectionAddQuery||"").trim().toLocaleLowerCase("ko-KR");
+    if(!query) return [];
+    return listItems
+      .filter(item=>!selectedListItemKeySet.has(materialListSelectionKey(item)))
+      .filter(item=>[
+        item?.code,item?.name,item?.nameEn,item?.dept,
+        item?.manufacturer,item?.materialCategory
+      ].some(value=>String(value||"").toLocaleLowerCase("ko-KR").includes(query)))
+      .slice(0,8);
+  },[listItems,selectedListItemKeySet,selectionAddQuery]);
+  const currentPageSelectionKeys=useMemo(()=>pagedFiltered.map(materialListSelectionKey),[pagedFiltered]);
+  const currentPageSelectedCount=currentPageSelectionKeys.filter(key=>selectedListItemKeySet.has(key)).length;
+  const allCurrentPageSelected=currentPageSelectionKeys.length>0 && currentPageSelectedCount===currentPageSelectionKeys.length;
+  const toggleListItemSelection=useCallback((item)=>{
+    const key=materialListSelectionKey(item);
+    setSelectedListItemKeys(previous=>previous.includes(key)
+      ? previous.filter(value=>value!==key)
+      : [...previous,key]);
+  },[]);
+  const addListItemSelection=useCallback((item)=>{
+    const key=materialListSelectionKey(item);
+    setSelectedListItemKeys(previous=>previous.includes(key)?previous:[...previous,key]);
+    setSelectionAddQuery("");
+  },[]);
+  const toggleCurrentPageSelection=useCallback(()=>{
+    setSelectedListItemKeys(previous=>{
+      const next=new Set(previous);
+      const shouldSelect=currentPageSelectionKeys.some(key=>!next.has(key));
+      currentPageSelectionKeys.forEach(key=>shouldSelect?next.add(key):next.delete(key));
+      return Array.from(next);
+    });
+  },[currentPageSelectionKeys]);
+  const handleExportSelectedExcel=useCallback(()=>{
+    if(selectedListItems.length===0){
+      window.alert(lang==="en" ? "Select at least one item to export." : "내보낼 항목을 한 개 이상 선택하세요.");
+      return;
+    }
+    writeMaterialItemsExcel(selectedListItems,"selected");
+  },[lang,selectedListItems,writeMaterialItemsExcel]);
+  useEffect(()=>{
+    const availableKeys=new Set(listItems.map(materialListSelectionKey));
+    setSelectedListItemKeys(previous=>previous.filter(key=>availableKeys.has(key)));
+  },[listItems]);
 
   const sel=allItems.find(i=>i.code===selKey);
   const selTimelinePeriods=useMemo(()=>itemTimelinePeriods(sel),[sel]);
@@ -8805,9 +8868,10 @@ export default function App(){
   // 한국어와 영문은 단어 길이가 크게 달라 별도 열 폭을 사용합니다.
   // 영문 레이아웃은 충분한 최소 폭을 확보하고 표 컨테이너에서 가로 스크롤합니다.
   const listColumnWidths=lang==="en"
-    ? {cat:76,photo:60,code:82,name:160,dept:100,cyc:78,first:90,dot:108,comp:96,xrf:78,precision:94,approval:102,nd:90,dd:62,btn:32}
-    : {cat:68,photo:54,code:78,name:160,dept:78,cyc:60,first:80,dot:104,comp:74,xrf:72,precision:88,approval:84,nd:82,dd:58,btn:30};
+    ? {select:38,cat:76,photo:60,code:82,name:160,dept:100,cyc:78,first:90,dot:108,comp:96,xrf:78,precision:94,approval:102,nd:90,dd:62,btn:32}
+    : {select:36,cat:68,photo:54,code:78,name:160,dept:78,cyc:60,first:80,dot:104,comp:74,xrf:72,precision:88,approval:84,nd:82,dd:58,btn:30};
   const listColumns=[
+    {key:"select",el:<input type="checkbox" data-i18n-skip="true" checked={allCurrentPageSelected} ref={element=>{if(element) element.indeterminate=currentPageSelectedCount>0&&!allCurrentPageSelected;}} onChange={toggleCurrentPageSelection} aria-label={lang==="en"?"Select all items on this page":"현재 페이지 항목 전체 선택"} title={lang==="en"?"Select all items on this page":"현재 페이지 항목 전체 선택"} style={{width:15,height:15,accentColor:C.charcoal,cursor:"pointer"}}/>,w:listColumnWidths.select},
     {key:"cat", el:<FH label="분류" col="category" {...fhp}/>, w:listColumnWidths.cat},
     {key:"photo",el:<FH label="사진" col="photo" {...fhp}/>, w:listColumnWidths.photo},
     {key:"code",el:<FH label="품번" col="code" {...fhp}/>, w:listColumnWidths.code},
@@ -9367,6 +9431,23 @@ export default function App(){
                 {VISUAL_UAT_MODE&&<button type="button" data-i18n-skip="true" aria-pressed={visualUatOnly} onClick={()=>setVisualUatOnly(value=>!value)} className="pill-btn" style={{height:30,padding:"0 12px",border:`1px solid ${visualUatOnly?A.purple.solid:A.purple.ln}`,background:visualUatOnly?A.purple.solid:A.purple.bg,color:visualUatOnly?"#fff":A.purple.tx,fontSize:11,fontWeight:650,cursor:"pointer"}}>UAT 테스트만 보기</button>}
                 <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filtered.length}</strong>건 · 운영 {stats.total}건 · 이력 {stats.history}건</span>
                 {hasFilters&&<button onClick={handleClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
+                <div data-i18n-skip="true" style={{position:"relative",flex:"0 0 auto"}}>
+                  <input value={selectionAddQuery} onChange={event=>setSelectionAddQuery(event.target.value)}
+                    placeholder={lang==="en"?"Search to add selection":"선택 항목 검색 추가"}
+                    aria-label={lang==="en"?"Search all materials to add to selection":"전체 품목에서 선택 항목 검색 추가"}
+                    style={{height:30,width:190,boxSizing:"border-box",padding:"0 10px",border:`1px solid ${selectionAddQuery?C.charcoalLt:C.bd}`,borderRadius:UI.rs,fontSize:11,outline:"none",background:C.card,color:C.text2}}/>
+                  {String(selectionAddQuery||"").trim()&&<div style={{position:"absolute",top:34,left:0,width:300,maxHeight:270,overflowY:"auto",zIndex:30,background:C.card,border:`1px solid ${C.bd2}`,borderRadius:8,boxShadow:"0 10px 28px rgba(26,32,32,.16)",padding:5}}>
+                    {selectionAddMatches.length>0?selectionAddMatches.map(item=><button type="button" key={materialListSelectionKey(item)} onClick={()=>addListItemSelection(item)}
+                      title={`${item.code} · ${displayItemName(item,lang)} · ${item.dept||"—"}`}
+                      style={{width:"100%",display:"grid",gridTemplateColumns:"78px minmax(0,1fr) 62px",gap:7,alignItems:"center",padding:"7px 8px",border:0,borderBottom:`1px solid ${C.bd}`,background:C.card,color:C.text2,textAlign:"left",cursor:"pointer",fontFamily:FONT_SANS}}>
+                      <span style={{fontSize:10.5,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.code}</span>
+                      <span style={{fontSize:10.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{displayItemName(item,lang)||"—"}</span>
+                      <span style={{fontSize:10,color:C.text4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right"}}>{item.dept||"—"}</span>
+                    </button>):<div style={{padding:"10px",fontSize:10.5,color:C.text4,textAlign:"center"}}>{lang==="en"?"No unselected matches":"추가할 수 있는 검색 결과가 없습니다."}</div>}
+                  </div>}
+                </div>
+                {selectedListItems.length>0&&<span data-i18n-skip="true" style={{fontSize:11,color:C.text3}}>{lang==="en"?"Selected":"선택"} <strong style={{color:C.charcoal,fontWeight:750}}>{selectedListItems.length}</strong>{lang==="en"?"":"건"}</span>}
+                {selectedListItems.length>0&&<button type="button" data-i18n-skip="true" onClick={()=>setSelectedListItemKeys([])} className="pill-btn" style={{height:26,padding:"0 10px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:10.5,color:C.text3,cursor:"pointer"}}>{lang==="en"?"Clear Selection":"선택 해제"}</button>}
                 <div style={{marginLeft:"auto"}}/>
                 <button type="button" data-i18n-skip="true" onClick={handleShareCurrentView}
                   title={lang==="en"?"Share the current page link and filter summary":"현재 페이지 링크와 필터 요약 공유"}
@@ -9382,7 +9463,15 @@ export default function App(){
                   <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M6 3.5h8l4 4V20.5H6z"/><path d="M14 3.5v4h4M9 11l5 6M14 11l-5 6"/>
                   </svg>
-                  Excel
+                  {lang==="en"?"Filtered Excel":"필터 Excel"}
+                </button>
+                <button type="button" data-i18n-skip="true" onClick={handleExportSelectedExcel} disabled={selectedListItems.length===0}
+                  title={lang==="en"?"Export only the selected items to an Excel file":"선택한 항목만 Excel 파일로 내보내기"}
+                  style={{height:34,padding:"0 12px",background:selectedListItems.length>0?C.charcoalBg:C.card,color:selectedListItems.length>0?C.charcoal:C.text4,border:`1px solid ${selectedListItems.length>0?C.charcoalLt:C.bd2}`,borderRadius:UI.rs,fontSize:11,fontWeight:650,cursor:selectedListItems.length===0?"not-allowed":"pointer",opacity:selectedListItems.length===0?.48:1,whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:6}}>
+                  <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 3.5h8l4 4V20.5H6z"/><path d="M14 3.5v4h4M8.5 14l2 2 4.5-5"/>
+                  </svg>
+                  {lang==="en"?"Selected Excel":"선택 Excel"}
                 </button>
                 <button onClick={()=>{setTab("reg");setRegMode("requester");setRegStep(1);setRegType(null);setReqXrfMode("request");}}
                   style={{height:34,padding:"0 16px",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}>
@@ -9427,6 +9516,8 @@ export default function App(){
                     const mutedCell=<span style={{fontSize:11,color:C.text4}}>—</span>;
                     const notTargetCell=<span title="대상 아님" style={{fontSize:12,color:C.text4,fontWeight:500}}>—</span>;
                     const isRowActive=rowSel===item.code;
+                    const selectionKey=materialListSelectionKey(item);
+                    const isListItemSelected=selectedListItemKeySet.has(selectionKey);
                     const primaryItemName=displayItemName(item,lang)||"—";
                     const secondaryItemName=lang==="en"?(item.name||"—"):(item.nameEn||ITEM_NAME_EN_FALLBACKS[item.code]||"—");
                     const departmentText=lang==="en"?translateUiTextKoToEn(item.dept||"—"):(item.dept||"—");
@@ -9436,11 +9527,14 @@ export default function App(){
                         ? translateUiTextKoToEn(CYCLE_KO[itemCycleFromRisk(item)]||"—")
                         : (CYCLE_KO[itemCycleFromRisk(item)]||"—"));
                     return(
-                      <tr key={item.code}
+                      <tr key={selectionKey}
                         onClick={()=>setRowSel(prev=>prev===item.code?null:item.code)}
                         style={{background:isRowActive?UI.selRow:C.card,cursor:"pointer",transition:"background .12s"}}
                         onMouseEnter={e=>{if(!isRowActive)e.currentTarget.style.background=UI.hoverRow;}}
                         onMouseLeave={e=>{if(!isRowActive)e.currentTarget.style.background=C.card;}}>
+                        <td style={{...tdS,padding:"0 4px",opacity:1}} onClick={event=>event.stopPropagation()}>
+                          <input type="checkbox" data-i18n-skip="true" checked={isListItemSelected} onChange={()=>toggleListItemSelection(item)} aria-label={`${item.code} ${lang==="en"?"select":"선택"}`} style={{width:15,height:15,accentColor:C.charcoal,cursor:"pointer"}}/>
+                        </td>
                         <td style={{...tdS,overflow:"hidden"}}>
                           <div style={{width:"100%",minWidth:0,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}}>
                             <CatDot cat={item.category} lang={lang}/>
