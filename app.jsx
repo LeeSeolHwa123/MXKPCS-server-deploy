@@ -6654,6 +6654,25 @@ export default function App(){
     try{ return localStorage.getItem("xrf-ui-language")==="en"?"en":"ko"; }catch{return "ko";}
   });
   const [tab,setTab]=useState("list");
+  const tabHistoryRef=useRef([]);
+  const currentTabRef=useRef("list");
+  const skipTabHistoryRef=useRef(false);
+  const [canGoBack,setCanGoBack]=useState(false);
+  useEffect(()=>{
+    const previousTab=currentTabRef.current;
+    if(previousTab===tab) return;
+    if(skipTabHistoryRef.current) skipTabHistoryRef.current=false;
+    else tabHistoryRef.current=[...tabHistoryRef.current,previousTab].slice(-20);
+    currentTabRef.current=tab;
+    setCanGoBack(tabHistoryRef.current.length>0);
+  },[tab]);
+  const goToPreviousTab=useCallback(()=>{
+    const previousTab=tabHistoryRef.current.pop();
+    if(!previousTab) return;
+    skipTabHistoryRef.current=true;
+    setCanGoBack(tabHistoryRef.current.length>0);
+    setTab(previousTab);
+  },[]);
   const [fs,setFs]=useState(()=>initialSharedListView?.filters||createEmptyMaterialListFilters());
   const [openFilter,setOpenFilter]=useState(null);
   const [fPos,setFPos]=useState({top:0,left:0});
@@ -6669,6 +6688,7 @@ export default function App(){
   const [selPeriodPage,setSelPeriodPage]=useState(null);
   const [precisionSelCaseId,setPrecisionSelCaseId]=useState(null);
   const [precisionDetailCaseId,setPrecisionDetailCaseId]=useState(null);
+  const [collapsedPrecisionCaseKeys,setCollapsedPrecisionCaseKeys]=useState({});
   const [precisionOverrides,setPrecisionOverrides]=useState({});
   const precisionSaveTimerRef=useRef(null);
   const [sharePointItems,setSharePointItems]=useState([]);
@@ -9464,6 +9484,10 @@ export default function App(){
         </div>
         <div style={{background:C.charcoalDk}}>
           <div className="app-shell app-tabs">
+            <button type="button" onClick={goToPreviousTab} disabled={!canGoBack} aria-label="이전 화면" title="이전 화면"
+              style={{width:36,height:36,display:"inline-flex",alignItems:"center",justifyContent:"center",padding:0,border:0,background:"transparent",color:"#fff",opacity:canGoBack?1:.35,cursor:canGoBack?"pointer":"default",flex:"0 0 auto"}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+            </button>
             {TABS.map(t=>{const activeTab=tab===t.id || (tab==="precision-detail"&&t.id==="precision");return <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"9px 18px",background:"none",border:"none",cursor:"pointer",fontSize:12,fontWeight:activeTab?600:400,color:activeTab?"#fff":"rgba(255,255,255,.55)",borderBottom:activeTab?`2px solid ${C.red}`:"2px solid transparent",transition:"color .15s ease, border-color .15s ease"}}>{t.l}</button>})}
           </div>
         </div>
@@ -10036,6 +10060,7 @@ export default function App(){
                   const isConfirmed=r.finalConfirm==="확인";
                   const result=r.precision.result;   // OK / NG / 미판정
                   const periodTxt=r.caseData?`P${r.caseData.periodNo}`:`P${((itemAllPeriods(r.item)||[]).find(p=>p.measurementId===r.measurement?.id)?.num||"—")}`;
+                  const isCollapsed=!!collapsedPrecisionCaseKeys[r.key];
 
                   // 3단계 진행 상태. 각 단계는 완료 / 진행 / 대기 셋 중 하나입니다.
                   //   완료 = 검정 채움, 진행 = 검정 테두리, 대기 = 회색 테두리
@@ -10046,17 +10071,22 @@ export default function App(){
                   ];
 
                   return <div key={r.key} onClick={()=>{setPrecisionSelCaseId(r.key);setSelKey(r.item.code);}}
-                    style={{...card,borderColor:active?C.charcoalDk:C.bd,padding:"16px 18px",cursor:"pointer",
+                    style={{...card,borderColor:C.bd2,padding:"16px 18px",cursor:"pointer",
                       display:"flex",alignItems:"center",gap:20,flexWrap:"wrap",
                       boxShadow:active?UI.shHover:UI.sh,transition:"box-shadow .15s, border-color .15s"}}>
 
                     {/* 좌측 · 품목과 인계 사유 */}
                     <div style={{minWidth:0,flex:"1 1 280px"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:isCollapsed?0:6}}>
                         <span style={{...T.cardTitle}}>{displayItemName(r.item,lang)}</span>
                         <span style={{...T.caption,color:C.text4}}>{r.item.code} · {r.item.dept} · {periodTxt}</span>
+                        <button type="button" onClick={event=>{event.stopPropagation();setCollapsedPrecisionCaseKeys(previous=>({...previous,[r.key]:!previous[r.key]}));}}
+                          aria-expanded={!isCollapsed} aria-label={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"} title={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"}
+                          style={{width:26,height:26,marginLeft:"auto",display:"inline-flex",alignItems:"center",justifyContent:"center",border:0,background:"transparent",color:C.text3,cursor:"pointer",padding:0,flex:"0 0 auto"}}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{transform:isCollapsed?"rotate(-90deg)":"rotate(0deg)",transition:"transform .15s"}}><path d="m6 9 6 6 6-6"/></svg>
+                        </button>
                       </div>
-                      <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+                      {!isCollapsed&&<div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
                         <span style={{...T.caption}}>인계 사유 <strong style={{color:C.text2,fontWeight:600}}>{r.triggerLabel}</strong></span>
                         <span style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
                           <span style={{...T.caption}}>대상 원소</span>
@@ -10066,11 +10096,11 @@ export default function App(){
                                 border:`1px solid ${C.bd2}`,color:C.text1,fontSize:11,fontWeight:500}}>{el}</span>)
                             : <span style={{...T.caption,color:C.text4}}>—</span>}
                         </span>
-                      </div>
+                      </div>}
                     </div>
 
                     {/* 우측 · 진행 단계와 결과 */}
-                    <div style={{display:"flex",alignItems:"center",gap:18,marginLeft:"auto",flex:"0 0 auto",flexWrap:"wrap"}}>
+                    {!isCollapsed&&<div style={{display:"flex",alignItems:"center",gap:18,marginLeft:"auto",flex:"0 0 auto",flexWrap:"wrap"}}>
                       <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:7}}>
                         <div style={{display:"flex",alignItems:"center"}}>
                           {steps.map((st,i)=>{
@@ -10099,7 +10129,7 @@ export default function App(){
                       </div>
 
                       <span onClick={e=>{e.stopPropagation();setPrecisionSelCaseId(r.key);setPrecisionDetailCaseId(r.key);setSelKey(r.item.code);setTab("precision-detail");}}><DetailArrowButton active={precisionDetailCaseId===r.key}/></span>
-                    </div>
+                    </div>}
                   </div>;
                 })}
             </div>
