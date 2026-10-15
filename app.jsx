@@ -6748,25 +6748,6 @@ export default function App(){
     try{ return localStorage.getItem("xrf-ui-language")==="en"?"en":"ko"; }catch{return "ko";}
   });
   const [tab,setTab]=useState("list");
-  const tabHistoryRef=useRef([]);
-  const currentTabRef=useRef("list");
-  const skipTabHistoryRef=useRef(false);
-  const [canGoBack,setCanGoBack]=useState(false);
-  useEffect(()=>{
-    const previousTab=currentTabRef.current;
-    if(previousTab===tab) return;
-    if(skipTabHistoryRef.current) skipTabHistoryRef.current=false;
-    else tabHistoryRef.current=[...tabHistoryRef.current,previousTab].slice(-20);
-    currentTabRef.current=tab;
-    setCanGoBack(tabHistoryRef.current.length>0);
-  },[tab]);
-  const goToPreviousTab=useCallback(()=>{
-    const previousTab=tabHistoryRef.current.pop();
-    if(!previousTab) return;
-    skipTabHistoryRef.current=true;
-    setCanGoBack(tabHistoryRef.current.length>0);
-    setTab(previousTab);
-  },[]);
   const [fs,setFs]=useState(()=>initialSharedListView?.filters||createEmptyMaterialListFilters());
   const [openFilter,setOpenFilter]=useState(null);
   const [fPos,setFPos]=useState({top:0,left:0});
@@ -9208,6 +9189,12 @@ export default function App(){
   const fileInputOverlay={position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%"};
   const uploadBoxStyle={position:"relative",display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:`1px dashed ${C.bd2}`,background:C.card,color:C.text3,fontSize:12,fontWeight:600,cursor:"pointer",overflow:"hidden",textAlign:"center",padding:"0 12px",boxSizing:"border-box"};
   const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 / 변경 관리"}];
+  const renderTabReturnButton=(label,onClick)=> <button type="button" onClick={onClick} className="pill-btn"
+    style={{height:34,padding:"0 12px",display:"inline-flex",alignItems:"center",gap:6,background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,fontWeight:600,color:C.text3,whiteSpace:"nowrap"}}>
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+    <span>{label}</span>
+  </button>;
+  const materialListReturnLabel=lang==="en"?"Material list":"부자재 리스트로";
   const fhp={filterState:fs,openFilter,onOpen:handleOpen,lang};
   const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang};
   const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
@@ -9733,10 +9720,6 @@ export default function App(){
         </div>
         <div style={{background:C.charcoalDk}}>
           <div className="app-shell app-tabs">
-            <button type="button" onClick={goToPreviousTab} disabled={!canGoBack} aria-label="이전 화면" title="이전 화면"
-              style={{width:36,height:36,display:"inline-flex",alignItems:"center",justifyContent:"center",padding:0,border:0,background:"transparent",color:"#fff",opacity:canGoBack?1:.35,cursor:canGoBack?"pointer":"default",flex:"0 0 auto"}}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
-            </button>
             {TABS.map(t=>{const activeTab=tab===t.id || (tab==="precision-detail"&&t.id==="precision");return <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"9px 18px",background:"none",border:"none",cursor:"pointer",fontSize:12,fontWeight:activeTab?600:400,color:activeTab?"#fff":"rgba(255,255,255,.55)",borderBottom:activeTab?`2px solid ${C.red}`:"2px solid transparent",transition:"color .15s ease, border-color .15s ease"}}>{t.l}</button>})}
           </div>
         </div>
@@ -9970,12 +9953,13 @@ export default function App(){
 
         {tab==="xrf"&&(
           <div>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18,flexWrap:"wrap"}}>
               <span style={{...T.section}}>품목 선택</span>
               <select data-i18n-skip="true" value={selKey||""} onChange={e=>{setSelKey(e.target.value);setSelPeriodNum(null);}} style={{...inp,minWidth:220,width:"min(100%, 420px)",maxWidth:"100%"}}>
                 <option value="">{lang==="en"?"-- Select --":"-- 선택하세요 --"}</option>
                 {xrfSelectableItems.map(i=><option key={i.code} value={i.code}>{i.code}  |  {i.dept}  |  {displayItemName(i,lang)}</option>)}
               </select>
+              <div style={{marginLeft:"auto"}}>{renderTabReturnButton(materialListReturnLabel,()=>setTab("list"))}</div>
             </div>
             {pendingDiscontinueRequestItems.length>0&&<div style={{...card,padding:"12px 14px",marginBottom:14,background:C.alt}}>
               <div style={{fontSize:11,fontWeight:700,color:C.charcoal,marginBottom:8}}>단종 처리 요청 리스트</div>
@@ -10348,6 +10332,7 @@ export default function App(){
                 <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>건 · 전체 {precisionRows.length}건</span>
                 <span style={{fontSize:10.5,color:C.text4}}>{lang==="en"?"Grouped by item · Newest measurement first":"품목별 구분 · 측정일 최신순"}</span>
                 {precisionHasFilters&&<button type="button" onClick={handlePrecisionFiltersClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
+                <div style={{marginLeft:"auto"}}>{renderTabReturnButton(materialListReturnLabel,()=>setTab("list"))}</div>
               </div>
               <FilterChips filterState={precisionFilters} onClear={handlePrecisionFilterClear} onClearAll={handlePrecisionFiltersClearAll}/>
               <div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label="품목별 정밀분석 발생 이력 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
@@ -10393,7 +10378,7 @@ export default function App(){
                 <div style={{...T.cardTitle}}>정밀분석 상세</div>
                 <div style={{fontSize:11,color:C.text4,marginTop:3}}>정밀분석 인계, 원본/결과 파일, 원소 함유 확인을 항목별로 관리합니다.</div>
               </div>
-              <button onClick={()=>setTab("precision")} className="pill-btn" style={{padding:"8px 15px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,fontWeight:500,color:C.text3}}>목록으로</button>
+              {renderTabReturnButton(lang==="en"?"Precision analysis list":"정밀분석 목록으로",()=>setTab("precision"))}
             </div>
             {selected
               ? <PrecisionDetailPanel key={selected.key} selected={selected} lang={lang} card={card} inp={inp} updatePrecisionOverride={updatePrecisionOverride} markPrecisionRequested={markPrecisionRequested} reloadSharePointDb={reloadSharePointDb} onPhotoPreview={setPhotoPreview}/>
@@ -10428,6 +10413,10 @@ export default function App(){
             return ["H","Not Allowed"].includes(finalRisk) || latestXrf==="NG" || complianceKey==="overdue";
           }).slice(0,30);
           return <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+              <div style={{...T.cardTitle}}>위험도 현황</div>
+              {renderTabReturnButton(materialListReturnLabel,()=>setTab("list"))}
+            </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["활성 품목",active.length,C.charcoal],["High Risk",highRisk.length,C.red],["주기 미이행",stats.overdue,C.redDk],["후속분석 진행중",workflowCounts.total,C.orange]].map(([l,n,c])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{fontSize:25,fontWeight:700,color:c,lineHeight:1}}>{n}</div><div style={{fontSize:11,fontWeight:700,color:C.text1,marginTop:5}}>{l}</div></div>)}</div>
             <div className="chart-grid" style={{display:"grid",gridTemplateColumns:"1.15fr 1fr 1fr",gap:14}}>
               <ChartCard title="측정 도래 예정" hint={`${TODAY_STR} 기준 향후 6개월`}>
@@ -10540,10 +10529,13 @@ export default function App(){
                 <div>
                   <div style={{...T.pageTitle,marginBottom:5}}>품목 / 변경 관리</div>
                 </div>
-                <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
-                  {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
-                    <button key={m} onClick={()=>handleRegistrationModeClick(m)} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
-                  ))}
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  {renderTabReturnButton(materialListReturnLabel,()=>setTab("list"))}
+                  <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
+                    {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
+                      <button key={m} onClick={()=>handleRegistrationModeClick(m)} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
