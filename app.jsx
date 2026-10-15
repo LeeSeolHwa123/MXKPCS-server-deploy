@@ -374,8 +374,19 @@ const FILTER_LABELS = {
   nextDue: {},
   dDay: {},
   dueMonth: {},
+  paPeriod: {},
+  paCode: {},
+  paName: {},
+  paDept: {},
+  paMeasuredDate: {},
+  paElements: {},
+  paReason: {},
+  paHandoff: {"인계 필요":"인계 필요","인계 완료":"인계 완료"},
+  paReport: {"미첨부":"미첨부","첨부 완료":"첨부 완료"},
+  paConfirm: {"미확정":"미확정","최종 컨펌":"최종 컨펌"},
+  paResult: {OK:"OK",NG:"NG","—":"—"},
 };
-const COL_NAMES = {category:"분류", code:"품번", name:"품목명", dept:"부서", cycle:"주기", firstDate:"최초 등록", xrf:"XRF 결과", compliance:"현재 상태", precision:"정밀분석", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", nextDue:"다음 마감", dDay:"D-DAY", dueMonth:"도래월"};
+const COL_NAMES = {category:"분류", code:"품번", name:"품목명", dept:"부서", cycle:"주기", firstDate:"최초 등록", xrf:"XRF 결과", compliance:"현재 상태", precision:"정밀분석", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", nextDue:"다음 마감", dDay:"D-DAY", dueMonth:"도래월", paPeriod:"발생 주기", paCode:"품번", paName:"품목명", paDept:"부서", paMeasuredDate:"측정일", paElements:"대상 원소", paReason:"인계 사유", paHandoff:"인계 상태", paReport:"성적서", paConfirm:"컨펌 상태", paResult:"정밀 결과"};
 const UNIQUE_VALS = {
   category: ["existing","new","changed"],
   dept: ["Assembly","Common","Molding","Plating","Stamping"],
@@ -1484,6 +1495,8 @@ const UI_EN_MAP = {
   // ── 공통 라벨 ──
   "분류":"Category","품번":"Part No.","품목명":"Item Name","부서":"Department","주기":"Cycle",
   "최초 등록":"First Registered","이행 현황":"Compliance","현재 상태":"Current Status",
+  "발생 주기":"Occurrence Period","대상 원소":"Target Elements","인계 사유":"Transfer Reason",
+  "인계 상태":"Transfer Status","컨펌 상태":"Confirmation Status","정밀 결과":"Precision Result",
   "승인 상태":"Approval Status","다음 마감":"Next Due","상세 보기":"View Details",
   "검사주기":"Inspection Cycle","공정명":"Process","담당자":"Owner",
   "요청일":"Request Date","측정일":"Measurement Date","최종 사용일":"Final Use Date",
@@ -1520,6 +1533,7 @@ const UI_EN_MAP = {
   "파싱 대기":"Awaiting Parsing","시트":"Sheet","데이터 부족":"Insufficient Data",
   "결과 없음":"No Result","결과 대기":"Awaiting Result","측정 없음":"No Measurement",
   "측정 대기":"Awaiting Measurement","결과 확인":"Review Result","오류":"Error",
+  "미첨부":"Not Attached","첨부 완료":"Attached","미확정":"Not Confirmed","최종 컨펌":"Final Confirmation",
 
   // ── 주기 / C&R ──
   "월 1회":"Monthly","반기 1회":"Semiannual","연 1회":"Annual","반기":"Semiannual",
@@ -1635,6 +1649,7 @@ const UI_EN_MAP = {
   "조건에 맞는 품목이 없습니다.":"No items match the current filters.",
   "품목을 선택하면 XRF 분석 결과가 표시됩니다.":"Select an item to view its XRF analysis.",
   "정밀분석 대상이 없습니다.":"There are no precision analysis targets.",
+  "조건에 맞는 정밀분석 항목이 없습니다.":"No precision analysis cases match the current filters.",
   "선택된 정밀분석 항목이 없습니다.":"No precision analysis case is selected.",
   "정밀분석 대상 원소가 없습니다.":"There are no target elements for precision analysis.",
   "현재 조치 대상이 없습니다.":"There is no item requiring action.",
@@ -3434,11 +3449,97 @@ function itemAllPeriods(item){
     return !!due && dateLte(due,stopDate);
   });
 }
+function precisionPeriodicSequence(item,measurement){
+  const measurementId=String(measurement?.id||measurement?.measurementId||"").trim();
+  const parentMeasurementId=String(measurement?.parentMeasurementId||"").trim();
+  const targetId=normalizeMeasurementRole(measurement?.role||measurement?.measurementRole||"")==="Retest"
+    ? parentMeasurementId
+    : measurementId;
+  if(!targetId) return null;
+  const periodicMeasurements=itemMeasurementRecords(item).filter(candidate=>
+    normalizeMeasurementRole(candidate?.role||candidate?.measurementRole||"")==="Periodic"
+  );
+  const index=periodicMeasurements.findIndex(candidate=>String(candidate?.id||candidate?.measurementId||"").trim()===targetId);
+  return index>=0 ? index+1 : null;
+}
+function precisionCasePeriodInfo(row){
+  const measurement=row?.measurement||null;
+  const measurementId=String(measurement?.id||measurement?.measurementId||"").trim();
+  const parentMeasurementId=String(measurement?.parentMeasurementId||"").trim();
+  const linkedIds=new Set([measurementId,parentMeasurementId].filter(Boolean));
+  const measuredDate=dateOnly(measurement?.date||measurement?.measuredDate)||"";
+
+  const casePeriodRaw=row?.caseData?.periodNo;
+  if(casePeriodRaw!==null && casePeriodRaw!==undefined && casePeriodRaw!==""){
+    const casePeriod=Number(casePeriodRaw);
+    if(Number.isFinite(casePeriod)) return {label:casePeriod===0?"R":`P${casePeriod}`,kind:casePeriod===0?"R":"P",sequence:casePeriod,measuredDate};
+  }
+  const storedPeriodRaw=measurement?.periodNo;
+  if(storedPeriodRaw!==null && storedPeriodRaw!==undefined && storedPeriodRaw!==""){
+    const storedPeriod=Number(storedPeriodRaw);
+    if(Number.isFinite(storedPeriod)) return {label:storedPeriod===0?"R":`P${storedPeriod}`,kind:storedPeriod===0?"R":"P",sequence:storedPeriod,measuredDate};
+  }
+
+  const measurementRole=normalizeMeasurementRole(measurement?.role||measurement?.measurementRole||"");
+  if(measurementRole==="Initial") return {label:"R",kind:"R",sequence:0,measuredDate};
+
+  // 문서 규칙대로 각 품목의 최초 Initial 측정일과 Final Risk 관리주기로 생성한 Pn에 연결합니다.
+  // 정기 관리 제외 품목의 실제 Periodic 이력도 화면에서는 P1/P2 순번으로 표시하되,
+  // 이 표시 순번은 이행·도래 주기 계산에는 사용하지 않습니다.
+  const displayPeriods=itemXrfDisplayPeriods(row?.item)||[];
+  const matchedPeriod=displayPeriods.find(candidate=>
+    periodMeasurementIds(candidate).some(id=>linkedIds.has(String(id)))
+    || linkedIds.has(String(candidate?.measurementId||""))
+  ) || displayPeriods.find(candidate=>
+    measuredDate && periodMeasuredDates(candidate).includes(measuredDate)
+  );
+  if(matchedPeriod){
+    const label=periodLabel(matchedPeriod);
+    const pMatch=String(label).match(/^P(\d+)$/i);
+    const fMatch=String(label).match(/^F(\d+)$/i);
+    if(fMatch){
+      const periodicSequence=precisionPeriodicSequence(row?.item,measurement);
+      if(periodicSequence!==null) return {label:`P${periodicSequence}`,kind:"P",sequence:periodicSequence,measuredDate};
+    }
+    return {
+      label,
+      kind:pMatch?"P":fMatch?"F":(label==="R"?"R":"UNKNOWN"),
+      sequence:pMatch?Number(pMatch[1]):fMatch?Number(fMatch[1]):0,
+      measuredDate,
+    };
+  }
+
+  const periodicSequence=precisionPeriodicSequence(row?.item,measurement);
+  if(periodicSequence!==null) return {label:`P${periodicSequence}`,kind:"P",sequence:periodicSequence,measuredDate};
+  return {label:"미연결",kind:"UNKNOWN",sequence:-1,measuredDate};
+}
+function precisionCasePeriodLabel(row){
+  return precisionCasePeriodInfo(row).label;
+}
+function precisionCaseFilterValues(row,column,lang="ko"){
+  const isRequested=row?.precision?.requestStatus==="REQUESTED";
+  const hasReport=!!(row?.precision?.resultFileId||row?.precision?.reportNo);
+  const isConfirmed=row?.finalConfirm==="확인";
+  const values={
+    paPeriod:[precisionCasePeriodLabel(row)],
+    paCode:[String(row?.item?.code||"—")],
+    paName:[String(displayItemName(row?.item,lang)||"—")],
+    paDept:[String(row?.item?.dept||"—")],
+    paMeasuredDate:[dateOnly(row?.measurement?.date||row?.measurement?.measuredDate)||"—"],
+    paElements:(row?.targets||[]).map(value=>String(value)),
+    paReason:[String(row?.triggerLabel||"—")],
+    paHandoff:[isRequested?"인계 완료":"인계 필요"],
+    paReport:[hasReport?"첨부 완료":"미첨부"],
+    paConfirm:[isConfirmed?"최종 컨펌":"미확정"],
+    paResult:[String(row?.precision?.result||"—")],
+  };
+  return values[column]||[];
+}
 
 // XRF 분석 탭은 "정기 관리주기"와 "실제 XRF 측정 이력"을 같은 데이터 원본에서 보여 줍니다.
-// Final Risk가 Not Allowed이면 정기 Pn은 생성하지 않지만, R 이후 실제로 수행된 XRF까지 숨기면
-// 위험도 현황의 최신 XRF와 XRF 분석 탭이 서로 다른 것처럼 보이므로 미연결 측정을 F1, F2...로 표시합니다.
-// F(Follow-up)는 실제 측정 이력 표시용이며 정기 Pn/이행률/다음 도래일 계산에는 절대 포함하지 않습니다.
+// Final Risk가 Not Allowed이면 정기 Pn은 생성하지 않지만, R 이후 실제로 수행된 Periodic 이력은
+// 화면에서 P1, P2... 순번으로 표시합니다. 이 보조 Pn은 실제 측정 이력 표시용이며
+// 정기 Pn/이행률/다음 도래일 계산에는 절대 포함하지 않습니다.
 function itemXrfDisplayPeriods(item){
   const base=itemAllPeriods(item);
   if(!item || isDiscontinueRequestItem(item)) return base;
@@ -3467,8 +3568,8 @@ function itemXrfDisplayPeriods(item){
     return {
       num:900001+idx,
       displaySeq:900001+idx,
-      label:`F${idx+1}`,
-      displayLabel:`F${idx+1}`,
+      label:`P${idx+1}`,
+      displayLabel:`P${idx+1}`,
       isReference:false,
       isSupplementalMeasurement:true,
       isCompliancePeriod:false,
@@ -3495,7 +3596,7 @@ function itemXrfDisplayPeriods(item){
       cycle:"Not Available",
       cycleMonths:null,
       windowDays:null,
-      sourceBasis:"R 이후 실제 XRF 측정 이력 · 정기 Pn과 별도 표시"
+      sourceBasis:"R 이후 실제 Periodic 측정 이력 · 주기 관리 제외 상태에서 화면용 Pn으로만 표시"
     };
   });
   return [...base,...followups];
@@ -3662,28 +3763,17 @@ function currentCompliancePeriod(item){
     .sort((a,b)=>String(a.due).localeCompare(String(b.due)));
   if(!periods.length) return null;
 
-  // 마감일이 지난 가장 최근 주기가 미측정이면 현재 상태는 계속 미이행이다.
-  const latestPast=periods.filter(p=>dateLt(p.due,TODAY_STR)).slice(-1)[0] || null;
-  if(latestPast && !latestPast.measured) return latestPast;
+  // 마감일이 지난 가장 최근 미측정 주기가 있으면 현재 상태는 계속 미이행이다.
+  const latestPastOpen=periods.filter(p=>!p.measured && dateLt(p.due,TODAY_STR)).slice(-1)[0] || null;
+  if(latestPastOpen) return latestPastOpen;
 
-  // 오늘이 마감일이거나 아직 마감 전인 첫 주기가 현재 판정 대상이다.
-  const currentOrNext=periods.find(p=>!dateLt(p.due,TODAY_STR));
-  return currentOrNext || latestPast;
+  // 오늘이 마감일이거나 아직 마감 전인 첫 미측정 주기가 현재 판정 대상이다.
+  // 예정일 전에 측정 완료된 주기는 건너뛰어 부자재 리스트의 "다음 마감"과 일치시킵니다.
+  return periods.find(p=>!p.measured && !dateLt(p.due,TODAY_STR)) || null;
 }
 function nextDueOfItem(item){
-  if(!isComplianceTarget(item)) return null;
-  const periods=itemStatusPeriods(item)
-    .filter(p=>p?.due)
-    .sort((a,b)=>String(a.due).localeCompare(String(b.due)));
-  if(!periods.length) return null;
-
-  // 이미 측정이 완료된 주기의 도래일이 아니라, 실제로 다음에 관리해야 할 미측정 주기의 도래일을 반환합니다.
-  // 마감 초과 미측정 건이 있으면 해당 기한을 우선 보여 주어 D+ 상태를 유지합니다.
-  const overdue=periods.filter(p=>!p.measured && dateLt(p.due,TODAY_STR)).slice(-1)[0] || null;
-  if(overdue) return overdue.due;
-
-  const nextOpen=periods.find(p=>!p.measured && !dateLt(p.due,TODAY_STR));
-  return nextOpen?.due || null;
+  // 리스트의 날짜와 XRF 입력 대상이 갈라지지 않도록 현재 미측정 관리주기를 단일 기준으로 사용합니다.
+  return currentCompliancePeriod(item)?.due || null;
 }
 function openDuePeriodsInMonth(item,monthKey){
   if(!monthKey || !isComplianceTarget(item)) return [];
@@ -4005,10 +4095,10 @@ function buildVisualUatComplianceFixtures(){
     measurements:[visualUatInitial("VU-CMP-L19",addMonthsISO(TODAY_STR,-1),"M")],
     crType:"직접접촉+비잔류",type:"Facility"
   });
-  push("VU-CMP-L20","Supplemental Measured F1",{
+  push("VU-CMP-L20","Supplemental Measured P1",{
     measurements:[
       visualUatInitial("VU-CMP-L20",addMonthsISO(TODAY_STR,-2),"H"),
-      visualUatPeriodic("VU-CMP-L20",addMonthsISO(TODAY_STR,-1),"L",{suffix:"F1",periodNo:1})
+      visualUatPeriodic("VU-CMP-L20",addMonthsISO(TODAY_STR,-1),"L",{suffix:"P1",periodNo:1})
     ],
     crType:"직접접촉+잔류"
   });
@@ -4068,7 +4158,7 @@ const VISUAL_UAT_COMPLIANCE_EXPECTATIONS=Object.freeze([
   {code:"VU-CMP-L17",expected:{cycle:"Monthly",compactLabels:["P3","P4","P5","P6"],compactCount:4}},
   {code:"VU-CMP-L18",expected:{cycle:"Annual",p1MeasurementCount:2}},
   {code:"VU-CMP-L19",expected:{cycle:"Not Available",currentStatus:"notAvailable",regularPeriodCount:0,allLabels:["R"]}},
-  {code:"VU-CMP-L20",expected:{cycle:"Not Available",currentStatus:"notAvailable",displayLabels:["R","F1"],supplementalStatus:"measured"}}
+  {code:"VU-CMP-L20",expected:{cycle:"Not Available",currentStatus:"notAvailable",displayLabels:["R","P1"],supplementalStatus:"measured"}}
 ]);
 
 function visualUatComplianceSelfCheckRow(item,manifest){
@@ -4121,7 +4211,7 @@ function visualUatComplianceSelfCheckRow(item,manifest){
 const VISUAL_UAT_COMPLIANCE_RENDER_PERIODS=Object.freeze([
   {num:0,displayLabel:"R",isReference:true,referenceDate:TODAY_STR,measured:TODAY_STR,measuredDates:[TODAY_STR],status:"reference"},
   {num:1,displayLabel:"P1",due:addDaysISO(TODAY_STR,-30),measured:addDaysISO(TODAY_STR,-35),measuredDates:[addDaysISO(TODAY_STR,-35)],status:"compliant"},
-  {num:2,displayLabel:"F1",measured:addDaysISO(TODAY_STR,-25),measuredDates:[addDaysISO(TODAY_STR,-25)],status:"measured",isSupplementalMeasurement:true},
+  {num:2,displayLabel:"P1",measured:addDaysISO(TODAY_STR,-25),measuredDates:[addDaysISO(TODAY_STR,-25)],status:"measured",isSupplementalMeasurement:true},
   {num:3,displayLabel:"P3",due:addDaysISO(TODAY_STR,20),measured:TODAY_STR,measuredDates:[TODAY_STR],status:"early"},
   {num:4,displayLabel:"P4",due:addDaysISO(TODAY_STR,-10),measured:addDaysISO(TODAY_STR,-5),measuredDates:[addDaysISO(TODAY_STR,-5)],status:"late",daysOver:5},
   {num:5,displayLabel:"P5",due:addDaysISO(TODAY_STR,-5),measured:null,status:"overdue",daysOver:5},
@@ -5438,7 +5528,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
 /* ══════════════════════════════════════════════════════════════════════════════
    원소별 XRF 추세 차트 (XRF Trend Chart)
 
-   - 가로축: 실제 측정이 완료된 관리주기(R / P1 / P2 ... / F1) 전체.
+   - 가로축: 실제 측정이 완료된 관리주기와 보조 측정 순번(R / P1 / P2 ...) 전체.
      같은 주기의 복수 측정과 Retest는 해당 주기의 마지막 유효값으로 대표합니다.
    - 세로축: Content(ppm). Legal Limit(법적 규제)과 Internal Limit(법적 × 70%)
      두 기준선을 항상 함께 그립니다.
@@ -6599,9 +6689,13 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
 
 const MATERIAL_LIST_PAGE_SIZE=100;
 const MATERIAL_LIST_FILTER_KEYS=["category","photo","code","name","dept","cycle","firstDate","xrf","compliance","precision","crLevel","risk","retest","approval","lifecycle","nextDue","dDay","dueMonth"];
+const PRECISION_FILTER_KEYS=["paPeriod","paCode","paName","paDept","paMeasuredDate","paElements","paReason","paHandoff","paReport","paConfirm","paResult"];
 
 function createEmptyMaterialListFilters(){
   return Object.fromEntries(MATERIAL_LIST_FILTER_KEYS.map(key=>[key,[]]));
+}
+function createEmptyPrecisionFilters(){
+  return Object.fromEntries(PRECISION_FILTER_KEYS.map(key=>[key,[]]));
 }
 
 function readSharedMaterialListView(){
@@ -6677,7 +6771,11 @@ export default function App(){
   const [selPeriodPage,setSelPeriodPage]=useState(null);
   const [precisionSelCaseId,setPrecisionSelCaseId]=useState(null);
   const [precisionDetailCaseId,setPrecisionDetailCaseId]=useState(null);
-  const [collapsedPrecisionCaseKeys,setCollapsedPrecisionCaseKeys]=useState({});
+  const [collapsedPrecisionGroupKeys,setCollapsedPrecisionGroupKeys]=useState({});
+  const [precisionFilters,setPrecisionFilters]=useState(()=>createEmptyPrecisionFilters());
+  const [precisionOpenFilter,setPrecisionOpenFilter]=useState(null);
+  const [precisionFilterPos,setPrecisionFilterPos]=useState({top:0,left:0});
+  const [precisionSearch,setPrecisionSearch]=useState("");
   const [precisionOverrides,setPrecisionOverrides]=useState({});
   const precisionSaveTimerRef=useRef(new Map());
   const [sharePointItems,setSharePointItems]=useState([]);
@@ -6975,6 +7073,79 @@ export default function App(){
       }];
     }).sort((a,b)=>String(b.measurement?.date||b.measurement?.measuredDate||b.precision?.requestedAt||"").localeCompare(String(a.measurement?.date||a.measurement?.measuredDate||a.precision?.requestedAt||"")));
   },[allItems,runtimePrecisionOverrides]);
+  const precisionFilterValues=useMemo(()=>{
+    const output={};
+    PRECISION_FILTER_KEYS.forEach(column=>{
+      output[column]=[...new Set(precisionRows.flatMap(row=>precisionCaseFilterValues(row,column,lang)).filter(Boolean))]
+        .sort((a,b)=>String(a).localeCompare(String(b),"ko",{numeric:true,sensitivity:"base"}));
+    });
+    return output;
+  },[precisionRows,lang]);
+  const filteredPrecisionRows=useMemo(()=>{
+    const query=String(precisionSearch||"").trim().toLocaleLowerCase();
+    return precisionRows.filter(row=>{
+      for(const column of PRECISION_FILTER_KEYS){
+        const selectedValues=precisionFilters[column]||[];
+        if(!selectedValues.length) continue;
+        const rowValues=precisionCaseFilterValues(row,column,lang);
+        if(!selectedValues.some(value=>rowValues.includes(value))) return false;
+      }
+      if(!query) return true;
+      const searchable=[
+        precisionCasePeriodLabel(row),row?.item?.code,row?.item?.name,row?.item?.nameEn,row?.item?.dept,
+        row?.measurement?.date,row?.measurement?.measuredDate,row?.triggerLabel,...(row?.targets||[]),
+        ...PRECISION_FILTER_KEYS.flatMap(column=>precisionCaseFilterValues(row,column,lang))
+      ].filter(Boolean).join(" ").toLocaleLowerCase();
+      return searchable.includes(query);
+    });
+  },[precisionRows,precisionFilters,precisionSearch,lang]);
+  const precisionGroups=useMemo(()=>{
+    const groups=new Map();
+    filteredPrecisionRows.forEach(row=>{
+      // 실제 DB Item_ID를 최우선 그룹 키로 사용합니다.
+      // DB ID가 없는 임시/과거 데이터만 화면용 고유키로 보완합니다.
+      const dbItemId=String(row?.item?.itemId||row?.item?.Item_ID||"").trim();
+      const groupKey=dbItemId?`itemId:${dbItemId}`:materialListSelectionKey(row?.item);
+      if(!groups.has(groupKey)) groups.set(groupKey,{
+        key:groupKey,
+        item:row.item,
+        rows:[],
+      });
+      const group=groups.get(groupKey);
+      group.rows.push(row);
+    });
+    return [...groups.values()]
+      .map(group=>{
+        const rows=group.rows.sort((a,b)=>{
+          const byDate=String(b?.measurement?.date||b?.measurement?.measuredDate||"").localeCompare(String(a?.measurement?.date||a?.measurement?.measuredDate||""));
+          if(byDate) return byDate;
+          const aPeriod=precisionCasePeriodInfo(a);
+          const bPeriod=precisionCasePeriodInfo(b);
+          const byPeriod=Number(bPeriod.sequence||0)-Number(aPeriod.sequence||0);
+          if(byPeriod) return byPeriod;
+          return String(a?.key||"").localeCompare(String(b?.key||""),"ko",{numeric:true});
+        });
+        const periodLabels=[...new Set(rows.map(row=>precisionCasePeriodLabel(row)))].sort((a,b)=>{
+          if(a==="R" || b==="R") return a==="R"?-1:1;
+          const aMatch=String(a).match(/^P(\d+)$/i);
+          const bMatch=String(b).match(/^P(\d+)$/i);
+          if(aMatch&&bMatch) return Number(aMatch[1])-Number(bMatch[1]);
+          return String(a).localeCompare(String(b),"ko",{numeric:true});
+        });
+        return {
+          ...group,
+          rows,
+          periodLabels,
+          newestMeasuredDate:dateOnly(rows[0]?.measurement?.date||rows[0]?.measurement?.measuredDate)||"",
+        };
+      })
+      .sort((a,b)=>{
+        // 최근 정밀분석 측정이 있는 품목부터, 품목 내부에서도 최신 측정부터 표시합니다.
+        const byDate=String(b.newestMeasuredDate||"").localeCompare(String(a.newestMeasuredDate||""));
+        if(byDate) return byDate;
+        return String(a?.item?.code||"").localeCompare(String(b?.item?.code||""),"ko",{numeric:true});
+      });
+  },[filteredPrecisionRows]);
   const updatePrecisionOverride=useCallback((key,patch)=>{
     const fixtureOwner=allItems.find(item=>item.__visualUat && !!measurementById(item,key));
     if(fixtureOwner){
@@ -8921,6 +9092,7 @@ export default function App(){
     setFPos({top:rect.bottom+4,left});
   },[]);
   const handleOpen=(col,e)=>{
+    setPrecisionOpenFilter(null);
     const next=openFilter===col?null:col;
     if(next){
       const rect=e.currentTarget.getBoundingClientRect();
@@ -8960,6 +9132,62 @@ export default function App(){
     document.addEventListener("pointerdown",closeOnOutsidePointer,true);
     return ()=>document.removeEventListener("pointerdown",closeOnOutsidePointer,true);
   },[openFilter]);
+  const handlePrecisionFilterToggle=useCallback((column,value)=>{
+    setPrecisionFilters(previous=>{
+      const current=previous[column]||[];
+      return {...previous,[column]:current.includes(value)?current.filter(item=>item!==value):[...current,value]};
+    });
+  },[]);
+  const handlePrecisionFilterClear=useCallback(column=>{
+    setPrecisionFilters(previous=>({...previous,[column]:[]}));
+  },[]);
+  const handlePrecisionFiltersClearAll=useCallback(()=>{
+    setPrecisionFilters(createEmptyPrecisionFilters());
+    setPrecisionSearch("");
+  },[]);
+  const handlePrecisionFilterOpen=useCallback((column,event)=>{
+    setOpenFilter(null);
+    const next=precisionOpenFilter===column?null:column;
+    if(next){
+      const rect=event.currentTarget.getBoundingClientRect();
+      setPrecisionFilterPos({top:rect.bottom+4,left:Math.max(8,Math.min(rect.left,window.innerWidth-288))});
+    }
+    setPrecisionOpenFilter(next);
+  },[precisionOpenFilter]);
+  useLayoutEffect(()=>{
+    if(!precisionOpenFilter) return undefined;
+    let frame=0;
+    const syncPosition=()=>{
+      window.cancelAnimationFrame(frame);
+      frame=window.requestAnimationFrame(()=>{
+        const anchor=appRootRef.current?.querySelector(`[data-filter-header="${precisionOpenFilter}"]`);
+        if(!anchor) return;
+        const rect=anchor.getBoundingClientRect();
+        setPrecisionFilterPos({top:rect.bottom+4,left:Math.max(8,Math.min(rect.left,window.innerWidth-288))});
+      });
+    };
+    document.addEventListener("scroll",syncPosition,true);
+    window.addEventListener("resize",syncPosition);
+    return ()=>{
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("scroll",syncPosition,true);
+      window.removeEventListener("resize",syncPosition);
+    };
+  },[precisionOpenFilter]);
+  useEffect(()=>{
+    if(!precisionOpenFilter) return undefined;
+    const closeOnOutsidePointer=event=>{
+      const target=event.target;
+      if(target instanceof Element && (
+        target.closest('[data-filter-panel="1"]')
+        || target.closest(".precision-analysis-table")
+        || target.closest(`[data-filter-header="${precisionOpenFilter}"]`)
+      )) return;
+      setPrecisionOpenFilter(null);
+    };
+    document.addEventListener("pointerdown",closeOnOutsidePointer,true);
+    return ()=>document.removeEventListener("pointerdown",closeOnOutsidePointer,true);
+  },[precisionOpenFilter]);
   const gotoXrf=(code)=>{ setSelKey(code); setSelPeriodNum(null); setSelMeasurementId(null); setTab("xrf"); };
   const gotoPrecisionDetail=(item)=>{
     if(!item) return;
@@ -8994,6 +9222,26 @@ export default function App(){
   const uploadBoxStyle={position:"relative",display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:`1px dashed ${C.bd2}`,background:C.card,color:C.text3,fontSize:12,fontWeight:600,cursor:"pointer",overflow:"hidden",textAlign:"center",padding:"0 12px",boxSizing:"border-box"};
   const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 / 변경 관리"}];
   const fhp={filterState:fs,openFilter,onOpen:handleOpen,lang};
+  const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang};
+  const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
+  const precisionColumnWidths=lang==="en"
+    ? {period:86,code:100,name:190,dept:116,date:104,elements:112,reason:150,handoff:102,report:92,confirm:108,result:96,detail:38}
+    : {period:72,code:90,name:170,dept:84,date:92,elements:94,reason:126,handoff:84,report:74,confirm:84,result:78,detail:34};
+  const precisionColumns=[
+    {key:"period",el:<FH label="발생 주기" col="paPeriod" {...precisionFhp}/>,w:precisionColumnWidths.period},
+    {key:"code",el:<FH label="품번" col="paCode" {...precisionFhp}/>,w:precisionColumnWidths.code},
+    {key:"name",el:<FH label="품목명" col="paName" {...precisionFhp}/>,w:precisionColumnWidths.name},
+    {key:"dept",el:<FH label="부서" col="paDept" {...precisionFhp}/>,w:precisionColumnWidths.dept},
+    {key:"date",el:<FH label="측정일" col="paMeasuredDate" {...precisionFhp}/>,w:precisionColumnWidths.date},
+    {key:"elements",el:<FH label="대상 원소" col="paElements" {...precisionFhp}/>,w:precisionColumnWidths.elements},
+    {key:"reason",el:<FH label="인계 사유" col="paReason" {...precisionFhp}/>,w:precisionColumnWidths.reason},
+    {key:"handoff",el:<FH label="인계 상태" col="paHandoff" {...precisionFhp}/>,w:precisionColumnWidths.handoff},
+    {key:"report",el:<FH label="성적서" col="paReport" {...precisionFhp}/>,w:precisionColumnWidths.report},
+    {key:"confirm",el:<FH label="컨펌 상태" col="paConfirm" {...precisionFhp}/>,w:precisionColumnWidths.confirm},
+    {key:"result",el:<FH label="정밀 결과" col="paResult" {...precisionFhp}/>,w:precisionColumnWidths.result},
+    {key:"detail",el:null,w:precisionColumnWidths.detail},
+  ];
+  const precisionTableWeight=precisionColumns.reduce((sum,column)=>sum+column.w,0);
   // 한국어와 영문은 단어 길이가 크게 달라 별도 열 폭을 사용합니다.
   // 영문 레이아웃은 충분한 최소 폭을 확보하고 표 컨테이너에서 가로 스크롤합니다.
   const listColumnWidths=lang==="en"
@@ -9404,6 +9652,7 @@ export default function App(){
         }
       `}</style>
       {openFilter&&<FilterPanel column={openFilter} pos={fPos} selected={fs[openFilter]||[]} values={listFilterValues[openFilter]||[]} onToggle={handleToggle} onClear={handleClear} onClose={()=>setOpenFilter(null)}/>}
+      {precisionOpenFilter&&<FilterPanel column={precisionOpenFilter} pos={precisionFilterPos} selected={precisionFilters[precisionOpenFilter]||[]} values={precisionFilterValues[precisionOpenFilter]||[]} onToggle={handlePrecisionFilterToggle} onClear={handlePrecisionFilterClear} onClose={()=>setPrecisionOpenFilter(null)}/>}
       {photoPreview&&(
         <div role="presentation" onMouseDown={()=>setPhotoPreview(null)} onKeyDown={event=>{if(event.key==="Escape")setPhotoPreview(null);}} style={{position:"fixed",inset:0,zIndex:10020,display:"flex",alignItems:"center",justifyContent:"center",padding:"clamp(14px,3vw,34px)",background:"rgba(8,12,14,.82)",boxSizing:"border-box"}}>
           <div role="dialog" aria-modal="true" aria-label={lang==="en"?"Item photo preview":"품목 사진 크게 보기"} onMouseDown={event=>event.stopPropagation()} style={{position:"relative",width:photoPreview.displayWidth?`${photoPreview.displayWidth}px`:"min(720px,calc(100vw - 28px))",maxWidth:"calc(100vw - 28px)",maxHeight:"calc(100dvh - 28px)",display:"flex",flexDirection:"column",background:C.card,border:`1px solid ${C.bd2}`,borderRadius:14,overflow:"hidden",boxShadow:"0 24px 70px rgba(0,0,0,.42)"}}>
@@ -9633,7 +9882,9 @@ export default function App(){
                     const isDiscontinueItem=isDiscontinueRequestItem(item);
                     const isDiscontinuedExisting=isDiscontinuedItem(item) && !isDiscontinueItem;
                     const itemPeriods=itemListPeriods(item);
-                    const nextDue=nextDueOfItem(item);
+                    // 필터·화면·정밀분석 그룹이 모두 같은 "다음 마감" 표시값을 사용합니다.
+                    const nextDueValue=listNextDueValue(item);
+                    const nextDue=nextDueValue==="—" ? null : nextDueValue;
                     const approvalKey=approvalFilterKey(approvalStatusOf(item));
                     const isMeasuringItem=approvalKey==="measuring";
                     const isDiscontinueProcessed=isDiscontinueItem && (approvalKey==="approved" || approvalKey==="rejected");
@@ -9701,7 +9952,7 @@ export default function App(){
                         </td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center",cursor:itemHasPrecisionTrigger(item)||workflowForItem(item).precision||workflowForItem(item).precisionCases?.length?"pointer":"default"}} onClick={e=>{e.stopPropagation();const wf=workflowForItem(item);if(itemHasPrecisionTrigger(item)||wf.precision||wf.precisionCases?.length){setPrecisionSelCaseId(wf.caseData?.id||wf.activePrecisionCaseKey||wf.precisionCases?.[0]?.key||latestMeasurementOf(item)?.id||null);setSelKey(item.code);setTab("precision");}}}>{isDiscontinueItem?notTargetCell:<PrecisionWorkflowCell item={item}/>}</td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center"}}><ApprovalBadge status={approvalStatusOf(item)} context={isDiscontinueItem?"discontinue":"use"} detail={item.approvalDetail||item.retestRequiredElements||latestMeasurementOf(item)?.retestRequiredElements}/></td>
-                        <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={isCycleMuted?"—":(nextDue||"—")} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
+                        <td style={{...tdS,color:C.text3,fontSize:11,textAlign:"center"}}><AutoFitText value={nextDueValue} baseFontSize={11} minFontSize={7} align="center" style={{color:C.text3}}/></td>
                         <td style={{...tdS,padding:"0 6px",textAlign:"center"}}>{isCycleMuted||isReplaced?<span style={{color:C.text4,fontSize:11}}>—</span>:<DDayText dateStr={nextDue}/>}</td>
                         <td style={{...tdS,padding:"0 6px",whiteSpace:"nowrap",textAlign:"center"}}>
                           <span onClick={e=>{e.stopPropagation();gotoItemDetail(item);}}><DetailArrowButton active={selKey===item.code && ["xrf","precision-detail"].includes(tab)} title={itemHasPrecisionTrigger(item)||workflowForItem(item).precision||workflowForItem(item).precisionCases?.length?"정밀분석 상세 열기":"XRF 분석 열기"}/></span>
@@ -9728,7 +9979,7 @@ export default function App(){
 
         {tab==="xrf"&&(
           <div>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18,flexWrap:"wrap"}}>
               <span style={{...T.section}}>품목 선택</span>
               <select data-i18n-skip="true" value={selKey||""} onChange={e=>{setSelKey(e.target.value);setSelPeriodNum(null);}} style={{...inp,minWidth:220,width:"min(100%, 420px)",maxWidth:"100%"}}>
                 <option value="">{lang==="en"?"-- Select --":"-- 선택하세요 --"}</option>
@@ -10049,98 +10300,96 @@ export default function App(){
         )}
 
         {tab==="precision"&&(()=>{
-          const selected=precisionRows.find(r=>r.key===precisionSelCaseId) || precisionRows[0] || null;
+          const selected=precisionRows.find(r=>r.key===precisionSelCaseId) || null;
           const requestNeed=precisionRows.filter(r=>r.precision.requestStatus!=="REQUESTED").length;
-          const waiting=precisionRows.filter(r=>r.precision.requestStatus==="REQUESTED"&&r.precision.uploadStatus!=="UPLOADED").length;
           const completed=precisionRows.filter(r=>r.finalConfirm==="확인").length;
           const sent=precisionRows.filter(r=>r.precision.requestStatus==="REQUESTED").length;
+          const renderPrecisionRow=r=>{
+            const active=selected?.key===r.key;
+            const isRequested=r.precision.requestStatus==="REQUESTED";
+            const hasReport=!!(r.precision.resultFileId||r.precision.reportNo);
+            const isConfirmed=r.finalConfirm==="확인";
+            const result=r.precision.result;
+            const casePeriodLabel=precisionCasePeriodLabel(r);
+            const measuredDate=dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—";
+            const department=lang==="en"?translateUiTextKoToEn(r.item.dept||"—"):(r.item.dept||"—");
+            const statusBadge=(label,done)=><span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minHeight:22,padding:"0 8px",borderRadius:UI.pill,border:`1px solid ${done?C.charcoalDk:C.bd2}`,background:done?C.charcoalDk:C.card,color:done?"#fff":C.text4,fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>{label}</span>;
+            const tdStyle={height:58,padding:"6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",fontSize:11,color:C.text2,overflow:"hidden"};
+            return <tr key={r.key} onClick={()=>{
+              if(precisionSelCaseId===r.key){
+                setPrecisionSelCaseId(null);
+                return;
+              }
+              setPrecisionSelCaseId(r.key);
+              setSelKey(r.item.code);
+            }}
+              style={{background:active?UI.selRow:C.card,cursor:"pointer",transition:"background .12s"}}
+              onMouseEnter={event=>{if(!active)event.currentTarget.style.background=UI.hoverRow;}}
+              onMouseLeave={event=>{if(!active)event.currentTarget.style.background=C.card;}}>
+              <td style={tdStyle}><span style={{display:"inline-flex",minWidth:36,height:24,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{casePeriodLabel}</span></td>
+              <td style={{...tdStyle,fontWeight:700,overflowWrap:"anywhere"}}>{r.item.code}</td>
+              <td style={{...tdStyle,textAlign:"left",padding:"6px 9px"}}><div style={{fontWeight:650,color:C.text1,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{displayItemName(r.item,lang)}</div></td>
+              <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all"}}>{department}</td>
+              <td style={{...tdStyle,whiteSpace:"nowrap"}}>{measuredDate}</td>
+              <td style={tdStyle}><div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:27,height:20,padding:"0 5px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10.5,fontWeight:650}}>{element}</span>):"—"}</div></td>
+              <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{r.triggerLabel||"—"}</td>
+              <td style={tdStyle}>{statusBadge(isRequested?"인계 완료":"인계 필요",isRequested)}</td>
+              <td style={tdStyle}>{statusBadge(hasReport?"첨부 완료":"미첨부",hasReport)}</td>
+              <td style={tdStyle}>{statusBadge(isConfirmed?"최종 컨펌":"미확정",isConfirmed)}</td>
+              <td style={tdStyle}>{result?<AnalysisResultBadge value={result}/>:<span style={{color:C.text4,fontWeight:500}}>—</span>}</td>
+              <td style={{...tdStyle,padding:0}} onClick={event=>event.stopPropagation()}><span onClick={()=>{setPrecisionSelCaseId(r.key);setPrecisionDetailCaseId(r.key);setSelKey(r.item.code);setTab("precision-detail");}}><DetailArrowButton active={precisionDetailCaseId===r.key}/></span></td>
+            </tr>;
+          };
           return <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["정밀분석 대상",precisionRows.length],["인계 필요",requestNeed],["인계 완료",sent],["최종 컨펌",completed]].map(([l,n])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{...T.label,marginBottom:8}}>{l}</div><div style={{fontSize:24,fontWeight:700,color:C.text1,lineHeight:1,letterSpacing:"-.5px"}}>{n}</div></div>)}</div>
-            <div style={{display:"flex",flexDirection:"column",gap:10}}>
-              <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                 <div style={{...T.cardTitle}}>정밀분석 관리</div>
+                <div data-i18n-skip="true" style={{position:"relative"}}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.text4} strokeWidth="2.2" strokeLinecap="round" style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",pointerEvents:"none"}}>
+                    <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/>
+                  </svg>
+                  <input value={precisionSearch} onChange={event=>setPrecisionSearch(event.target.value)}
+                    placeholder={lang==="en"?"Search all columns":"전체 열 검색"}
+                    aria-label={lang==="en"?"Search precision analysis cases":"정밀분석 항목 검색"}
+                    style={{height:34,width:220,boxSizing:"border-box",padding:"0 12px 0 32px",border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:12,outline:"none",background:C.card,color:C.text1}}/>
+                </div>
+                <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>건 · 전체 {precisionRows.length}건</span>
+                <span style={{fontSize:10.5,color:C.text4}}>{lang==="en"?"Grouped by item · Newest measurement first":"품목별 구분 · 측정일 최신순"}</span>
+                {precisionHasFilters&&<button type="button" onClick={handlePrecisionFiltersClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
               </div>
-              {precisionRows.length===0
-                ? <div style={{...card,padding:"44px 20px",textAlign:"center",color:C.text4,fontSize:12}}>정밀분석 대상이 없습니다.</div>
-                : precisionRows.map(r=>{
-                  const active=selected?.key===r.key;
-                  const isRequested=r.precision.requestStatus==="REQUESTED";
-                  const hasReport=!!(r.precision.resultFileId||r.precision.reportNo);
-                  const isConfirmed=r.finalConfirm==="확인";
-                  const result=r.precision.result;   // OK / NG / 미판정
-                  const periodTxt=r.caseData?`P${r.caseData.periodNo}`:`P${((itemAllPeriods(r.item)||[]).find(p=>p.measurementId===r.measurement?.id)?.num||"—")}`;
-                  const isCollapsed=!!collapsedPrecisionCaseKeys[r.key];
-
-                  // 3단계 진행 상태. 각 단계는 완료 / 진행 / 대기 셋 중 하나입니다.
-                  //   완료 = 검정 채움, 진행 = 검정 테두리, 대기 = 회색 테두리
-                  const steps=[
-                    {label:"인계",   state:isRequested?"done":"active"},
-                    {label:"성적서", state:hasReport?"done":(isRequested?"active":"wait")},
-                    {label:"컨펌",   state:isConfirmed?"done":(hasReport?"active":"wait")}
-                  ];
-
-                  return <div key={r.key} onClick={()=>{setPrecisionSelCaseId(r.key);setSelKey(r.item.code);}}
-                    style={{...card,borderColor:C.bd2,padding:"16px 18px",cursor:"pointer",
-                      display:"flex",alignItems:"center",gap:20,flexWrap:"wrap",
-                      boxShadow:active?UI.shHover:UI.sh,transition:"box-shadow .15s, border-color .15s"}}>
-
-                    {/* 좌측 · 품목과 인계 사유 */}
-                    <div style={{minWidth:0,flex:"1 1 280px"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:isCollapsed?0:6}}>
-                        <span style={{...T.cardTitle}}>{displayItemName(r.item,lang)}</span>
-                        <span style={{...T.caption,color:C.text4}}>{r.item.code} · {r.item.dept} · {periodTxt}</span>
-                        <button type="button" onClick={event=>{event.stopPropagation();setCollapsedPrecisionCaseKeys(previous=>({...previous,[r.key]:!previous[r.key]}));}}
-                          aria-expanded={!isCollapsed} aria-label={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"} title={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"}
-                          style={{width:26,height:26,marginLeft:"auto",display:"inline-flex",alignItems:"center",justifyContent:"center",border:0,background:"transparent",color:C.text3,cursor:"pointer",padding:0,flex:"0 0 auto"}}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{transform:isCollapsed?"rotate(-90deg)":"rotate(0deg)",transition:"transform .15s"}}><path d="m6 9 6 6 6-6"/></svg>
-                        </button>
-                      </div>
-                      {!isCollapsed&&<div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
-                        <span style={{...T.caption}}>인계 사유 <strong style={{color:C.text2,fontWeight:600}}>{r.triggerLabel}</strong></span>
-                        <span style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
-                          <span style={{...T.caption}}>대상 원소</span>
-                          {(r.targets||[]).length
-                            ? r.targets.map(el=><span key={el} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",
-                                minWidth:28,height:20,padding:"0 8px",borderRadius:UI.pill,background:C.bg,
-                                border:`1px solid ${C.bd2}`,color:C.text1,fontSize:11,fontWeight:500}}>{el}</span>)
-                            : <span style={{...T.caption,color:C.text4}}>—</span>}
-                        </span>
-                      </div>}
-                    </div>
-
-                    {/* 우측 · 진행 단계와 결과 */}
-                    {!isCollapsed&&<div style={{display:"flex",alignItems:"center",gap:18,marginLeft:"auto",flex:"0 0 auto",flexWrap:"wrap"}}>
-                      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:7}}>
-                        <div style={{display:"flex",alignItems:"center"}}>
-                          {steps.map((st,i)=>{
-                            const done=st.state==="done", act=st.state==="active";
-                            return <div key={st.label} style={{display:"flex",alignItems:"center"}}>
-                              <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5,width:52}}>
-                                <span style={{width:20,height:20,borderRadius:"50%",display:"inline-flex",alignItems:"center",justifyContent:"center",
-                                  fontSize:10,fontWeight:600,flex:"0 0 auto",
-                                  background:done?C.charcoalDk:C.card,color:done?"#fff":(act?C.text1:C.text4),
-                                  border:`1px solid ${done?C.charcoalDk:(act?C.charcoalDk:C.bd2)}`}}>{done?"✓":i+1}</span>
-                                <span style={{fontSize:10,fontWeight:done||act?500:400,color:done||act?C.text2:C.text4,whiteSpace:"nowrap"}}>{st.label}</span>
-                              </div>
-                              {i<steps.length-1&&<span style={{width:18,height:1,marginBottom:16,background:steps[i+1].state==="wait"?C.bd2:C.charcoalDk}}/>}
-                            </div>;
-                          })}
+              <FilterChips filterState={precisionFilters} onClear={handlePrecisionFilterClear} onClearAll={handlePrecisionFiltersClearAll}/>
+              <div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label="품목별 정밀분석 발생 이력 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
+                <table style={{width:"100%",minWidth:precisionTableWeight,maxWidth:"none",borderCollapse:"collapse",tableLayout:"fixed"}}>
+                  <colgroup>{precisionColumns.map(column=><col key={column.key} style={{width:`${(column.w/precisionTableWeight)*100}%`}}/>)}</colgroup>
+                  <thead><tr style={{height:lang==="en"?62:42}}>{precisionColumns.map(column=><th key={column.key} style={{height:lang==="en"?62:42,padding:lang==="en"?"5px 3px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.15}}>{column.el}</th>)}</tr></thead>
+                  {precisionRows.length===0?(
+                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>정밀분석 대상이 없습니다.</td></tr></tbody>
+                  ):filteredPrecisionRows.length===0?(
+                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>조건에 맞는 정밀분석 항목이 없습니다.<button type="button" onClick={handlePrecisionFiltersClearAll} style={{marginLeft:10,padding:"4px 10px",background:"none",border:`1px solid ${C.bd}`,fontSize:11,cursor:"pointer",color:C.text3}}>초기화</button></td></tr></tbody>
+                  ):precisionGroups.map(group=>{
+                    const isCollapsed=!!collapsedPrecisionGroupKeys[group.key];
+                    return <tbody key={group.key}>
+                    <tr>
+                      <td colSpan={precisionColumns.length} style={{padding:"9px 13px",borderTop:`1px solid ${C.bd2}`,borderBottom:`1px solid ${C.bd2}`,background:C.bg}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+                          <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap",minWidth:0}}>
+                            <strong style={{fontSize:12,color:C.text1}}>{group.item?.code||"—"}</strong>
+                            <span style={{fontSize:12,color:C.text2,fontWeight:650}}>{displayItemName(group.item,lang)||"—"}</span>
+                          </div>
+                          <button type="button" onClick={event=>{event.stopPropagation();setCollapsedPrecisionGroupKeys(previous=>({...previous,[group.key]:!previous[group.key]}));}}
+                            aria-expanded={!isCollapsed} aria-label={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"} title={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"}
+                            style={{width:28,height:28,display:"inline-flex",alignItems:"center",justifyContent:"center",border:0,background:"transparent",color:C.text3,cursor:"pointer",padding:0,flex:"0 0 auto"}}>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{transform:isCollapsed?"rotate(-90deg)":"rotate(0deg)",transition:"transform .15s"}}><path d="m6 9 6 6 6-6"/></svg>
+                          </button>
                         </div>
-                      </div>
-
-                      <div style={{width:1,height:44,background:C.bd}}/>
-
-                      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,minWidth:74}}>
-                        <span style={{...T.label}}>정밀 결과</span>
-                        {result
-                          ? <AnalysisResultBadge value={result}/>
-                          : <span title="정밀분석 결과 없음" style={{width:RESULT_LABEL_WIDTH,height:RESULT_LABEL_HEIGHT,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:RESULT_LABEL_FONT_SIZE,color:C.text4,fontWeight:500}}>—</span>}
-                      </div>
-
-                      <span onClick={e=>{e.stopPropagation();setPrecisionSelCaseId(r.key);setPrecisionDetailCaseId(r.key);setSelKey(r.item.code);setTab("precision-detail");}}><DetailArrowButton active={precisionDetailCaseId===r.key}/></span>
-                    </div>}
-                  </div>;
-                })}
+                      </td>
+                    </tr>
+                    {!isCollapsed&&group.rows.map(renderPrecisionRow)}
+                  </tbody>;
+                  })}
+                </table>
+              </div>
             </div>
           </div>;
         })()}
@@ -10187,6 +10436,9 @@ export default function App(){
             return ["H","Not Allowed"].includes(finalRisk) || latestXrf==="NG" || complianceKey==="overdue";
           }).slice(0,30);
           return <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+              <div style={{...T.cardTitle}}>위험도 현황</div>
+            </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["활성 품목",active.length,C.charcoal],["High Risk",highRisk.length,C.red],["주기 미이행",stats.overdue,C.redDk],["후속분석 진행중",workflowCounts.total,C.orange]].map(([l,n,c])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{fontSize:25,fontWeight:700,color:c,lineHeight:1}}>{n}</div><div style={{fontSize:11,fontWeight:700,color:C.text1,marginTop:5}}>{l}</div></div>)}</div>
             <div className="chart-grid" style={{display:"grid",gridTemplateColumns:"1.15fr 1fr 1fr",gap:14}}>
               <ChartCard title="측정 도래 예정" hint={`${TODAY_STR} 기준 향후 6개월`}>
@@ -10299,10 +10551,12 @@ export default function App(){
                 <div>
                   <div style={{...T.pageTitle,marginBottom:5}}>품목 / 변경 관리</div>
                 </div>
-                <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
-                  {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
-                    <button key={m} onClick={()=>handleRegistrationModeClick(m)} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
-                  ))}
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
+                    {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
+                      <button key={m} onClick={()=>handleRegistrationModeClick(m)} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
