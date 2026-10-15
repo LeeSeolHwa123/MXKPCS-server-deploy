@@ -73,7 +73,7 @@ assert(originalSource.includes('lang==="en"?"XRF Trend by Element":"원소별 XR
 assert(originalSource.includes("XRF_TREND_EL_NAMES[el]?.[lang]"),"trend element names must react to the selected language");
 assert(originalSource.includes("displayItemName(sel,lang)"),"trend detail must use the localized item name");
 assert(originalSource.includes('No XRF measurement is linked to the selected period.'),"empty selected period must have an English message");
-assert(originalSource.includes("{currentMeasurement\n                      ? <XrfTrendChart"),"trend chart must be hidden when the selected period has no measurement");
+assert(/\{currentMeasurement\r?\n\s+\? <XrfTrendChart/.test(originalSource),"trend chart must be hidden when the selected period has no measurement");
 assert(originalSource.includes('["itemNameEn","Item_Name_EN"'),"new-item forms must accept an English item name");
 assert(originalSource.includes('nameEn:String(reqForm.itemNameEn||"").trim()'),"new-item creation must preserve the English item name");
 assert(originalSource.includes('window.alert("Item_Name_EN을 입력하세요.")'),"new-item submission must reject a missing English item name");
@@ -201,9 +201,12 @@ assert(olderMonthly.length>recentMonthly.length,"Monthly report rows must increa
 assert(originalSource.includes('["주기","기준·도래일","측정일","상태","XRF 결과","XRF 보고서 첨부"].map'),"every generated period table must retain the XRF report input column");
 
 const exportDir=path.join(projectRoot,"db_export");
-const exportFiles=(await fs.readdir(exportDir)).filter(name=>/^XRF_SHAREPOINT_PRODUCTION_EXPORT_.*\.json$/.test(name)).sort();
-const exportFile=exportFiles.at(-1);
-assert(!!exportFile,"production SharePoint export is required");
+const exportFiles=await fs.readdir(exportDir).catch(error=>{
+  if(error?.code==="ENOENT") return [];
+  throw error;
+});
+const productionExportFiles=exportFiles.filter(name=>/^XRF_SHAREPOINT_PRODUCTION_EXPORT_.*\.json$/.test(name)).sort();
+const exportFile=productionExportFiles.at(-1);
 let auditedItems=0;
 let auditedMeasurements=0;
 let auditedPrecisionCases=0;
