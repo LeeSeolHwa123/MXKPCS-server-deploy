@@ -90,7 +90,7 @@ assert(originalSource.includes('l:"품목 / 변경 관리"'),"registration/chang
 assert(!originalSource.includes("Lifecycle = "),"request type cards must not display internal lifecycle codes");
 assert(!originalSource.includes("의뢰자 등록은 먼저 요청 유형을 선택한 뒤"),"request type explanation must be removed");
 assert(originalSource.includes('const registrationButtonStyle='),"registration navigation and action buttons must share one style helper");
-assert(originalSource.includes('measurementSavePending?"SharePoint 저장 중...":"등록"'),"admin submit action must be labelled 등록");
+assert(originalSource.includes('measurementSavePending||registrationSavePending?"SharePoint 저장 중...":"등록"'),"admin submit action must be labelled 등록");
 const s11=app.normalizeItemRecord({code:"S-11",name:"S-05 접촉 영향 확인용 간지",nameEn:""});
 assert(s11.nameEn==="Interleaf for S-05 Contact Impact Verification","S-11 must recover its missing legacy English name");
 assert(app.displayItemName(s11,"en")===s11.nameEn,"English UI must prefer the S-11 English name");
@@ -134,6 +134,31 @@ assert(accumulatedPrecisionWorkflow.precisionCases.length===1,"workflow output m
 assert(accumulatedPrecisionWorkflow.activePrecisionCaseKey===null,"a historical case must not replace the latest XRF as the current approval basis");
 assert(accumulatedPrecisionWorkflow.stage==="APPROVED","a newer OK XRF must keep the existing current-approval behavior");
 
+const nextPeriodNgMeasurement={id:"PREC-NEXT-PERIOD-NG",date:"2026-03-10",role:"Periodic",attemptNo:1,elements:completeElements(850)};
+const repeatedPrecisionItem={
+  ...accumulatedPrecisionItem,
+  history:[historicalPrecisionMeasurement,latestOkMeasurement,nextPeriodNgMeasurement].map(row=>({...row,measurementRole:row.role})),
+  __measurementMap:{
+    [historicalPrecisionMeasurement.id]:historicalPrecisionMeasurement,
+    [latestOkMeasurement.id]:latestOkMeasurement,
+    [nextPeriodNgMeasurement.id]:nextPeriodNgMeasurement,
+  },
+  latestMeasurementId:nextPeriodNgMeasurement.id,
+  latest:nextPeriodNgMeasurement,
+};
+const firstPrecisionOkOverride={
+  [historicalPrecisionMeasurement.id]:{
+    requestStatus:"REQUESTED",uploadStatus:"UPLOADED",resultFileId:"precision-ok.pdf",finalConfirm:"확인",
+    elementResults:{Pb:{presence:"미함유",ppm:""}},
+  },
+};
+const repeatedPrecisionCases=app.runtimePrecisionCasesForItem(repeatedPrecisionItem,firstPrecisionOkOverride);
+const repeatedPrecisionWorkflow=app.deriveRuntimeWorkflow(repeatedPrecisionItem,firstPrecisionOkOverride,{});
+assert(repeatedPrecisionCases.length===2,"a later NG measurement must append a new precision case after an earlier precision OK");
+assert(repeatedPrecisionCases.some(row=>row.key===historicalPrecisionMeasurement.id && row.precision.result==="OK"),"the earlier confirmed precision OK must remain linked to its Measurement_ID");
+assert(repeatedPrecisionCases.some(row=>row.key===nextPeriodNgMeasurement.id && row.precision.requestStatus==="NOT_REQUESTED"),"the later untransferred precision case must appear automatically from XRF measurement history");
+assert(repeatedPrecisionWorkflow.activePrecisionCaseKey===nextPeriodNgMeasurement.id,"the latest NG measurement must become the active precision case without replacing older cases");
+
 const registeredCycleItem=(cycle,referenceDate="2025-01-15")=>({
   code:`CYCLE-${cycle}`,
   type:"Auxiliary Materials",
@@ -169,6 +194,25 @@ for(const [cycle,p1Due,p2Due] of cycleExpectations){
   assert(!!app.currentCompliancePeriod(item),`${cycle}: a report-upload target period must remain available`);
 }
 
+const annualSameYearMeasurements=[
+  {id:"ANNUAL_20260120_01",date:"2026-01-20",role:"Periodic",attemptNo:1,elements:elements(20)},
+  {id:"ANNUAL_20260714_01",date:"2026-07-14",role:"Periodic",attemptNo:1,elements:elements(30)},
+  {id:"ANNUAL_20260714_02",date:"2026-07-14",role:"Periodic",attemptNo:1,elements:elements(40)},
+];
+const annualSameYearItem={
+  ...registeredCycleItem("Annual"),
+  history:annualSameYearMeasurements.map(row=>({...row,measurementRole:row.role})),
+  __measurementMap:Object.fromEntries(annualSameYearMeasurements.map(row=>[row.id,row])),
+  latestMeasurementId:annualSameYearMeasurements.at(-1).id,
+  latest:annualSameYearMeasurements.at(-1),
+};
+const annualSameYearPeriods=app.buildRollingPeriods(annualSameYearItem);
+const annualP1=annualSameYearPeriods.find(period=>period.label==="P1");
+const annualP2=annualSameYearPeriods.find(period=>period.label==="P2");
+assert(annualP1?.measurementIds?.length===3,"Annual: multiple standalone measurements in the same calendar year must stay in one Pn");
+assert(annualP1?.measurementId==="ANNUAL_20260714_02","Annual: the highest same-day Measurement_ID sequence must be the representative measurement");
+assert(!annualP2?.measured,"Annual: measurements made before the next due year must not consume the next Pn");
+
 for(const precisionResult of ["OK","NG"]){
   const precision={result:precisionResult,finalConfirm:"확인",confirmedAt:"2025-04-20"};
   const confirmedItem={
@@ -183,11 +227,18 @@ for(const precisionResult of ["OK","NG"]){
   const retained=app.itemAllPeriods(confirmedItem);
   const retainedTargets=retained.filter(period=>!period.isReference);
   assert(app.itemHasConfirmedPrecisionResult(confirmedItem),`${precisionResult}: entered precision result must be detected`);
-  assert(app.precisionCycleStopDate(confirmedItem)==="2025-04-20",`${precisionResult}: precision stop date mismatch`);
-  assert(!app.isComplianceTarget(confirmedItem),`${precisionResult}: confirmed precision result must stop active cycle management`);
-  assert(app.currentCompliancePeriod(confirmedItem)===null,`${precisionResult}: no further XRF report input period may remain active`);
-  assert(retainedTargets.some(period=>period.label==="P3"),`${precisionResult}: elapsed period history must be retained`);
-  assert(!retainedTargets.some(period=>period.label==="P4"),`${precisionResult}: future periods after precision confirmation must not be generated`);
+  if(precisionResult==="OK"){
+    assert(app.precisionCycleStopDate(confirmedItem)===null,"OK: confirmed precision result must not set a cycle stop date");
+    assert(app.isComplianceTarget(confirmedItem),"OK: confirmed precision result must keep active cycle management");
+    assert(!!app.currentCompliancePeriod(confirmedItem),"OK: the next XRF report input period must remain active");
+    assert(retainedTargets.some(period=>period.label==="P4"),"OK: future periods must continue to be generated");
+  }else{
+    assert(app.precisionCycleStopDate(confirmedItem)==="2025-04-20","NG: precision stop date mismatch");
+    assert(!app.isComplianceTarget(confirmedItem),"NG: confirmed precision result must stop active cycle management");
+    assert(app.currentCompliancePeriod(confirmedItem)===null,"NG: no further XRF report input period may remain active");
+    assert(retainedTargets.some(period=>period.label==="P3"),"NG: elapsed period history must be retained");
+    assert(!retainedTargets.some(period=>period.label==="P4"),"NG: future periods after precision confirmation must not be generated");
+  }
 }
 
 const isoAtMonthOffset=offset=>{
