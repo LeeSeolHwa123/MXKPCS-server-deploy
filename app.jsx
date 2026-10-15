@@ -6654,25 +6654,6 @@ export default function App(){
     try{ return localStorage.getItem("xrf-ui-language")==="en"?"en":"ko"; }catch{return "ko";}
   });
   const [tab,setTab]=useState("list");
-  const tabHistoryRef=useRef([]);
-  const currentTabRef=useRef("list");
-  const skipTabHistoryRef=useRef(false);
-  const [canGoBack,setCanGoBack]=useState(false);
-  useEffect(()=>{
-    const previousTab=currentTabRef.current;
-    if(previousTab===tab) return;
-    if(skipTabHistoryRef.current) skipTabHistoryRef.current=false;
-    else tabHistoryRef.current=[...tabHistoryRef.current,previousTab].slice(-20);
-    currentTabRef.current=tab;
-    setCanGoBack(tabHistoryRef.current.length>0);
-  },[tab]);
-  const goToPreviousTab=useCallback(()=>{
-    const previousTab=tabHistoryRef.current.pop();
-    if(!previousTab) return;
-    skipTabHistoryRef.current=true;
-    setCanGoBack(tabHistoryRef.current.length>0);
-    setTab(previousTab);
-  },[]);
   const [fs,setFs]=useState(()=>initialSharedListView?.filters||createEmptyMaterialListFilters());
   const [openFilter,setOpenFilter]=useState(null);
   const [fPos,setFPos]=useState({top:0,left:0});
@@ -9484,10 +9465,6 @@ export default function App(){
         </div>
         <div style={{background:C.charcoalDk}}>
           <div className="app-shell app-tabs">
-            <button type="button" onClick={goToPreviousTab} disabled={!canGoBack} aria-label="이전 화면" title="이전 화면"
-              style={{width:36,height:36,display:"inline-flex",alignItems:"center",justifyContent:"center",padding:0,border:0,background:"transparent",color:"#fff",opacity:canGoBack?1:.35,cursor:canGoBack?"pointer":"default",flex:"0 0 auto"}}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
-            </button>
             {TABS.map(t=>{const activeTab=tab===t.id || (tab==="precision-detail"&&t.id==="precision");return <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"9px 18px",background:"none",border:"none",cursor:"pointer",fontSize:12,fontWeight:activeTab?600:400,color:activeTab?"#fff":"rgba(255,255,255,.55)",borderBottom:activeTab?`2px solid ${C.red}`:"2px solid transparent",transition:"color .15s ease, border-color .15s ease"}}>{t.l}</button>})}
           </div>
         </div>
@@ -10144,7 +10121,6 @@ export default function App(){
                 <div style={{...T.cardTitle}}>정밀분석 상세</div>
                 <div style={{fontSize:11,color:C.text4,marginTop:3}}>정밀분석 인계, 원본/결과 파일, 원소 함유 확인을 항목별로 관리합니다.</div>
               </div>
-              <button onClick={()=>setTab("precision")} className="pill-btn" style={{padding:"8px 15px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,fontWeight:500,color:C.text3}}>목록으로</button>
             </div>
             {selected
               ? <PrecisionDetailPanel key={selected.key} selected={selected} lang={lang} card={card} inp={inp} updatePrecisionOverride={updatePrecisionOverride} markPrecisionRequested={markPrecisionRequested} reloadSharePointDb={reloadSharePointDb} onPhotoPreview={setPhotoPreview}/>
