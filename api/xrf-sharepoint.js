@@ -757,6 +757,32 @@ function makeItemId(partNumber) {
   return `ITM_${body}`;
 }
 
+function registrationKey(value) {
+  return cleanText(value).trim().replace(/\s+/g, " ").toLocaleUpperCase("en-US");
+}
+
+function findDuplicateRegistration(itemRows, requestRows, partNumber, itemId) {
+  const partKey = registrationKey(partNumber);
+  const itemIdKey = registrationKey(itemId);
+  const item = (itemRows || []).find(row => {
+    const fields = row?.fields || {};
+    return registrationKey(fields.field_1) === partKey
+      || registrationKey(fields.Title) === itemIdKey;
+  }) || null;
+  if (item) return { source: "XRF_Items", row: item };
+
+  const request = (requestRows || []).find(row => {
+    const fields = row?.fields || {};
+    const requestType = registrationKey(fields.field_1);
+    const status = registrationKey(fields.field_2);
+    if (!["NEW", "REPLACEMENT"].includes(requestType)) return false;
+    if (["REJECTED", "REVERTED", "CANCELLED"].includes(status)) return false;
+    return registrationKey(fields.field_5) === partKey
+      || registrationKey(fields.field_4) === itemIdKey;
+  }) || null;
+  return request ? { source: "XRF_Requests", row: request } : null;
+}
+
 function nextRequestId(existingRows, requestType, targetPartNumber, requestedDate) {
   const date = yyyymmdd(requestedDate || new Date().toISOString().slice(0, 10));
   const titles = new Set(existingRows.map(r => cleanText(r?.fields?.Title).trim()).filter(Boolean));
@@ -928,9 +954,18 @@ async function handleCreateRequest(siteId, accessToken, payload) {
   if (!["New", "Replacement", "Discontinue"].includes(requestType)) throw new Error("requestType은 New / Replacement / Discontinue 중 하나여야 합니다.");
 
   const requestRows = await readList(siteId, "XRF_Requests", accessToken);
-  const requestId = nextRequestId(requestRows, requestType, payload?.targetPartNumber, payload?.requestedDate);
   const isDiscontinue = requestType === "Discontinue";
   const itemId = isDiscontinue ? null : (payload?.itemId || makeItemId(payload?.partNumber));
+  if (!isDiscontinue) {
+    const itemRows = await readList(siteId, "XRF_Items", accessToken);
+    const duplicate = findDuplicateRegistration(itemRows, requestRows, payload?.partNumber, itemId);
+    if (duplicate) {
+      const error = new Error(`동일 품번(${cleanText(payload?.partNumber).trim()})의 신규등록이 이미 존재하거나 처리 중입니다.`);
+      error.status = 409;
+      throw error;
+    }
+  }
+  const requestId = nextRequestId(requestRows, requestType, payload?.targetPartNumber, payload?.requestedDate);
   const created = [];
   try {
     const request = await createListItem(siteId, "XRF_Requests", requestFieldsFromPayload(requestId, payload, itemId), accessToken);
@@ -1208,6 +1243,8 @@ async function parseBody(req) {
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw ? JSON.parse(raw) : {};
 }
+
+export { findDuplicateRegistration };
 
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") {

@@ -2561,8 +2561,13 @@ function confirmedPrecisionResultsOf(item){
     && (row.finalConfirm==="확인" || row.precision?.finalConfirm==="확인" || !!row.precision?.result)
   );
 }
+function confirmedPrecisionCycleStopResultsOf(item){
+  // 정밀분석 OK는 해당 측정 건의 적합 판정일 뿐, 품목에 등록된 정기 XRF 주기를 종료하지 않습니다.
+  // 정밀분석 NG가 최종 확정된 경우에만 기존 주기 중단 정책을 적용합니다.
+  return confirmedPrecisionResultsOf(item).filter(row=>String(row?.precision?.result||"").toUpperCase()==="NG");
+}
 function precisionCycleStopDate(item){
-  const completed=confirmedPrecisionResultsOf(item);
+  const completed=confirmedPrecisionCycleStopResultsOf(item);
   if(!completed.length) return null;
   return completed
     .map(row=>dateOnly(
@@ -2579,6 +2584,9 @@ function precisionCycleStopDate(item){
 }
 function itemHasConfirmedPrecisionResult(item){
   return confirmedPrecisionResultsOf(item).length>0;
+}
+function itemHasConfirmedPrecisionCycleStopResult(item){
+  return confirmedPrecisionCycleStopResultsOf(item).length>0;
 }
 function precisionTriggerReason(m){
   const targets=precisionRequiredElements(m);
@@ -2809,7 +2817,7 @@ function hasActiveXrfCycleDefinition(item){
     && hasRegisteredXrfCycle(item);
 }
 function isComplianceTarget(item){
-  return hasActiveXrfCycleDefinition(item) && !itemHasConfirmedPrecisionResult(item);
+  return hasActiveXrfCycleDefinition(item) && !itemHasConfirmedPrecisionCycleStopResult(item);
 }
 function approvalFilterKey(status){
   const s=String(status||"").trim();
@@ -6671,7 +6679,7 @@ export default function App(){
   const [precisionDetailCaseId,setPrecisionDetailCaseId]=useState(null);
   const [collapsedPrecisionCaseKeys,setCollapsedPrecisionCaseKeys]=useState({});
   const [precisionOverrides,setPrecisionOverrides]=useState({});
-  const precisionSaveTimerRef=useRef(null);
+  const precisionSaveTimerRef=useRef(new Map());
   const [sharePointItems,setSharePointItems]=useState([]);
   const [dbLoading,setDbLoading]=useState(true);
   const [dbError,setDbError]=useState("");
@@ -6702,6 +6710,8 @@ export default function App(){
   const reqUploadFileRef=useRef(null);
   const measurementSavePendingRef=useRef(false);
   const [measurementSavePending,setMeasurementSavePending]=useState(false);
+  const registrationSavePendingRef=useRef(false);
+  const [registrationSavePending,setRegistrationSavePending]=useState(false);
   const [reqForm,setReqForm]=useState({
     partNumber:"", itemName:"", itemNameEn:"", type:"Auxiliary Materials", handlingDept:"Assembly", materialCategory:REQUESTER_MATERIAL_CATEGORY_OPTIONS[0],
     materialState:"", manufacturer:"", useDate:TODAY_STR,
@@ -6873,7 +6883,7 @@ export default function App(){
       && !["ReplacedOld","Discontinued","Cancelled"].includes(String(item.lifecycle||""))
       && item.category!=="changed"
       && hasRegisteredXrfCycle(item)
-      && !itemHasConfirmedPrecisionResult(item)
+      && !itemHasConfirmedPrecisionCycleStopResult(item)
     ),
     [realBaseItems]
   );
@@ -6974,8 +6984,10 @@ export default function App(){
     setPrecisionOverrides(prev=>{
       const nextCase={...(prev[key]||{}),...patch};
       const next={...prev,[key]:nextCase};
-      if(precisionSaveTimerRef.current) clearTimeout(precisionSaveTimerRef.current);
-      precisionSaveTimerRef.current=setTimeout(()=>{
+      const pendingTimer=precisionSaveTimerRef.current.get(key);
+      if(pendingTimer) clearTimeout(pendingTimer);
+      const nextTimer=setTimeout(async()=>{
+        precisionSaveTimerRef.current.delete(key);
         const owner=allItems.find(item=>!!measurementById(item,key)) || null;
         const wf=owner?workflowForItem(owner):null;
         const precisionCase=wf?.precisionCases?.find(caseRow=>caseRow.key===key)||null;
@@ -6985,7 +6997,7 @@ export default function App(){
           : (measurement?precisionRequiredElements(measurement):(owner?precisionTargetsForWorkflow(owner,wf):[]));
         const precision=precisionCase?.precision || wf?.precision || {required:true,targetElements:targets,elements:{}};
         const finalResult=derivePrecisionResult(targets,precision,nextCase.elementResults||{});
-        void persistSharePointAction("upsertPrecision",{
+        const saved=await persistSharePointAction("upsertPrecision",{
           triggerMeasurementId:key,
           precisionId:nextCase.precisionId||null,
           requestSpItemId:owner?._spRequestItemId||null,
@@ -6993,10 +7005,12 @@ export default function App(){
           actor:"admin",
           override:nextCase
         },{reload:nextCase.finalConfirm==="확인"});
+        if(!saved && nextCase.finalConfirm!=="확인") await reloadSharePointDb();
       },500);
+      precisionSaveTimerRef.current.set(key,nextTimer);
       return next;
     });
-  },[allItems,persistSharePointAction]);
+  },[allItems,persistSharePointAction,reloadSharePointDb]);
   const markPrecisionRequested=useCallback(async(key,password)=>{
     const fixtureOwner=allItems.find(item=>item.__visualUat && !!measurementById(item,key));
     if(fixtureOwner){
@@ -7024,7 +7038,10 @@ export default function App(){
     });
     return !!result;
   },[allItems,persistSharePointAction,runtimePrecisionOverrides]);
-  useEffect(()=>()=>{ if(precisionSaveTimerRef.current) clearTimeout(precisionSaveTimerRef.current); },[]);
+  useEffect(()=>()=>{
+    precisionSaveTimerRef.current.forEach(timer=>clearTimeout(timer));
+    precisionSaveTimerRef.current.clear();
+  },[]);
   useEffect(()=>{
     setApprovalOverrides(prev=>{
       let changed=false;
@@ -7426,6 +7443,7 @@ export default function App(){
     return `${base}-${String(maxSuffix+1).padStart(2,"0")}`;
   },[realBaseItems,buildRequesterPartNumber,reqForm.handlingDept]);
   const submitRequesterNewItem=useCallback(async()=>{
+    if(registrationSavePendingRef.current) return;
     const adminDirect=String(regType||"").startsWith("admin-");
     const requestType=regType==="admin-new"?"new":regType==="admin-replace"?"replacement":regType==="admin-discontinue"?"discontinue":(regType||"new");
     const effectiveXrfMode=adminDirect && requestType!=="discontinue" ? "upload" : reqXrfMode;
@@ -7486,7 +7504,16 @@ export default function App(){
       return;
     }
 
-    if(requestType==="discontinue"){
+    const requestedPartNumber=String(reqForm.partNumber||"").trim();
+    if(requestType!=="discontinue" && realBaseItems.some(item=>samePartNumber(item?.code,requestedPartNumber))){
+      window.alert(`동일 품번(${requestedPartNumber})의 신규등록이 이미 존재하거나 처리 중입니다.`);
+      return;
+    }
+
+    registrationSavePendingRef.current=true;
+    setRegistrationSavePending(true);
+    try{
+      if(requestType==="discontinue"){
       const target=selectedDiscontinueItem || {};
       const code=`${target.code||"DISC"}-REQ-${TODAY_STR.replaceAll("-","")}`;
       const item={
@@ -7553,7 +7580,7 @@ export default function App(){
         setItemOverrides(prev=>({...prev,[targetStateKey]:{...(prev[targetStateKey]||{}),...terminalPatch,_sourceCode:targetStateKey}}));
         setRequestItems(prev=>prev.map(item=>itemStateKey(item)===targetStateKey?{...item,...terminalPatch}:item));
       }
-      void persistSharePointAction("createRequest",{
+      const created=await persistSharePointAction("createRequest",{
         requestType:"Discontinue",
         status:adminDirect?"Applied":"Pending",
         targetItemId:target.itemId||null,
@@ -7568,13 +7595,14 @@ export default function App(){
           complianceStatus:target.complianceStatus||getCS(target),finalUseDate:target.finalUseDate||null
         }:null
       });
+      if(!created) return;
       setSelKey(null);
       setSelPeriodNum(null);
       setTab("list");
       setRegStep(1);
       setRegType(null);
       return;
-    }
+      }
 
     const isReplacement=requestType==="replacement";
     const replacementTargetCode=selectedReplacementItem?.code||reqForm.replacementTargetCode||"";
@@ -7784,7 +7812,11 @@ export default function App(){
     setReqUploadFileName("");
     setReqUploadResult(emptyUploadedXrfResult());
     clearRequestPhoto();
-  },[buildReplacementPartNumber,buildRequesterPartNumber,reqForm,reqXrfMode,reqUploadResult,reqPhotoFile,reqPhotoPreview,regType,selectableExistingItems,currentPortfolioPeriodNo,persistSharePointAction,reloadSharePointDb,clearRequestPhoto]);
+    }finally{
+      registrationSavePendingRef.current=false;
+      setRegistrationSavePending(false);
+    }
+  },[buildReplacementPartNumber,buildRequesterPartNumber,reqForm,reqXrfMode,reqUploadResult,reqPhotoFile,reqPhotoPreview,regType,selectableExistingItems,realBaseItems,currentPortfolioPeriodNo,persistSharePointAction,reloadSharePointDb,clearRequestPhoto]);
 
   useEffect(()=>{
     const target=allItems.find(i=>i.code===reqForm.replacementTargetCode);
@@ -8182,7 +8214,7 @@ export default function App(){
   },[sel,currentMeasurement,selPeriodNum]);
 
   const periodUploadTarget=useMemo(()=>{
-    if(!sel || isDiscontinueRequestItem(sel) || isEquipmentItem(sel) || itemHasConfirmedPrecisionResult(sel)) return null;
+    if(!sel || isDiscontinueRequestItem(sel) || isEquipmentItem(sel) || itemHasConfirmedPrecisionCycleStopResult(sel)) return null;
     const selected=selPeriodNum!==null && selPeriodNum!==undefined
       ? selAllPeriods.find(p=>Number(p?.num)===Number(selPeriodNum))
       : null;
@@ -10466,8 +10498,8 @@ export default function App(){
                         ["Part Number",reqForm.partNumber||"자동 발번"],["품목 사진",reqPhotoFile?.name||"미선택"],["Item_Name",reqForm.itemName||"—"],["Item_Name_EN",reqForm.itemNameEn||"—"],["Type",`${ITEM_TYPE_KO[reqForm.type]||reqForm.type} (${reqForm.type})`],["Handling_Dept",reqForm.handlingDept],["Material_Category",reqForm.materialCategory],["Material_State",reqForm.materialState||"—"],["제조사",reqForm.manufacturer||"—"],["사용 예정 일자",reqForm.useDate],["CR_Type",reqForm.crType],["XRF 방식",reqXrfMode==="upload"?"XRF 원본 업로드":"XRF 측정 의뢰"],["업로드 파일",reqXrfMode==="upload"?(reqUploadFileName||"미선택"):"—"],["XRF Result",reqXrfMode==="upload"?(reqUploadResult.parsed?(reqUploadResult.xrfResult||reqUploadResult.xrfWorst):"파싱 대기"):"측정 후 산출"],["Judgment",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementJudgementSummary({elements:reqUploadResult.elements||{}}):"파싱 대기"):"측정 후 산출"],["후속조치",reqXrfMode==="upload"?(reqUploadResult.parsed?measurementFollowupInfo({elements:reqUploadResult.elements||{},role:"Initial",attemptNo:1}).label:"파싱 대기"):"측정 후 산출"],["예상 Approval_Status",reqXrfMode==="request"||!reqUploadResult.parsed?"보류":(reqUploadResult.approvalStatus||deriveXrfApprovalStatus(reqUploadResult.xrfResult||reqUploadResult.xrfWorst))]
                       ]).map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.bd}`,fontSize:12}}><span style={{color:C.text4}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right"}}>{v}</span></div>)}
                     </div>
-                    <button onClick={submitRequesterNewItem} style={{width:"100%",padding:"12px 0",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:13,fontWeight:600,cursor:"pointer"}}>
-                      {regType==="discontinue"?"단종 / 사용 중지 요청 제출":"신규 등록 요청 제출"}
+                    <button onClick={submitRequesterNewItem} disabled={registrationSavePending} style={{width:"100%",padding:"12px 0",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:13,fontWeight:600,cursor:registrationSavePending?"wait":"pointer",opacity:registrationSavePending?.65:1}}>
+                      {registrationSavePending?"SharePoint 저장 중...":(regType==="discontinue"?"단종 / 사용 중지 요청 제출":"신규 등록 요청 제출")}
                     </button>
                   </div>}
 
@@ -10592,7 +10624,7 @@ export default function App(){
 
                     <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16,paddingTop:14,borderTop:`1px solid ${C.bd}`}}>
                       <button onClick={handleAdminDraftSave} style={registrationButtonStyle("secondary")}>임시 저장</button>
-                      <button onClick={handleAdminDirectSubmit} disabled={measurementSavePending} style={{...registrationButtonStyle("primary",measurementSavePending),cursor:measurementSavePending?"wait":"pointer",minWidth:96}}>{measurementSavePending?"SharePoint 저장 중...":"등록"}</button>
+                      <button onClick={handleAdminDirectSubmit} disabled={measurementSavePending||registrationSavePending} style={{...registrationButtonStyle("primary",measurementSavePending||registrationSavePending),cursor:measurementSavePending||registrationSavePending?"wait":"pointer",minWidth:96}}>{measurementSavePending||registrationSavePending?"SharePoint 저장 중...":"등록"}</button>
                     </div>
                   </div>}
                 </div>
