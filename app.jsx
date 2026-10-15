@@ -979,6 +979,7 @@ function buildSharePointPrecisionOverrides(precisionRows,precisionElementRows){
       reportFileUrl:f.Report_File_URL||"",
       uploadStatus:resultFile?"UPLOADED":"WAITING",
       finalConfirm:f.field_6===true?"확인":"",
+      confirmedAt:f.field_6===true ? dateOnly(f.Confirmed_At||row?.lastModifiedDateTime||f.Modified) : "",
       elementResults:elementsByPrecision[precisionId]||{}
     };
   }
@@ -2165,7 +2166,9 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
     const latestXrfState=latest ? measurementXrfResult(latest) : "—";
     const latestRemeasureTargets=pendingXrfRemeasureElements(latest);
     const latestNeedsRemeasure=latestRemeasureTargets.length>0;
-    const latestCase=precisionCases[0] || null;
+    const latestCaseKey=latest ? precisionCaseKeyForMeasurement(item,latest) : "";
+    // 과거 미해결 건은 목록에 누적하되, 현재 승인 Workflow는 기존과 동일하게 최신 XRF만 판단합니다.
+    const latestCase=precisionCases.find(caseRow=>caseRow.key===latestCaseKey) || null;
     const latestNeedsPrecision=!!latestCase;
     const finalRisk=itemFinalRisk(item);
     let stage="XRF_REQUIRED";
@@ -2480,6 +2483,11 @@ function precisionTriggerMeasurementsOf(item){
   if(!latest) return [];
   return precisionRequiredElements(latest).length>0 ? [latest] : [];
 }
+function precisionCaseMeasurementsOf(item){
+  // 정밀분석 탭은 최신 건만 교체 표시하지 않고, 측정 ID별 정밀분석 대상 이력을 모두 유지합니다.
+  // XRF_PrecisionAnalyses가 아직 생성되지 않은 미인계 건도 XRF_Measurements 이력에서 복원됩니다.
+  return itemMeasurementRecords(item).filter(measurement=>precisionRequiredElements(measurement).length>0);
+}
 function itemHasPrecisionTrigger(item){
   return precisionTriggerMeasurementsOf(item).length>0;
 }
@@ -2505,7 +2513,7 @@ function persistedPrecisionResultOf(measurement,item){
   return "";
 }
 function runtimePrecisionCasesForItem(item,precisionOverrides){
-  return precisionTriggerMeasurementsOf(item).map(measurement=>{
+  return precisionCaseMeasurementsOf(item).map(measurement=>{
     const key=precisionCaseKeyForMeasurement(item,measurement);
     const targets=precisionRequiredElements(measurement);
     const ov=precisionOverrides?.[key]||{};
@@ -2519,6 +2527,7 @@ function runtimePrecisionCasesForItem(item,precisionOverrides){
       resultFileId:ov.resultFileId||"",
       requestedAt:ov.requestedAt||"",
       requestedBy:ov.requestedBy||"",
+      confirmedAt:ov.confirmedAt||"",
       elementResults,
       finalConfirm:ov.finalConfirm || (persistedResult?"확인":"")
     };
@@ -2533,6 +2542,43 @@ function runtimePrecisionCasesForItem(item,precisionOverrides){
       elementResults
     };
   });
+}
+function confirmedPrecisionResultsOf(item){
+  const wf=workflowForItem(item);
+  const rows=[];
+  (wf?.precisionCases||[]).forEach(caseRow=>rows.push({
+    precision:caseRow?.precision||{},
+    measurement:caseRow?.measurement||null,
+    finalConfirm:caseRow?.finalConfirm||caseRow?.precision?.finalConfirm||""
+  }));
+  if(wf?.precision) rows.push({
+    precision:wf.precision,
+    measurement:wf.triggerMeasurement||wf.latestMeasurement||latestMeasurementOf(item),
+    finalConfirm:wf.precision.finalConfirm||""
+  });
+  return rows.filter(row=>
+    ["OK","NG"].includes(String(row?.precision?.result||"").toUpperCase())
+    && (row.finalConfirm==="확인" || row.precision?.finalConfirm==="확인" || !!row.precision?.result)
+  );
+}
+function precisionCycleStopDate(item){
+  const completed=confirmedPrecisionResultsOf(item);
+  if(!completed.length) return null;
+  return completed
+    .map(row=>dateOnly(
+      row.precision?.confirmedAt
+      || row.precision?.completedAt
+      || row.precision?.requestedAt
+      || row.measurement?.date
+      || row.measurement?.measuredDate
+      || TODAY_STR
+    ))
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0]||TODAY_STR;
+}
+function itemHasConfirmedPrecisionResult(item){
+  return confirmedPrecisionResultsOf(item).length>0;
 }
 function precisionTriggerReason(m){
   const targets=precisionRequiredElements(m);
@@ -2695,12 +2741,28 @@ function cycleFromFinalRisk(finalRisk){
   if(finalRisk==="L") return "Annual";
   return "Not Available";
 }
-// 검사주기는 품목 Master에 남아 있는 과거 cycle 값을 기준으로 하지 않고,
-// R 단계에서 확정된 Final Risk를 단일 기준으로 다시 산정합니다.
-// H → 월 1회 / M → 반기 1회 / L → 연 1회 / 사용불허·판정불가 → 주기 없음
+function normalizeRegisteredCycle(value){
+  const key=String(value||"").trim().toLowerCase().replace(/[\s_-]/g,"");
+  if(["monthly","month","월1회","매월"].includes(key)) return "Monthly";
+  if(["semiannual","semiannually","halfyear","반기1회","반기"].includes(key)) return "Semiannual";
+  if(["annual","annually","yearly","연1회","년1회","연간1회"].includes(key)) return "Annual";
+  return "Not Available";
+}
+function registeredCycleOf(item){
+  return normalizeRegisteredCycle(pickField(
+    item||{},"registeredCycle","Registered_Cycle","cycle","Cycle","inspectionCycle","Inspection_Cycle"
+  ));
+}
+// 명시적으로 등록된 검사주기는 후속 XRF/정밀분석 결과가 NG 또는 반려여도 유지합니다.
+// 등록 주기가 없는 경우에만 R 단계의 Final Risk(H/M/L)로 주기를 산정합니다.
 function itemCycleFromRisk(item){
   if(!item || isDiscontinueRequestItem(item) || isEquipmentItem(item)) return "Not Available";
+  const registered=registeredCycleOf(item);
+  if(registered!=="Not Available") return registered;
   return cycleFromFinalRisk(itemFinalRisk(item));
+}
+function hasRegisteredXrfCycle(item){
+  return ["Monthly","Semiannual","Annual"].includes(itemCycleFromRisk(item));
 }
 function applyCurrentRiskPolicy(item){
   if(!item) return item;
@@ -2738,15 +2800,16 @@ function normalizeItemType(value){
 function isEquipmentItem(item){
   return normalizeItemType(item?.type)==="Facility";
 }
-function isComplianceTarget(item){
+function hasActiveXrfCycleDefinition(item){
   if(isDiscontinueRequestItem(item) || isDiscontinuedItem(item)) return false;
-  const risk=itemFinalRisk(item);
-  const riskCycle=itemCycleFromRisk(item);
   return item?.lifecycle!=="ReplacedOld"
+    && item?.lifecycle!=="Cancelled"
     && item?.category!=="changed"
     && !isEquipmentItem(item)
-    && ["H","M","L"].includes(risk)
-    && riskCycle!=="Not Available";
+    && hasRegisteredXrfCycle(item);
+}
+function isComplianceTarget(item){
+  return hasActiveXrfCycleDefinition(item) && !itemHasConfirmedPrecisionResult(item);
 }
 function approvalFilterKey(status){
   const s=String(status||"").trim();
@@ -3190,7 +3253,7 @@ function buildRollingPeriods(item){
   // Annual(연 1회)은 같은 달력연도에 여러 XRF가 있어도 다음 Pn으로 넘기지 않고
   // 해당 연도의 동일 Pn에 모두 묶습니다. 예: P1 도래연도 2026 → 2026-01-30, 2026-07-14 모두 P1.
   if(!fromDbReference) return [];
-  if(!isComplianceTarget(item)) return fromDb;
+  if(!hasActiveXrfCycleDefinition(item)) return fromDb;
 
   const months=cycleMonthsOf(item);
   const baseDate=String(fromDbReference.referenceDate || fromDbReference.date || item?.firstDate || "").slice(0,10);
@@ -3336,7 +3399,10 @@ function lifecyclePeriodEndDate(item){
 }
 function truncateTerminalLifecyclePeriods(item,periods){
   const lifecycle=String(item?.lifecycle||"");
-  const terminal=["ReplacedOld","Discontinued","Cancelled"].includes(lifecycle) || item?.isCurrent===false;
+  // 반려/정밀분석 과정에서 Is_Current가 false로 저장됐더라도 유효 주기가 있으면 XRF 측정은 계속합니다.
+  // 명시적인 대체·단종·취소 Lifecycle만 주기 생성을 종료합니다.
+  const terminalLifecycle=["ReplacedOld","Discontinued","Cancelled"].includes(lifecycle);
+  const terminal=terminalLifecycle || (item?.isCurrent===false && !hasRegisteredXrfCycle(item));
   if(!terminal) return periods||[];
   const cutoff=lifecyclePeriodEndDate(item);
   return (periods||[]).filter(p=>{
@@ -3349,7 +3415,16 @@ function truncateTerminalLifecyclePeriods(item,periods){
   });
 }
 function itemAllPeriods(item){
-  return truncateTerminalLifecyclePeriods(item,buildRollingPeriods(item));
+  const lifecyclePeriods=truncateTerminalLifecyclePeriods(item,buildRollingPeriods(item));
+  const stopDate=precisionCycleStopDate(item);
+  if(!stopDate) return lifecyclePeriods;
+  // 정밀분석 결과가 확정된 뒤에는 새 Pn을 만들지 않습니다.
+  // R과 이미 측정된 이력, 확정일까지 이미 도래한 과거 주기만 보존합니다.
+  return lifecyclePeriods.filter(period=>{
+    if(period?.isReference || Number(period?.num)===0 || period?.measured) return true;
+    const due=dateOnly(period?.due||period?.targetDate);
+    return !!due && dateLte(due,stopDate);
+  });
 }
 
 // XRF 분석 탭은 "정기 관리주기"와 "실제 XRF 측정 이력"을 같은 데이터 원본에서 보여 줍니다.
@@ -6787,6 +6862,20 @@ export default function App(){
     ()=>realBaseItems.filter(item=>!item.__visualUat && !isDiscontinueRequestItem(item) && item.isCurrent!==false && item.lifecycle!=="ReplacedOld" && item.lifecycle!=="Discontinued"),
     [realBaseItems]
   );
+  // 주기가 등록된 품목은 정밀분석/반려 상태나 Is_Current 임시값과 무관하게
+  // 관리자 주기 측정 목록에서 계속 선택할 수 있습니다. 명시적 종료 Lifecycle은 제외합니다.
+  const periodMeasurementSelectableItems=useMemo(
+    ()=>realBaseItems.filter(item=>
+      !item.__visualUat
+      && !isDiscontinueRequestItem(item)
+      && !isEquipmentItem(item)
+      && !["ReplacedOld","Discontinued","Cancelled"].includes(String(item.lifecycle||""))
+      && item.category!=="changed"
+      && hasRegisteredXrfCycle(item)
+      && !itemHasConfirmedPrecisionResult(item)
+    ),
+    [realBaseItems]
+  );
   useEffect(()=>{
     if(!VISUAL_UAT_MODE || typeof window==="undefined") return;
     const byCode=new Map(allItems.filter(item=>item.__visualUat).map(item=>[item.code,item]));
@@ -6842,8 +6931,8 @@ export default function App(){
       if(isDiscontinueRequestItem(item)) return [];
       const wf=workflowForItem(item);
 
-      // 실제 품목은 현재 최신 XRF가 정밀분석 조건을 충족할 때 해당 최신 측정 건을 Case로 표시합니다.
-      // R Final Risk가 H/Not Allowed여도 최신 XRF가 OK이면 과거 R NG만으로 정밀분석 대기 Case를 유지하지 않습니다.
+      // 실제 품목은 측정 ID별 정밀분석 대상 이력을 Case로 표시합니다.
+      // 최신 XRF가 OK여도 과거 미해결 Case는 사라지지 않으며, 각 Case는 해당 측정 ID의 DB 결과와 연결됩니다.
       if(!wf.caseData && Array.isArray(wf.precisionCases) && wf.precisionCases.length){
         return wf.precisionCases.map(c=>({
           key:c.key,item,caseData:null,measurement:c.measurement,precision:c.precision,targets:c.targets,
@@ -6888,8 +6977,12 @@ export default function App(){
       precisionSaveTimerRef.current=setTimeout(()=>{
         const owner=allItems.find(item=>!!measurementById(item,key)) || null;
         const wf=owner?workflowForItem(owner):null;
-        const targets=owner?precisionTargetsForWorkflow(owner,wf):[];
-        const precision=wf?.precision || {required:true,targetElements:targets,elements:{}};
+        const precisionCase=wf?.precisionCases?.find(caseRow=>caseRow.key===key)||null;
+        const measurement=precisionCase?.measurement || (owner?measurementById(owner,key):null);
+        const targets=precisionCase?.targets?.length
+          ? precisionCase.targets
+          : (measurement?precisionRequiredElements(measurement):(owner?precisionTargetsForWorkflow(owner,wf):[]));
+        const precision=precisionCase?.precision || wf?.precision || {required:true,targetElements:targets,elements:{}};
         const finalResult=derivePrecisionResult(targets,precision,nextCase.elementResults||{});
         void persistSharePointAction("upsertPrecision",{
           triggerMeasurementId:key,
@@ -6911,8 +7004,12 @@ export default function App(){
     }
     const owner=allItems.find(item=>!!measurementById(item,key)) || null;
     const wf=owner?workflowForItem(owner):null;
-    const targets=owner?precisionTargetsForWorkflow(owner,wf):[];
-    const precision=wf?.precision || {required:true,targetElements:targets,elements:{}};
+    const precisionCase=wf?.precisionCases?.find(caseRow=>caseRow.key===key)||null;
+    const measurement=precisionCase?.measurement || (owner?measurementById(owner,key):null);
+    const targets=precisionCase?.targets?.length
+      ? precisionCase.targets
+      : (measurement?precisionRequiredElements(measurement):(owner?precisionTargetsForWorkflow(owner,wf):[]));
+    const precision=precisionCase?.precision || wf?.precision || {required:true,targetElements:targets,elements:{}};
     const existingOverride=runtimePrecisionOverrides[key]||{};
     const requestOverride={...existingOverride,requestStatus:"REQUESTED",requestedAt:TODAY_STR,requestedBy:"admin"};
     const result=await persistSharePointAction("upsertPrecision",{
@@ -8084,7 +8181,7 @@ export default function App(){
   },[sel,currentMeasurement,selPeriodNum]);
 
   const periodUploadTarget=useMemo(()=>{
-    if(!sel || isDiscontinueRequestItem(sel) || isEquipmentItem(sel)) return null;
+    if(!sel || isDiscontinueRequestItem(sel) || isEquipmentItem(sel) || itemHasConfirmedPrecisionResult(sel)) return null;
     const selected=selPeriodNum!==null && selPeriodNum!==undefined
       ? selAllPeriods.find(p=>Number(p?.num)===Number(selPeriodNum))
       : null;
@@ -8149,7 +8246,6 @@ export default function App(){
   // XRF 결과가 아직 없는 의뢰품은 Approval_Status가 보류여도 관리자 업로드 화면을 유지합니다.
   const selectedIsMeasuring = !selectedIsDiscontinue && !latestMeasurementOf(sel)
     && workflowForItem(sel).stage==="XRF_REQUIRED";
-
   const pendingMeasurementItems=useMemo(
     ()=>allItems.filter(item=>
       ["XRF_REQUIRED","XRF_REMEASURE_REQUIRED"].includes(workflowForItem(item).stage)
@@ -10414,7 +10510,7 @@ export default function App(){
                         onChange={e=>updateRequestField(regType==="admin-discontinue"?"discontinueTargetCode":"replacementTargetCode",e.target.value)}
                         style={{...inp,width:"100%",boxSizing:"border-box"}}>
                         <option value="">기존 품목을 선택하세요</option>
-                        {selectableExistingItems.map(item=><option key={item.code} value={item.code}>{item.code} | {item.dept} | {displayItemName(item,lang)}</option>)}
+                        {(regType==="admin-period"?periodMeasurementSelectableItems:selectableExistingItems).map(item=><option key={item.code} value={item.code}>{item.code} | {item.dept} | {displayItemName(item,lang)}</option>)}
                       </select>
                     </div>}
 

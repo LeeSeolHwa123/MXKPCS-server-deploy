@@ -18,6 +18,9 @@ source=source
 source+=`
 export {
   buildRuntimeFromSharePoint,applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
+  buildRollingPeriods,itemAllPeriods,currentCompliancePeriod,itemCycleFromRisk,isComplianceTarget,
+  precisionCycleStopDate,itemHasConfirmedPrecisionResult,
+  runtimePrecisionCasesForItem,deriveRuntimeWorkflow,
   itemXrfDisplayPeriods,itemMeasurementRecords,measurementById,measurementAttemptsForPeriod,
   periodMeasurementsOf,xrfTrendMeasurement,xrfTrendMeasurementEntries,xrfTrendSeries,
   xrfTrendPeriodsThroughSelection,normalizeItemRecord,displayItemName
@@ -106,12 +109,104 @@ assert(syntheticPb.every(point=>point.label),"every measurement must have an x-a
 const throughP3=app.xrfTrendPeriodsThroughSelection(syntheticPeriods,syntheticPeriods[3]);
 assert(throughP3.map(period=>period.label).join(",")==="R,P1,P2,P3","selected P3 trend must exclude later periods");
 
+const testLegalLimits={Pb:1000,Hg:1000,Cr:1000,Cd:100,Cl:900,Br:900,"Cl+Br":1500};
+const completeElements=pbPpm=>Object.fromEntries(Object.entries(testLegalLimits).map(([element,legalLimit])=>[
+  element,{rawPpm:String(element==="Pb"?pbPpm:10),rawSigma:"1",rawJudgement:"OK",legalLimit,internalLimit:legalLimit*.7}
+]));
+const historicalPrecisionMeasurement={id:"PREC-HISTORY-01",date:"2026-01-10",role:"Periodic",attemptNo:1,elements:completeElements(800)};
+const latestOkMeasurement={id:"PREC-LATEST-OK",date:"2026-02-10",role:"Periodic",attemptNo:1,elements:completeElements(100)};
+const accumulatedPrecisionItem={
+  code:"PRECISION-ACCUMULATED",
+  history:[historicalPrecisionMeasurement,latestOkMeasurement].map(row=>({...row,measurementRole:row.role})),
+  __measurementMap:{
+    [historicalPrecisionMeasurement.id]:historicalPrecisionMeasurement,
+    [latestOkMeasurement.id]:latestOkMeasurement,
+  },
+  firstMeasurementId:historicalPrecisionMeasurement.id,
+  latestMeasurementId:latestOkMeasurement.id,
+  latest:latestOkMeasurement,
+};
+const accumulatedPrecisionCases=app.runtimePrecisionCasesForItem(accumulatedPrecisionItem,{});
+const accumulatedPrecisionWorkflow=app.deriveRuntimeWorkflow(accumulatedPrecisionItem,{},{});
+assert(accumulatedPrecisionCases.length===1,"an unresolved historical precision case must remain visible after a newer OK XRF");
+assert(accumulatedPrecisionCases[0]?.key===historicalPrecisionMeasurement.id,"a precision case must keep its trigger Measurement_ID as the DB key");
+assert(accumulatedPrecisionWorkflow.precisionCases.length===1,"workflow output must retain accumulated historical precision cases");
+assert(accumulatedPrecisionWorkflow.activePrecisionCaseKey===null,"a historical case must not replace the latest XRF as the current approval basis");
+assert(accumulatedPrecisionWorkflow.stage==="APPROVED","a newer OK XRF must keep the existing current-approval behavior");
+
+const registeredCycleItem=(cycle,referenceDate="2025-01-15")=>({
+  code:`CYCLE-${cycle}`,
+  type:"Auxiliary Materials",
+  lifecycle:"ExistingActive",
+  category:"existing",
+  isCurrent:false,
+  approvalStatus:"반려",
+  precisionRequired:true,
+  finalRisk:"Not Allowed",
+  cycle,
+  firstDate:referenceDate,
+  periods:[{
+    num:0,label:"R",displayLabel:"R",isReference:true,
+    referenceDate,date:referenceDate,measured:referenceDate,status:"reference"
+  }],
+  history:[]
+});
+const cycleExpectations=[
+  ["Monthly","2025-02-15","2025-03-15"],
+  ["Semiannual","2025-07-15","2026-01-15"],
+  ["Annual","2026-01-15","2027-01-15"],
+];
+for(const [cycle,p1Due,p2Due] of cycleExpectations){
+  const item=registeredCycleItem(cycle);
+  const periods=app.buildRollingPeriods(item);
+  const targets=periods.filter(period=>!period.isReference);
+  assert(app.itemCycleFromRisk(item)===cycle,`${cycle}: registered cycle must survive rejected/precision state`);
+  assert(app.isComplianceTarget(item),`${cycle}: rejected/precision item with a cycle must remain an XRF measurement target`);
+  assert(app.itemAllPeriods(item).length===periods.length,`${cycle}: Is_Current=false must not truncate a registered active lifecycle`);
+  assert(targets[0]?.label==="P1" && targets[0]?.due===p1Due,`${cycle}: P1 due date mismatch`);
+  assert(targets[1]?.label==="P2" && targets[1]?.due===p2Due,`${cycle}: P2 due date mismatch`);
+  assert(targets.every((period,index)=>period.label===`P${index+1}`),`${cycle}: report periods must grow as continuous P1..Pn rows`);
+  assert(!!app.currentCompliancePeriod(item),`${cycle}: a report-upload target period must remain available`);
+}
+
+for(const precisionResult of ["OK","NG"]){
+  const precision={result:precisionResult,finalConfirm:"확인",confirmedAt:"2025-04-20"};
+  const confirmedItem={
+    ...registeredCycleItem("Monthly"),
+    isCurrent:true,
+    __workflow:{
+      precision,
+      precisionCases:[{precision,finalConfirm:"확인",measurement:{date:"2025-03-10"}}],
+      triggerMeasurement:{date:"2025-03-10"}
+    }
+  };
+  const retained=app.itemAllPeriods(confirmedItem);
+  const retainedTargets=retained.filter(period=>!period.isReference);
+  assert(app.itemHasConfirmedPrecisionResult(confirmedItem),`${precisionResult}: entered precision result must be detected`);
+  assert(app.precisionCycleStopDate(confirmedItem)==="2025-04-20",`${precisionResult}: precision stop date mismatch`);
+  assert(!app.isComplianceTarget(confirmedItem),`${precisionResult}: confirmed precision result must stop active cycle management`);
+  assert(app.currentCompliancePeriod(confirmedItem)===null,`${precisionResult}: no further XRF report input period may remain active`);
+  assert(retainedTargets.some(period=>period.label==="P3"),`${precisionResult}: elapsed period history must be retained`);
+  assert(!retainedTargets.some(period=>period.label==="P4"),`${precisionResult}: future periods after precision confirmation must not be generated`);
+}
+
+const isoAtMonthOffset=offset=>{
+  const now=new Date();
+  const value=new Date(now.getFullYear(),now.getMonth()+offset,10);
+  return `${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,"0")}-10`;
+};
+const recentMonthly=app.buildRollingPeriods(registeredCycleItem("Monthly",isoAtMonthOffset(-1)));
+const olderMonthly=app.buildRollingPeriods(registeredCycleItem("Monthly",isoAtMonthOffset(-36)));
+assert(olderMonthly.length>recentMonthly.length,"Monthly report rows must increase as more cycle periods elapse");
+assert(originalSource.includes('["주기","기준·도래일","측정일","상태","XRF 결과","XRF 보고서 첨부"].map'),"every generated period table must retain the XRF report input column");
+
 const exportDir=path.join(projectRoot,"db_export");
 const exportFiles=(await fs.readdir(exportDir)).filter(name=>/^XRF_SHAREPOINT_PRODUCTION_EXPORT_.*\.json$/.test(name)).sort();
 const exportFile=exportFiles.at(-1);
 assert(!!exportFile,"production SharePoint export is required");
 let auditedItems=0;
 let auditedMeasurements=0;
+let auditedPrecisionCases=0;
 if(exportFile){
   const payload=JSON.parse(await fs.readFile(path.join(exportDir,exportFile),"utf8"));
   const runtime=app.buildRuntimeFromSharePoint(payload);
@@ -125,6 +220,7 @@ if(exportFile){
     if(!records.length) continue;
     auditedItems++;
     auditedMeasurements+=records.length;
+    auditedPrecisionCases+=app.runtimePrecisionCasesForItem(item,runtime.precisionOverrides).length;
     const periods=app.itemXrfDisplayPeriods(item);
     const entries=app.xrfTrendMeasurementEntries(item,periods);
     const expectedEntryCount=periods.filter(period=>app.xrfTrendMeasurement(item,period)).length;
@@ -151,6 +247,7 @@ console.log(JSON.stringify({
   productionExport:exportFile||null,
   auditedItems,
   auditedMeasurements,
+  auditedPrecisionCases,
   failures,
   pass:failures.length===0,
 },null,2));
