@@ -23,7 +23,7 @@ export {
   runtimePrecisionCasesForItem,deriveRuntimeWorkflow,
   itemXrfDisplayPeriods,itemMeasurementRecords,measurementById,measurementAttemptsForPeriod,
   periodMeasurementsOf,xrfTrendMeasurement,xrfTrendMeasurementEntries,xrfTrendSeries,
-  xrfTrendPeriodsThroughSelection,normalizeItemRecord,displayItemName
+  xrfTrendPeriodsThroughSelection,normalizeItemRecord,displayItemName,alignedMaterialScopes
 };
 `;
 
@@ -91,6 +91,20 @@ assert(!originalSource.includes("Lifecycle = "),"request type cards must not dis
 assert(!originalSource.includes("의뢰자 등록은 먼저 요청 유형을 선택한 뒤"),"request type explanation must be removed");
 assert(originalSource.includes('const registrationButtonStyle='),"registration navigation and action buttons must share one style helper");
 assert(originalSource.includes('measurementSavePending||registrationSavePending?"SharePoint 저장 중...":"등록"'),"admin submit action must be labelled 등록");
+assert(originalSource.includes("const active=materialScopes.operational;"),"risk overview must share the material-list operational scope");
+assert(!originalSource.includes("const active=allItems.filter(i=>i.isCurrent && !isDiscontinueRequestItem(i));"),"risk overview must not maintain a separate active-item rule");
+assert(originalSource.includes('data-precision-item-label="true"'),"precision item code/name group labels must have a distinct visual treatment");
+const alignedScopes=app.alignedMaterialScopes([
+  {code:"ACTIVE",lifecycle:"ExistingActive",isCurrent:true},
+  {code:"NEW",lifecycle:"NewItem",isCurrent:true},
+  {code:"REPLACED",lifecycle:"ReplacedOld",isCurrent:false},
+  {code:"DISCONTINUED",lifecycle:"Discontinued",isCurrent:false},
+  {code:"CORRUPT-TERMINAL",lifecycle:"ReplacedOld",isCurrent:true},
+  {code:"DISC-REQUEST",name:"[단종 요청] ACTIVE",_isRequestRecord:true,lifecycle:"ExistingActive",isCurrent:true},
+]);
+assert(alignedScopes.operational.map(item=>item.code).join(",")==="ACTIVE,NEW","new/active items must be shared operational rows across list and risk tabs");
+assert(alignedScopes.master.length===5,"discontinue request rows must not inflate risk lifecycle master counts");
+assert(alignedScopes.history.map(item=>item.code).join(",")==="REPLACED,DISCONTINUED,CORRUPT-TERMINAL,DISC-REQUEST","replaced, discontinued, and request records must remain accumulated as list history");
 const s11=app.normalizeItemRecord({code:"S-11",name:"S-05 접촉 영향 확인용 간지",nameEn:""});
 assert(s11.nameEn==="Interleaf for S-05 Contact Impact Verification","S-11 must recover its missing legacy English name");
 assert(app.displayItemName(s11,"en")===s11.nameEn,"English UI must prefer the S-11 English name");
