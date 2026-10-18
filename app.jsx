@@ -1595,7 +1595,7 @@ const UI_EN_MAP = {
   "주기 관리 현황":"Cycle Management Status","현재 이행":"Currently Compliant",
   "고위험 / 후속분석 대상 품목":"High-risk / Follow-up Items",
   "위험성 평가 매트릭스 · R 기준":"Risk Assessment Matrix · R Basis",
-  "품목 라이프사이클 참고":"Item Lifecycle Reference","대체 관계 체인":"Replacement Chains",
+  "대체 이력":"Replacement History",
   "대체품":"Replacement Item","기존 측정이력":"Existing Measurements","보존":"Preserved","전환":"Transition",
   "R 검사주기":"R Inspection Cycle","XRF 분석 열기":"Open XRF Analysis",
 
@@ -2757,6 +2757,15 @@ function isOperationalManagedItem(item){
   return !!item
     && !isHistoryRecordItem(item)
     && item.isCurrent!==false;
+}
+function alignedMaterialScopes(items){
+  const rows=Array.isArray(items) ? items : [];
+  const master=rows.filter(item=>!isDiscontinueRequestItem(item));
+  return {
+    master,
+    operational:master.filter(isOperationalManagedItem),
+    history:rows.filter(isHistoryRecordItem),
+  };
 }
 function cycleFromFinalRisk(finalRisk){
   if(finalRisk==="H") return "Monthly";
@@ -6952,6 +6961,9 @@ export default function App(){
     __workflow:deriveRuntimeWorkflow(item,runtimePrecisionOverrides,approvalOverrides)
   })),[baseItems,runtimePrecisionOverrides,approvalOverrides]);
   const realItems=useMemo(()=>allItems.filter(item=>!item.__visualUat),[allItems]);
+  // 부자재 리스트와 위험도 현황은 동일한 운영/이력 판정 결과를 공유합니다.
+  // 단종 요청용 가상 행은 리스트 이력에는 남기되 Risk/Lifecycle 마스터 집계에는 포함하지 않습니다.
+  const materialScopes=useMemo(()=>alignedMaterialScopes(realItems),[realItems]);
   const currentPortfolioPeriodNo=useMemo(()=>derivePortfolioCurrentPeriodNo(realBaseItems),[realBaseItems]);
   const replacementChains=useMemo(()=>buildReplacementRelationGroups(allItems),[allItems]);
   const approvalStatusOf=useCallback((item)=>{
@@ -8009,31 +8021,31 @@ export default function App(){
 
   const stats=useMemo(()=>{
     const c={existing:0,new:0,changed:0,overdue:0,late:0,dueSoon:0,active:0,history:0,replaced:0,retestRequired:0,precisionRequired:0,xrfRemeasureRequired:0,ng:0,measuring:0,pendingApproval:0,total:0,rawTotal:realItems.length};
-    realItems.forEach(i=>{
-      const isHistory=isHistoryRecordItem(i);
-      const isOperational=isOperationalManagedItem(i);
-      if(isHistory) c.history++;
-      if(isOperational) c.total++;
-      if(isOperational) c[i.category]=(c[i.category]||0)+1;
-      if(isOperational) c.active++;
+    c.history=materialScopes.history.length;
+    c.total=materialScopes.operational.length;
+    c.active=materialScopes.operational.length;
+    materialScopes.master.forEach(i=>{
       if(i.lifecycle==="ReplacedOld") c.replaced++;
-      if(isOperational && itemRetestRequired(i)) { c.retestRequired++; c.xrfRemeasureRequired++; }
-      if(isOperational && itemHasPrecisionTrigger(i)) c.precisionRequired++;
-      if(isOperational && itemXrfWorst(i)==="NG") c.ng++;
+    });
+    materialScopes.operational.forEach(i=>{
+      c[i.category]=(c[i.category]||0)+1;
+      if(itemRetestRequired(i)) { c.retestRequired++; c.xrfRemeasureRequired++; }
+      if(itemHasPrecisionTrigger(i)) c.precisionRequired++;
+      if(itemXrfWorst(i)==="NG") c.ng++;
       const approvalKey=approvalFilterKey(approvalStatusOf(i));
-      if(isOperational && approvalKey==="measuring") c.measuring++;
-      if(isOperational && approvalKey!=="approved") c.pendingApproval++;
+      if(approvalKey==="measuring") c.measuring++;
+      if(approvalKey!=="approved") c.pendingApproval++;
       const cs=getCS(i);
-      if(isOperational && cs==="overdue") c.overdue++;
-      if(isOperational && hasLatePeriod(i)) c.late++;
-      if(isOperational && cs==="dueSoon") c.dueSoon++;
+      if(cs==="overdue") c.overdue++;
+      if(hasLatePeriod(i)) c.late++;
+      if(cs==="dueSoon") c.dueSoon++;
     });
     return c;
-  },[realItems,approvalStatusOf]);
+  },[materialScopes,realItems.length,approvalStatusOf]);
 
   // 대시보드 차트 데이터 — 전부 실제 품목에서 집계 (추정/더미값 없음)
   const dash=useMemo(()=>{
-    const ops=realItems.filter(i=>isOperationalManagedItem(i));
+    const ops=materialScopes.operational;
 
     // ① 향후 6개월의 모든 미측정 주기를 월별로 집계합니다.
     // 품목당 다음 마감 1건만 보던 방식은 월 1회 품목을 첫 달에만 표시하므로,
@@ -8084,7 +8096,7 @@ export default function App(){
     });
 
     return {buckets,segments,csTotal:ops.length,riskMeta,deptRows:deptRows.filter(r=>r.total>0)};
-  },[realItems]);
+  },[materialScopes]);
 
   const listItems=useMemo(
     ()=>allItems.filter(item=>!isCancelledListItem(item,approvalStatusOf(item))),
@@ -10373,9 +10385,9 @@ export default function App(){
                     <tr>
                       <td colSpan={precisionColumns.length} style={{padding:"9px 13px",borderTop:`1px solid ${C.bd2}`,borderBottom:`1px solid ${C.bd2}`,background:C.bg}}>
                         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
-                          <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap",minWidth:0}}>
-                            <strong style={{fontSize:12,color:C.text1}}>{group.item?.code||"—"}</strong>
-                            <span style={{fontSize:12,color:C.text2,fontWeight:650}}>{displayItemName(group.item,lang)||"—"}</span>
+                          <div data-precision-item-label="true" style={{display:"inline-flex",alignItems:"center",gap:7,minWidth:0,maxWidth:"100%",padding:"6px 10px",background:C.card,border:`1px solid ${C.bd2}`,borderRadius:9,boxShadow:"0 2px 8px rgba(26,32,32,.06)",whiteSpace:"nowrap",overflow:"hidden"}}>
+                            <strong style={{fontSize:11,color:C.red,fontWeight:800,letterSpacing:.25,whiteSpace:"nowrap"}}>{group.item?.code||"—"}</strong>
+                            <span style={{fontSize:12.5,color:C.text1,fontWeight:750,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{displayItemName(group.item,lang)||"—"}</span>
                           </div>
                           <button type="button" onClick={event=>{event.stopPropagation();setCollapsedPrecisionGroupKeys(previous=>({...previous,[group.key]:!previous[group.key]}));}}
                             aria-expanded={!isCollapsed} aria-label={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"} title={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"}
@@ -10410,7 +10422,7 @@ export default function App(){
         })()}
 
         {tab==="risk"&&(()=>{
-          const active=allItems.filter(i=>i.isCurrent && !isDiscontinueRequestItem(i));
+          const active=materialScopes.operational;
           const matrix={H:{},M:{},L:{}};
           active.forEach(i=>{const x=riskBasisXrfLevelOf(i);const c=riskBasisCrLevelOf(i);if(x&&c)matrix[x][c]=(matrix[x][c]||0)+1;});
           const crCounts={H:active.filter(i=>riskBasisCrLevelOf(i)==="H").length,M:active.filter(i=>riskBasisCrLevelOf(i)==="M").length,L:active.filter(i=>riskBasisCrLevelOf(i)==="L").length};
@@ -10418,7 +10430,6 @@ export default function App(){
           const highRisk=active.filter(i=>["H","Not Allowed"].includes(itemFinalRisk(i)));
           const workflowCounts=analysisWorkflowSummary(active);
           const cycleCounts={Monthly:active.filter(i=>itemCycleFromRisk(i)==="Monthly").length,Semiannual:active.filter(i=>itemCycleFromRisk(i)==="Semiannual").length,Annual:active.filter(i=>itemCycleFromRisk(i)==="Annual").length};
-          const lifecycleCounts={};allItems.forEach(i=>{lifecycleCounts[i.lifecycle]=(lifecycleCounts[i.lifecycle]||0)+1;});
           const precisionActionStages=new Set([
             "PRECISION_TRANSFER_REQUEST_REQUIRED",
             "PRECISION_TRANSFER_RESULT_WAITING",
@@ -10514,7 +10525,7 @@ export default function App(){
               </div>
             </div>
             {replacementChains.length>0&&<div style={{...card,padding:"16px 20px"}}>
-              <div data-i18n-skip="true" style={{...T.cardTitle,fontFamily:FONT_SANS,marginBottom:4}}>{lang==="en"?`Replacement Chains — ${replacementChains.length} items`:`대체 관계 체인 — ${replacementChains.length}건`}</div>
+              <div data-i18n-skip="true" style={{...T.cardTitle,fontFamily:FONT_SANS,marginBottom:4}}>{lang==="en"?`Replacement History - ${replacementChains.length} items`:`대체 이력 - ${replacementChains.length}건`}</div>
               <div data-i18n-skip="true" style={{fontFamily:FONT_SANS,fontSize:11,fontWeight:400,lineHeight:1.45,color:C.text3,marginBottom:14}}>{lang==="en"?"History of existing items replaced by new items":"기존 품목이 신규 항목으로 대체된 이력"}</div>
               {replacementChains.map((chain,i)=>(
                 <div key={`${chain.old.code}-${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 0",borderTop:i>0?`1px solid ${C.bd}`:"none",flexWrap:"wrap"}}>
@@ -10540,7 +10551,6 @@ export default function App(){
                 </div>
               ))}
             </div>}
-            <div style={{...card,padding:"16px 20px"}}><div style={{fontSize:12,fontWeight:700,color:C.text1,marginBottom:10}}>품목 라이프사이클 참고</div><div style={{display:"flex",gap:18,flexWrap:"wrap"}}>{[["기존 운영","ExistingActive"],["신규 대체","NewReplacement"],["대체됨","ReplacedOld"],["단종","Discontinued"]].map(([l,k])=><span key={k} style={{fontSize:11,color:C.text3}}>{l} <strong style={{color:C.text1}}>{lifecycleCounts[k]||0}건</strong></span>)}</div></div>
           </div>;
         })()}
 
