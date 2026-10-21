@@ -592,6 +592,16 @@ function measurementSequenceFromId(id){
   const matched=String(id||"").match(/_(\d{2})$/);
   return matched ? Number(matched[1]) : 1;
 }
+const SHAREPOINT_PERIOD_NO_MARKER=/\s*\[\[MXKPCS:Period_No=(\d+)\]\]\s*$/i;
+function sharePointMeasurementPeriodNo(fields){
+  const nativeValue=fields?.Period_No;
+  if(nativeValue!==null && nativeValue!==undefined && String(nativeValue).trim()!=="") return Number(nativeValue);
+  const matched=String(fields?.field_7||"").match(SHAREPOINT_PERIOD_NO_MARKER);
+  return matched ? Number(matched[1]) : null;
+}
+function sharePointMeasurementSourceSheet(fields){
+  return String(fields?.field_7||"").replace(SHAREPOINT_PERIOD_NO_MARKER,"").trim();
+}
 function buildSharePointMeasurementMap(measurementRows,elementRows){
   const elementsByMeasurement=buildSharePointElementsByMeasurement(elementRows);
   const output={};
@@ -609,15 +619,14 @@ function buildSharePointMeasurementMap(measurementRows,elementRows){
       sequence:measurementSequenceFromId(id),
       role:f.field_3||"",
       Measurement_Role:f.field_3||"",
-      // SharePoint 표시명은 Period_No이고 기존 리스트의 내부 열 이름은 field_2입니다.
-      periodNo:f.Period_No ?? f.field_2 ?? null,
-      Period_No:f.Period_No ?? f.field_2 ?? null,
+      periodNo:sharePointMeasurementPeriodNo(f),
+      Period_No:sharePointMeasurementPeriodNo(f),
       attemptNo:Number(f.field_4||1),
       parentMeasurementId:f.field_5||null,
       sourceFileName:f.field_6||"",
       sourceFileId:f.Source_File_ID||"",
       sourceFileUrl:f.Source_File_URL||"",
-      sourceSheet:f.field_7||"",
+      sourceSheet:sharePointMeasurementSourceSheet(f),
       requesterName:f.Requester_Name||"",
       elements:elementsByMeasurement[id]||{},
       _spItemId:row?.id||null
