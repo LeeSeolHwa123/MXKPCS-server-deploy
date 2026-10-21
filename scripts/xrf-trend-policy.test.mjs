@@ -18,7 +18,7 @@ source=source
 source+=`
 export {
   buildRuntimeFromSharePoint,applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
-  buildRollingPeriods,itemAllPeriods,currentCompliancePeriod,itemCycleFromRisk,isComplianceTarget,
+  buildRollingPeriods,itemAllPeriods,itemListPeriods,currentCompliancePeriod,itemCycleFromRisk,isComplianceTarget,
   precisionCycleStopDate,itemHasConfirmedPrecisionResult,
   runtimePrecisionCasesForItem,deriveRuntimeWorkflow,
   itemXrfDisplayPeriods,itemMeasurementRecords,measurementById,measurementAttemptsForPeriod,
@@ -237,6 +237,45 @@ for(const [cycle,p1Due,p2Due] of cycleExpectations){
   assert(!!app.currentCompliancePeriod(item),`${cycle}: a report-upload target period must remain available`);
 }
 
+const notAllowedReference={id:"NOT-ALLOWED-R",date:"2025-05-19",role:"Initial",attemptNo:1,elements:completeElements(850)};
+const notAllowedPeriodic=[
+  {id:"NOT-ALLOWED-P1",date:"2026-01-30",role:"Periodic",attemptNo:1,elements:completeElements(850)},
+  {id:"NOT-ALLOWED-P2",date:"2026-07-14",role:"Periodic",attemptNo:1,elements:completeElements(850)},
+];
+const notAllowedPendingItem={
+  code:"NOT-ALLOWED-PENDING",
+  type:"Auxiliary Materials",
+  lifecycle:"ExistingActive",
+  category:"existing",
+  isCurrent:true,
+  crLevel:"H",
+  firstDate:notAllowedReference.date,
+  firstMeasurementId:notAllowedReference.id,
+  latestMeasurementId:notAllowedPeriodic[1].id,
+  latest:notAllowedPeriodic[1],
+  periods:[{num:0,label:"R",displayLabel:"R",isReference:true,referenceDate:notAllowedReference.date,date:notAllowedReference.date,measured:notAllowedReference.date,status:"reference",measurementId:notAllowedReference.id}],
+  history:[notAllowedReference,...notAllowedPeriodic].map(row=>({...row,measurementRole:row.role})),
+  __measurementMap:Object.fromEntries([notAllowedReference,...notAllowedPeriodic].map(row=>[row.id,row])),
+};
+const notAllowedPendingPeriods=app.itemAllPeriods(notAllowedPendingItem);
+assert(app.itemCycleFromRisk(notAllowedPendingItem)==="Semiannual","Not Allowed: existing six-month measurement cadence must be preserved");
+assert(app.precisionCycleStopDate(notAllowedPendingItem)===null,"Not Allowed: an unperformed precision analysis must not stop Pn generation");
+assert(app.isComplianceTarget(notAllowedPendingItem),"Not Allowed: periodic management must remain active until precision NG is confirmed");
+assert(notAllowedPendingPeriods.some(period=>period.label==="P3"),"Not Allowed: the next Pn must remain available while precision analysis is pending");
+
+const completedP3Item={
+  ...registeredCycleItem("Semiannual","2025-01-15"),
+  isCurrent:true,
+  history:[
+    {id:"FOUR-DOTS-P1",date:"2025-07-15",role:"Periodic",measurementRole:"Periodic",attemptNo:1,elements:completeElements(100)},
+    {id:"FOUR-DOTS-P2",date:"2026-01-15",role:"Periodic",measurementRole:"Periodic",attemptNo:1,elements:completeElements(100)},
+    {id:"FOUR-DOTS-P3",date:"2026-07-15",role:"Periodic",measurementRole:"Periodic",attemptNo:1,elements:completeElements(100)},
+  ],
+};
+completedP3Item.__measurementMap=Object.fromEntries(completedP3Item.history.map(row=>[row.id,row]));
+const completedP3Dots=app.itemListPeriods(completedP3Item).map(period=>period.label);
+assert(JSON.stringify(completedP3Dots)===JSON.stringify(["P3","P4","P5","P6"]),"material list must show four rolling period dots after P3 is completed");
+
 const unresolvedInitialMeasurement={id:"UNRESOLVED-NG-R",date:"2025-01-15",role:"Initial",attemptNo:1,elements:completeElements(100)};
 const unresolvedNgMeasurement={id:"UNRESOLVED-NG-P1",date:"2025-02-10",role:"Periodic",attemptNo:1,elements:completeElements(850)};
 const unresolvedNgCycleItem={
@@ -334,6 +373,13 @@ if(exportFile){
   const items=app.applyPeriodBasedCategories(
     app.deriveReplacementRelations(runtime.items).map(app.applyCurrentRiskPolicy)
   );
+  const transparentBoxTape=items.find(item=>item.code==="C-07");
+  if(transparentBoxTape){
+    const transparentBoxTapeDots=app.itemListPeriods(transparentBoxTape).map(period=>period.label);
+    assert(app.itemCycleFromRisk(transparentBoxTape)==="Semiannual","production C-07 must preserve its observed six-month cadence while precision analysis is unresolved");
+    assert(app.isComplianceTarget(transparentBoxTape),"production C-07 must remain an XRF compliance target until precision NG is confirmed");
+    assert(transparentBoxTapeDots.length===4,"production C-07 compliance status must render four period dots");
+  }
   for(const item of items){
     const records=app.itemMeasurementRecords(item);
     if(!records.length) continue;

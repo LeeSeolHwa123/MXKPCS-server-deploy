@@ -2863,6 +2863,9 @@ function cycleFromFinalRisk(finalRisk){
   if(finalRisk==="H") return "Monthly";
   if(finalRisk==="M") return "Semiannual";
   if(finalRisk==="L") return "Annual";
+  // 사용 불허도 정밀분석 NG가 확정되기 전까지는 가장 보수적인 월 1회 주기로 관리합니다.
+  // 정밀분석 OK는 이 주기를 유지하고, NG 확정 시 itemAllPeriods()에서 후속 Pn을 중단합니다.
+  if(finalRisk==="Not Allowed") return "Monthly";
   return "Not Available";
 }
 function normalizeRegisteredCycle(value){
@@ -2877,13 +2880,45 @@ function registeredCycleOf(item){
     item||{},"registeredCycle","Registered_Cycle","cycle","Cycle","inspectionCycle","Inspection_Cycle"
   ));
 }
-// 명시적으로 등록된 검사주기는 후속 XRF/정밀분석 결과가 NG 또는 반려여도 유지합니다.
-// 등록 주기가 없는 경우에만 R 단계의 Final Risk(H/M/L)로 주기를 산정합니다.
+function monthDistanceBetweenDates(fromValue,toValue){
+  const from=parseISODate(dateOnly(fromValue));
+  const to=parseISODate(dateOnly(toValue));
+  if(!from || !to || to<=from) return null;
+  const months=(to.getFullYear()-from.getFullYear())*12 + to.getMonth()-from.getMonth();
+  return months>0 ? months : null;
+}
+function cycleFromObservedMeasurementCadence(item){
+  // 사용 불허로 바뀐 기존 품목은 이미 운영하던 실제 측정 간격을 보존합니다.
+  // Period_No가 없는 구형 DB 이력도 측정일만 있으면 월/반기/연 주기를 복원할 수 있습니다.
+  const periodicDates=[...new Set(itemMeasurementRecords(item)
+    .filter(measurement=>normalizeMeasurementRole(measurement?.role||measurement?.measurementRole)==="Periodic")
+    .map(measurement=>dateOnly(measurement?.date||measurement?.measuredDate))
+    .filter(Boolean))]
+    .sort();
+  let observedMonths=null;
+  if(periodicDates.length>=2){
+    observedMonths=monthDistanceBetweenDates(periodicDates[periodicDates.length-2],periodicDates[periodicDates.length-1]);
+  }else if(periodicDates.length===1){
+    const reference=riskBasisMeasurementOf(item);
+    observedMonths=monthDistanceBetweenDates(reference?.date||item?.firstDate,periodicDates[0]);
+  }
+  if(!observedMonths) return null;
+  if(observedMonths<=2) return "Monthly";
+  if(observedMonths<=9) return "Semiannual";
+  return "Annual";
+}
+// 명시적으로 등록된 검사주기는 후속 XRF/반려 상태에서도 유지합니다.
+// 사용 불허 기존 품목은 실제 측정 간격을 우선 보존하고, 이력이 없으면 월 1회로 관리합니다.
+// 최종 정밀분석 NG가 확정된 경우에만 itemAllPeriods()가 후속 주기를 중단합니다.
 function itemCycleFromRisk(item){
   if(!item || isDiscontinueRequestItem(item) || isEquipmentItem(item)) return "Not Available";
   const registered=registeredCycleOf(item);
   if(registered!=="Not Available") return registered;
-  return cycleFromFinalRisk(itemFinalRisk(item));
+  const finalRisk=itemFinalRisk(item);
+  if(finalRisk==="Not Allowed"){
+    return cycleFromObservedMeasurementCadence(item) || cycleFromFinalRisk(finalRisk);
+  }
+  return cycleFromFinalRisk(finalRisk);
 }
 function hasRegisteredXrfCycle(item){
   return ["Monthly","Semiannual","Annual"].includes(itemCycleFromRisk(item));
@@ -3389,7 +3424,7 @@ function buildRollingPeriods(item){
   const measurements=collectPeriodMeasurements(item);
   const out=[];
   let mi=0;
-  let futureCount=0;
+  let futureOpenCount=0;
 
   // R은 최초 위험도 평가 기준점일 뿐 P1 이행값으로 재사용하지 않습니다.
   let referenceMeasurement=null;
@@ -3431,7 +3466,9 @@ function buildRollingPeriods(item){
   const elapsedMonths=baseDateValue
     ? Math.max(0,(TODAY.getFullYear()-baseDateValue.getFullYear())*12 + TODAY.getMonth()-baseDateValue.getMonth())
     : 0;
-  const requiredFuturePeriods=months===1 ? 24 : 2;
+  // 부자재 리스트의 이행 현황은 현재 구간에서 항상 4개의 실제 주기 원을 보여 줍니다.
+  // 이미 측정된 미래 주기는 여유분으로 세지 않고, 미측정 미래 Pn을 월간 24개/그 외 4개 확보합니다.
+  const requiredFuturePeriods=months===1 ? 24 : 4;
   const periodLimit=Math.max(60,Math.ceil(elapsedMonths/months)+requiredFuturePeriods+2);
 
   for(let n=1;n<=periodLimit;n++){
@@ -3510,10 +3547,10 @@ function buildRollingPeriods(item){
         : `R 등록일 ${baseDate} 기준 ${CYCLE_KO[riskCycle]||riskCycle} 고정 주기`
     });
 
-    if(!dateGt(TODAY_STR,due)) futureCount++;
+    if(!dateGt(TODAY_STR,due) && hits.length===0) futureOpenCount++;
     if(months===1){
-      if(out.length>=25 && futureCount>=24) break;
-    }else if(out.length>=5 && futureCount>=2) break;
+      if(out.length>=25 && futureOpenCount>=requiredFuturePeriods) break;
+    }else if(out.length>=5 && futureOpenCount>=requiredFuturePeriods) break;
   }
   return out;
 }
@@ -3542,8 +3579,8 @@ function itemAllPeriods(item){
   const lifecyclePeriods=truncateTerminalLifecyclePeriods(item,buildRollingPeriods(item));
   const stopDate=precisionCycleStopDate(item);
   if(!stopDate) return lifecyclePeriods;
-  // 정밀분석 결과가 확정된 뒤에는 새 Pn을 만들지 않습니다.
-  // R과 이미 측정된 이력, 확정일까지 이미 도래한 과거 주기만 보존합니다.
+  // 정밀분석 NG가 확정된 뒤에만 새 Pn을 만들지 않습니다. OK는 기존 주기를 계속 유지합니다.
+  // R과 이미 측정된 이력, NG 확정일까지 이미 도래한 과거 주기만 보존합니다.
   return lifecyclePeriods.filter(period=>{
     if(period?.isReference || Number(period?.num)===0 || period?.measured) return true;
     const due=dateOnly(period?.due||period?.targetDate);
@@ -3638,9 +3675,8 @@ function precisionCaseFilterValues(row,column,lang="ko"){
 }
 
 // XRF 분석 탭은 "정기 관리주기"와 "실제 XRF 측정 이력"을 같은 데이터 원본에서 보여 줍니다.
-// Final Risk가 Not Allowed이면 정기 Pn은 생성하지 않지만, R 이후 실제로 수행된 Periodic 이력은
-// 화면에서 P1, P2... 순번으로 표시합니다. 이 보조 Pn은 실제 측정 이력 표시용이며
-// 정기 Pn/이행률/다음 도래일 계산에는 절대 포함하지 않습니다.
+// 설비 등 정기 주기 자체가 없는 품목의 실제 Periodic 이력은 화면에서 P1, P2... 순번으로만 표시합니다.
+// 이 보조 Pn은 실제 측정 이력 표시용이며 정기 Pn/이행률/다음 도래일 계산에는 포함하지 않습니다.
 function itemXrfDisplayPeriods(item){
   const base=itemAllPeriods(item);
   if(!item || isDiscontinueRequestItem(item)) return base;
@@ -3651,7 +3687,7 @@ function itemXrfDisplayPeriods(item){
   const riskBasisId=String(riskBasis?.id||riskBasis?.measurementId||item?.firstMeasurementId||"").trim();
 
   // 정기 Pn이 존재하는 품목의 실제 측정은 buildRollingPeriods()가 Pn에 연결합니다.
-  // 여기서 추가 노드를 만드는 경우는 주기 자체가 없는 품목(대표적으로 R Final Risk = Not Allowed)뿐입니다.
+  // 여기서 추가 노드를 만드는 경우는 설비처럼 주기 자체가 없는 품목뿐입니다.
   if(itemCycleFromRisk(item)!=="Not Available") return base;
 
   const extras=records.filter(m=>{
@@ -4068,7 +4104,7 @@ function buildVisualUatFixtures(){
   push("VU-C01","[UAT-VIS][CYCLE] Risk H → Monthly",{measurements:[visualUatInitial("VU-C01",xrfDate,"M")],crType:"직접접촉+잔류"});
   push("VU-C02","[UAT-VIS][CYCLE] Risk M → Semiannual",{measurements:[visualUatInitial("VU-C02",xrfDate,"M")],crType:"직접접촉+비잔류"});
   push("VU-C03","[UAT-VIS][CYCLE] Risk L → Annual",{measurements:[visualUatInitial("VU-C03",xrfDate,"L")],crType:"비접촉"});
-  push("VU-C04","[UAT-VIS][CYCLE] Not Allowed → No Cycle",{measurements:[visualUatInitial("VU-C04",xrfDate,"H")],crType:"직접접촉+잔류"});
+  push("VU-C04","[UAT-VIS][CYCLE] Not Allowed → Monthly until precision NG",{measurements:[visualUatInitial("VU-C04",xrfDate,"H")],crType:"직접접촉+잔류"});
   push("VU-C05","[UAT-VIS][CYCLE] Unresolved → No Cycle",{measurements:[visualUatInitial("VU-C05",xrfDate,"L",{elements:{Pb:{rawPpm:"-",rawSigma:2,rawJudgement:""}}})],crType:"비접촉"});
   push("VU-C06","[UAT-VIS][CYCLE] Facility → No Cycle",{measurements:[visualUatInitial("VU-C06",xrfDate,"M")],crType:"직접접촉+비잔류",type:"Facility"});
 
@@ -4199,7 +4235,7 @@ function buildVisualUatComplianceFixtures(){
     measurements:[visualUatInitial("VU-CMP-L19",addMonthsISO(TODAY_STR,-1),"M")],
     crType:"직접접촉+비잔류",type:"Facility"
   });
-  push("VU-CMP-L20","Supplemental Measured P1",{
+  push("VU-CMP-L20","Not Allowed keeps managed Pn",{
     measurements:[
       visualUatInitial("VU-CMP-L20",addMonthsISO(TODAY_STR,-2),"H"),
       visualUatPeriodic("VU-CMP-L20",addMonthsISO(TODAY_STR,-1),"L",{suffix:"P1",periodNo:1})
@@ -4262,7 +4298,7 @@ const VISUAL_UAT_COMPLIANCE_EXPECTATIONS=Object.freeze([
   {code:"VU-CMP-L17",expected:{cycle:"Monthly",compactLabels:["P3","P4","P5","P6"],compactCount:4}},
   {code:"VU-CMP-L18",expected:{cycle:"Annual",p1MeasurementCount:2}},
   {code:"VU-CMP-L19",expected:{cycle:"Not Available",currentStatus:"notAvailable",regularPeriodCount:0,allLabels:["R"]}},
-  {code:"VU-CMP-L20",expected:{cycle:"Not Available",currentStatus:"notAvailable",displayLabels:["R","P1"],supplementalStatus:"measured"}}
+  {code:"VU-CMP-L20",expected:{cycle:"Monthly",compactLabels:["R","P1","P2","P3"],compactCount:4}}
 ]);
 
 function visualUatComplianceSelfCheckRow(item,manifest){
@@ -4346,7 +4382,7 @@ const VISUAL_UAT_EXPECTATIONS=Object.freeze([
   ].map(([code,finalRisk])=>({code,group:"Risk",expected:{finalRisk}})),
   ...[
     ["VU-C01","H","Monthly",1,15],["VU-C02","M","Semiannual",6,30],
-    ["VU-C03","L","Annual",12,30],["VU-C04","Not Allowed","Not Available",null,null],
+    ["VU-C03","L","Annual",12,30],["VU-C04","Not Allowed","Monthly",1,15],
     ["VU-C05","—","Not Available",null,null],["VU-C06","M","Not Available",null,null]
   ].map(([code,finalRisk,cycle,cycleMonths,recommendDays])=>({code,group:"Cycle",expected:{finalRisk,cycle,cycleMonths,recommendDays}})),
   {code:"VU-P01",group:"Period",expected:{periodStatus:"due_soon",dDay:3}},
