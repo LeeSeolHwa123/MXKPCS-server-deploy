@@ -1755,6 +1755,8 @@ const UI_EN_MAP = {
   "기타 단종 사유를 구체적으로 입력하세요":"Describe the other discontinuation reason",
   "기타 대체 사유를 구체적으로 입력하세요":"Describe the other replacement reason",
   "전체 열 검색":"Search all columns",
+  "관리자 직접 등록 인증":"Admin Direct Registration Authentication",
+  "관리자 직접 등록을 사용하려면 관리자 비밀번호를 입력하세요.":"Enter the administrator password to use Admin Direct Registration.",
   "관리자 비밀번호를 입력하세요.":"Enter the administrator password.",
   "관리자 비밀번호가 올바르지 않습니다.":"The administrator password is incorrect.",
   "품목 정보 편집은 관리자만 가능합니다.":"Only administrators can edit item information.",
@@ -4484,15 +4486,20 @@ function FilterChips({filterState, onClear, onClearAll}){
   );
 }
 
-function FH({label, col, filterState, openFilter, onOpen, lang="ko"}){
+function FH({label, col, filterState, openFilter, onOpen, lang="ko", balancedHeader=false, breakTwoWordEnglish=false}){
   const isAct=filterState[col]?.length>0;
   const cnt=filterState[col]?.length||0;
   const displayLabel=lang==="en"?translateUiTextKoToEn(label):label;
   const canWrapAtSpace=String(displayLabel).trim().includes(" ");
+  const englishWords=String(displayLabel).trim().split(/\s+/).filter(Boolean);
+  const splitIntoTwoLines=lang==="en"&&breakTwoWordEnglish&&englishWords.length===2;
   return(
     <div data-filter-header={col} data-i18n-skip="true" onClick={e=>onOpen(col,e)}
-      style={{position:"relative",display:"grid",gridTemplateColumns:`minmax(0,1fr) ${lang==="en"?20:16}px`,columnGap:2,alignItems:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
-      <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.15,textAlign:"center",overflow:"visible",overflowWrap:"normal",wordBreak:"keep-all"}}>{displayLabel}</span>
+      style={{position:"relative",display:"grid",gridTemplateColumns:balancedHeader?"20px minmax(0,1fr) 20px":`minmax(0,1fr) ${lang==="en"?20:16}px`,columnGap:2,alignItems:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
+      {balancedHeader&&<span aria-hidden="true" style={{display:"block",width:20}}/>}
+      <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.15,textAlign:"center",overflow:"visible",overflowWrap:"normal",wordBreak:"keep-all"}}>
+        {splitIntoTwoLines?<>{englishWords[0]}<br/>{englishWords[1]}</>:displayLabel}
+      </span>
       <span aria-hidden="true" style={{display:"block",width:"100%",textAlign:"center",fontSize:8,color:isAct?C.red:C.charcoalLt,fontWeight:700,lineHeight:1,whiteSpace:"nowrap"}}>{isAct?`▼${cnt}`:"▼"}</span>
       {isAct&&col!=="category"&&<span style={{width:4,height:4,borderRadius:"50%",background:C.red,position:"absolute",left:1,top:"50%",transform:"translateY(-50%)"}}/>}
     </div>
@@ -9331,7 +9338,7 @@ export default function App(){
   const uploadBoxStyle={position:"relative",display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:`1px dashed ${C.bd2}`,background:C.card,color:C.text3,fontSize:12,fontWeight:600,cursor:"pointer",overflow:"hidden",textAlign:"center",padding:"0 12px",boxSizing:"border-box"};
   const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 / 변경 관리"}];
   const fhp={filterState:fs,openFilter,onOpen:handleOpen,lang};
-  const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang};
+  const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang,balancedHeader:true,breakTwoWordEnglish:true};
   const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
   const precisionColumnWidths=lang==="en"
     ? {period:80,code:84,name:150,dept:88,date:92,elements:94,reason:118,handoff:92,report:72,confirm:100,result:88,detail:34}
@@ -10440,7 +10447,7 @@ export default function App(){
               onMouseLeave={event=>{if(!active)event.currentTarget.style.background=C.card;}}>
               <td style={tdStyle}><span style={{display:"inline-flex",minWidth:36,height:24,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{casePeriodLabel}</span></td>
               <td style={{...tdStyle,fontWeight:700,overflowWrap:"anywhere"}}>{r.item.code}</td>
-              <td style={{...tdStyle,textAlign:"left",padding:lang==="en"?"4px 5px":"6px 9px"}}><div style={{fontWeight:650,color:C.text1,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{displayItemName(r.item,lang)}</div></td>
+              <td style={{...tdStyle,textAlign:"center",padding:lang==="en"?"4px 5px":"6px 9px"}}><div style={{width:"100%",fontWeight:650,color:C.text1,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3,textAlign:"center"}}>{displayItemName(r.item,lang)}</div></td>
               <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all"}}>{department}</td>
               <td style={{...tdStyle,whiteSpace:"nowrap"}}>{measuredDate}</td>
               <td style={tdStyle}><div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:27,height:20,padding:"0 5px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10.5,fontWeight:650}}>{element}</span>):"—"}</div></td>
