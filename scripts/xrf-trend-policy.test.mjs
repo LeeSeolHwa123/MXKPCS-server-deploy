@@ -142,8 +142,8 @@ assert(throughP3.map(period=>period.label).join(",")==="R,P1,P2,P3","selected P3
 const periodNoRuntime=app.buildRuntimeFromSharePoint({lists:{
   XRF_Items:[{id:"1",fields:{Title:"ITM-DB-PERIOD",field_1:"DB-PERIOD",field_2:"DB period item",field_4:"Auxiliary Materials",field_5:"Common",field_8:"비접촉",field_9:"ExistingActive",field_10:true}}],
   XRF_Measurements:[
-    {id:"10",fields:{Title:"DB-PERIOD_20250101_01",field_1:"ITM-DB-PERIOD",Measured_Date:"2025-01-01",field_3:"Initial",Period_No:0,field_4:1}},
-    {id:"11",fields:{Title:"DB-PERIOD_20260101_01",field_1:"ITM-DB-PERIOD",Measured_Date:"2026-01-01",field_3:"Periodic",Period_No:2,field_4:1}},
+    {id:"10",fields:{Title:"DB-PERIOD_20250101_01",field_1:"ITM-DB-PERIOD",field_2:0,Measured_Date:"2025-01-01",field_3:"Initial",field_4:1}},
+    {id:"11",fields:{Title:"DB-PERIOD_20260101_01",field_1:"ITM-DB-PERIOD",field_2:2,Measured_Date:"2026-01-01",field_3:"Periodic",field_4:1}},
   ],
   XRF_ElementResults:[],XRF_Requests:[],XRF_PrecisionAnalyses:[],XRF_PrecisionElementResults:[],
 }});
