@@ -10,8 +10,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 const require = createRequire(import.meta.url);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = path.join(projectRoot, "app.jsx");
+const indexPath = path.join(projectRoot, "index.html");
 let source = await fs.readFile(sourcePath, "utf8");
 const originalSource = source;
+const indexSource = await fs.readFile(indexPath, "utf8");
 source = source
   .replace('from "react"', `from "${pathToFileURL(require.resolve("react")).href}"`)
   .replace('from "xlsx"', `from "${pathToFileURL(require.resolve("xlsx")).href}"`);
@@ -73,4 +75,6 @@ assert.match(originalSource, /className="app-brand" onClick=\{\(\)=>setEntered\(
 assert.match(originalSource, /\},\[lang,entered\]\);/);
 assert.match(originalSource, /className="mxk-splash"[^>]*height:"100dvh"/);
 assert.match(originalSource, /className="mxk-splash-hero"/);
+assert.doesNotMatch(originalSource, /height:4,background:C\.red/);
+assert.match(indexSource, /html, body, #root \{ margin: 0; min-width: 100%; min-height: 100%; \}/);
 console.log("splash-screen: PASS");

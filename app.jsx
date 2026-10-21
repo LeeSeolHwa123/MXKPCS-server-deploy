@@ -609,6 +609,8 @@ function buildSharePointMeasurementMap(measurementRows,elementRows){
       sequence:measurementSequenceFromId(id),
       role:f.field_3||"",
       Measurement_Role:f.field_3||"",
+      periodNo:f.Period_No ?? null,
+      Period_No:f.Period_No ?? null,
       attemptNo:Number(f.field_4||1),
       parentMeasurementId:f.field_5||null,
       sourceFileName:f.field_6||"",
@@ -641,7 +643,9 @@ function decorateRuntimeItemWithMeasurements(baseItem,itemId,measurementMap){
     id:m.id,
     measurementId:m.id,
     date:m.date,
-    periodNo:normalizeMeasurementRole(m?.role)==="Initial" ? 0 : null,
+    periodNo:normalizeMeasurementRole(m?.role)==="Initial"
+      ? 0
+      : (Number.isInteger(Number(m?.periodNo)) && Number(m.periodNo)>0 ? Number(m.periodNo) : null),
     measurementRole:normalizeMeasurementRole(m?.role||m?.measurementRole||""),
     attemptNo:Number(m?.attemptNo||1),
     parentMeasurementId:m?.parentMeasurementId||null,
@@ -1099,17 +1103,35 @@ function normalizeMeasurementRole(value){
   const role=String(value??"").trim();
   return role==="Cycle_Reset" ? "Periodic" : role;
 }
+function measurementPeriodSequence(measurement,period){
+  // Measurement Type의 #n은 내부 식별값이 아니라 화면의 Pn과 반드시 같은 번호를 사용합니다.
+  // 과거 보조 측정 노드에 사용했던 900001+ sentinel 값도 displayLabel(P1, P2...)을 우선해 복구합니다.
+  for(const label of [period?.displayLabel,period?.label]){
+    const matched=String(label||"").trim().match(/^P(\d+)$/i);
+    if(matched) return Number(matched[1]);
+  }
+  for(const value of [measurement?.periodNo,period?.displaySeq,period?.num]){
+    const sequence=Number(value);
+    if(!Number.isFinite(sequence) || sequence<=0) continue;
+    return sequence>=900001 ? sequence-900000 : sequence;
+  }
+  return null;
+}
 function measurementTypeDisplay(measurement,period){
   const role=normalizeMeasurementRole(measurement?.role||measurement?.measurementRole||"");
   if(!role) return "—";
   const sequence=role==="Periodic"
-    ? Number(period?.num ?? measurement?.periodNo)
+    ? measurementPeriodSequence(measurement,period)
     : Number(measurement?.attemptNo);
   return `${role}${Number.isFinite(sequence) && sequence>0 ? ` #${sequence}` : ""}`;
 }
 function normalizeMeasurementRecord(raw, fallbackId=""){
   const id=String(pickField(raw,"id","Measurement_ID","measurementId") || fallbackId);
   const sourceRole=pickField(raw,"role","Measurement_Role","measurementRole");
+  const rawPeriodNo=pickField(raw,"periodNo","Period_No","PeriodNo");
+  const parsedPeriodNo=rawPeriodNo===null || rawPeriodNo===undefined || String(rawPeriodNo).trim()===""
+    ? null
+    : Number(rawPeriodNo);
   const elements={};
   ELEMENTS.filter(element=>element!=="Cl+Br").forEach(element=>{ elements[element]=normalizeElementRecord(raw,element); });
   const clBr=buildClBrResult(sourcePpmValue(elements.Cl),sourcePpmValue(elements.Br));
@@ -1139,6 +1161,7 @@ function normalizeMeasurementRecord(raw, fallbackId=""){
     sequence:pickField(raw,"sequence","Measurement_Sequence","measurementSequence"),
     role:normalizeMeasurementRole(sourceRole),
     sourceRole:sourceRole||null,
+    periodNo:Number.isInteger(parsedPeriodNo) && parsedPeriodNo>=0 ? parsedPeriodNo : null,
     xrfWorst:pickField(raw,"xrfWorst","XRF_Worst") || raw?.xrf_worst,
     approvalStatus:pickField(raw,"approvalStatus","Approval_Status"),
     retestRequiredElements:pickField(raw,"retestRequiredElements","Retest_Elements") || "",
@@ -1838,6 +1861,61 @@ const UI_EN_MAP = {
   "관리자 직접 주기":"Admin direct period","관리자 주기":"Admin period","관리자 직접":"Admin direct",
   "관리자":"Administrator","의뢰자":"Requester","XRF 업로드":"XRF upload","업로드":"upload",
   "요청":"request","등록":"registration","처리":"processing","기한 초과":"overdue",
+
+  // ── 4차 보강 : 영문 화면의 모달·도움말·동적 상태 문구 ──
+  "관리자 인증":"Administrator Authentication","관리자 비밀번호":"Administrator Password","비밀번호":"Password",
+  "닫기":"Close","공유":"Share","시작 화면으로 돌아가기":"Return to Start Screen",
+  "선택 항목":"Selected Items","선택항목":"Selected Items","선택 해제":"Clear Selection",
+  "선택 항목 검색 추가":"Search to Add Selection","전체 품목에서 선택 항목 검색 추가":"Search All Items to Add Selection",
+  "사진 있음":"Photo Attached","데이터 없음":"No Data","미연결":"Not Linked","확인 중...":"Checking...",
+  "관리주기":"Management Cycle","정기 관리주기":"Regular Management Cycle","실제 XRF 측정 이력":"Actual XRF Measurement History",
+  "현재 Pn":"Current Pn","다음 Pn의 이름":"Next Pn Name","도래일 당일 이행":"Completed on Due Date",
+  "매우 이른 측정":"Very Early Measurement","지연측정 · D+5에 측정":"Late Measurement · Measured on D+5",
+  "월1회":"Monthly","매월":"Monthly","반기1회":"Semiannual","년1회":"Annual","연1회":"Annual","연간1회":"Annual",
+  "육가크롬":"Hexavalent Chromium","최초 2025년 조사 리스트":"Initial 2025 Survey List","같은 종류끼리":"Same Type",
+  "결과 값":"Result Value","?? 재측정 대상":"?? Remeasurement Target","R 재측정 완료":"R Remeasurement Complete",
+  "XRF 원본":"Original XRF","정밀분석 및 XRF 재측정":"Precision Analysis and XRF Remeasurement",
+  "정밀분석 인계 인증":"Precision Transfer Authentication","정밀분석 항목 검색":"Search Precision Analysis Cases",
+  "품목별 구분 · 측정일 최신순":"Grouped by Item · Newest Measurement First",
+  "품목별 정밀분석 발생 이력 표":"Precision Analysis History by Item",
+  "정밀분석 원소별 결과 표":"Precision Analysis Results by Element",
+  "주기별 이행 현황 표":"Cycle Compliance Status Table","부자재 목록 표":"Auxiliary Material List Table",
+  "고위험 및 후속분석 대상 품목 표":"High-risk and Follow-up Items Table",
+  "위험성 평가 기준표":"Risk Assessment Criteria Table","위험성 평가 현황표":"Risk Assessment Status Table",
+  "XRF 내부 판정 기준표":"XRF Internal Judgment Criteria Table","하위 항목 펼치기":"Expand Items","하위 항목 접기":"Collapse Items",
+  "현재 페이지 항목 전체 선택":"Select All Items on This Page","현재 페이지 링크와 필터 요약 공유":"Share Current Page Link and Filter Summary",
+  "필터가 적용된 전체 결과를 Excel 파일로 내보내기":"Export All Filtered Results to Excel",
+  "선택한 항목만 Excel 파일로 내보내기":"Export Only Selected Items to Excel",
+  "현재 화면 링크를 직접 복사해 주세요.":"Please Copy the Current View Link Manually.",
+  "현재 화면 링크와 필터 요약을 복사했습니다.":"The Current View Link and Filter Summary Were Copied.",
+  "내보낼 필터 결과가 없습니다.":"There Are No Filtered Results to Export.",
+  "내보낼 항목을 한 개 이상 선택하세요.":"Select at Least One Item to Export.",
+  "Excel 내보내기에 실패했습니다. 다시 시도해 주세요.":"Excel Export Failed. Please Try Again.",
+  "비밀번호를 확인한 뒤 다시 시도하세요.":"Check the Password and Try Again.",
+  "단종 요청 승인 여부 결정":"Decide Discontinuation Request","정밀분석 인계를 진행하려면 관리자 비밀번호를 입력하세요.":"Enter the Administrator Password to Proceed with the Precision Transfer.",
+  "정밀분석 인계가 DB에 저장된 뒤":"After the Precision Transfer Is Saved to the Database",
+  "PDF 재업로드 필요":"PDF Re-upload Required","원본 파일 재업로드 필요":"Original File Re-upload Required",
+  "SharePoint 저장 중...":"Saving to SharePoint...","SharePoint 처리 중...":"Processing in SharePoint...",
+  "추가할 수 있는 검색 결과가 없습니다.":"There Are No Search Results Available to Add.",
+  "Item_Name_EN을 입력하세요.":"Enter Item_Name_EN.",
+  "파일은 1바이트 이상, 250MB 이하만 업로드할 수 있습니다.":"Files Must Be Between 1 Byte and 250 MB.",
+  "품목 사진 크게 보기":"Enlarge Item Photo",
+  "품목 사진은 1바이트 이상, 10MB 이하만 업로드할 수 있습니다.":"Item Photos Must Be Between 1 Byte and 10 MB.",
+  "품목 사진은 JPG, PNG, WEBP 형식만 업로드할 수 있습니다.":"Item Photos Must Be JPG, PNG, or WEBP.",
+  "업로드 완료 파일 ID를 확인하지 못했습니다.":"The Uploaded File ID Could Not Be Verified.",
+  "사진 업로드 완료 파일 ID를 확인하지 못했습니다.":"The Uploaded Photo File ID Could Not Be Verified.",
+  "Graph가 예상한 업로드 위치가 일치하지 않습니다. 파일 저장 상태를 확인하세요.":"The Graph Upload Location Does Not Match the Expected Location. Check the File Save Status.",
+  "Graph가 예상한 사진 업로드 위치와 일치하지 않습니다.":"The Graph Photo Upload Location Does Not Match the Expected Location.",
+  "처리 결과를 SharePoint에 저장하지 못했습니다. 다시 시도하기 전에 현재 DB 상태를 확인하세요.":"The Result Could Not Be Saved to SharePoint. Check the Current Database Status Before Trying Again.",
+  "SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다.":"Saving to the SharePoint Database Failed. The Measurement Result Was Not Applied.",
+  "SharePoint Item ID를 찾지 못해 화면만 수정되었습니다. 새로고침 후 다시 시도하세요.":"The SharePoint Item ID Was Not Found, so Only the Screen Was Updated. Refresh and Try Again.",
+  "Visual UAT 테스트 데이터는 읽기 전용입니다.":"Visual UAT Test Data Is Read-only.",
+  "Visual UAT 원복 상태 확인":"Visual UAT Restore Status Check",
+  "검색":"Search","연결":"Linked","파일 조회":"File Retrieval",
+  "SharePoint DB 저장 실패":"SharePoint Database Save Failed","SharePoint DB 조회 실패":"SharePoint Database Retrieval Failed",
+  "XRF 측정값은 저장됐지만 원본 파일 저장에 실패했습니다.":"The XRF Result Was Saved, but Saving the Original File Failed.",
+  "품목은 저장됐지만 사진 원본 저장에 실패했습니다.":"The Item Was Saved, but Saving the Original Photo Failed.",
+  "품목과 XRF 측정값은 저장됐지만 원본 파일 저장에 실패했습니다.":"The Item and XRF Result Were Saved, but Saving the Original File Failed.",
 };
 
 // 정확 일치가 실패했을 때 사용할 부분 치환 규칙입니다. 긴 표현부터 순서대로 적용합니다.
@@ -1858,6 +1936,7 @@ function translateUiTextKoToEn(value){
   if(Object.prototype.hasOwnProperty.call(UI_EN_MAP,trimmed)) return prefix+UI_EN_MAP[trimmed]+suffix;
 
   // 날짜·건수·차수·지연일 등 동적 문구를 먼저 정규화합니다.
+  text=text.replace(/R 등록일\s*(\d{4}-\d{2}-\d{2})\s*기준\s*(.*?)\s*·\s*(\d{4})년\s*측정\s*이력은\s*P(\d+)에\s*통합/g,"R registration date $1 · $2 · $3 measurement history grouped under P$4");
   text=text.replace(/(\d{4})년\s*측정\s*이력/g,"$1 measurement history");
   text=text.replace(/(\d+)월/g,(_,m)=>{
     const names=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -1873,6 +1952,7 @@ function translateUiTextKoToEn(value){
   text=text.replace(/기준 향후 6개월/g,"· Next 6 months");
   text=text.replace(/기존 측정이력\s*(\d+)건\s*보존\s*·\s*전환\s*(\d{4}-\d{2}-\d{2}|—)/g,"Existing Measurements: $1 preserved · Transition $2");
   text=text.replace(/기존 품목\s*([A-Z0-9-]+)\s*대체/g,"Replaces Existing Item $1");
+  text=text.replace(/동일 품번\(([^)]+)\)의 신규등록이 이미 존재하거나 처리 중입니다\./g,"A new registration with the same part number ($1) already exists or is in progress.");
   text=text.replace(/([가-힣A-Za-z()·\s]+?):\s*/g,(m,label)=>{
     const key=label.trim();
     return UI_EN_MAP[key] ? `${UI_EN_MAP[key]}: ` : m;
@@ -1886,7 +1966,7 @@ function translateUiTextKoToEn(value){
 
 const UI_TEXT_NODE_SOURCE = new WeakMap();
 const UI_ATTR_SOURCE = new WeakMap();
-const UI_TRANSLATABLE_ATTRS = ["placeholder","title","aria-label"];
+const UI_TRANSLATABLE_ATTRS = ["placeholder","title","aria-label","alt"];
 
 function shouldSkipI18nNode(node){
   const el=node?.nodeType===1 ? node : node?.parentElement;
@@ -3574,11 +3654,14 @@ function itemXrfDisplayPeriods(item){
   const followups=extras.map((m,idx)=>{
     const id=String(m?.id||m?.measurementId||"").trim();
     const measured=dateOnly(m?.date||m?.measuredDate)||null;
+    const displayPeriodNo=idx+1;
     return {
-      num:900001+idx,
-      displaySeq:900001+idx,
-      label:`P${idx+1}`,
-      displayLabel:`P${idx+1}`,
+      // 화면용 보조 주기도 실제 표시 Pn과 동일한 번호를 사용합니다.
+      // 정기 관리주기에는 포함되지 않으므로 별도 900001+ 내부 번호가 필요하지 않습니다.
+      num:displayPeriodNo,
+      displaySeq:displayPeriodNo,
+      label:`P${displayPeriodNo}`,
+      displayLabel:`P${displayPeriodNo}`,
       isReference:false,
       isSupplementalMeasurement:true,
       isCompliancePeriod:false,
@@ -4398,9 +4481,9 @@ function FH({label, col, filterState, openFilter, onOpen, lang="ko"}){
   const canWrapAtSpace=String(displayLabel).trim().includes(" ");
   return(
     <div data-filter-header={col} data-i18n-skip="true" onClick={e=>onOpen(col,e)}
-      style={{position:"relative",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
-      <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.15,textAlign:"center",overflowWrap:"normal",wordBreak:"keep-all"}}>{displayLabel}</span>
-      <span aria-hidden="true" style={{position:"absolute",right:0,top:"50%",transform:"translateY(-50%)",width:lang==="en"?16:14,textAlign:"center",fontSize:8,color:isAct?C.red:C.charcoalLt,fontWeight:700,lineHeight:1}}>{isAct?`▼${cnt}`:"▼"}</span>
+      style={{position:"relative",display:"grid",gridTemplateColumns:`minmax(0,1fr) ${lang==="en"?20:16}px`,columnGap:2,alignItems:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
+      <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.15,textAlign:"center",overflow:"visible",overflowWrap:"normal",wordBreak:"keep-all"}}>{displayLabel}</span>
+      <span aria-hidden="true" style={{display:"block",width:"100%",textAlign:"center",fontSize:8,color:isAct?C.red:C.charcoalLt,fontWeight:700,lineHeight:1,whiteSpace:"nowrap"}}>{isAct?`▼${cnt}`:"▼"}</span>
       {isAct&&col!=="category"&&<span style={{width:4,height:4,borderRadius:"50%",background:C.red,position:"absolute",left:1,top:"50%",transform:"translateY(-50%)"}}/>}
     </div>
   );
@@ -4696,10 +4779,10 @@ function Chip({v, small, result=false}){
   return <span style={{...chipSize,fontWeight:compactResult?600:600,color:st.c,background:st.bg,borderRadius:UI.pill,display:"inline-flex",alignItems:"center",justifyContent:"center",border:`1px solid ${st.bd}`,lineHeight:1,overflow:"hidden",whiteSpace:"nowrap",boxSizing:"border-box"}}><AutoFitText value={resultUiLabel(v)} baseFontSize={compactResult?RESULT_LABEL_FONT_SIZE:(small?9.5:11)} minFontSize={7} align="center" style={{fontWeight:600,lineHeight:1}}/></span>;
 }
 
-// 부자재 리스트 탭의 ITEM NAME 열을 제외한 화면에서는 영문 모드일 때 영문 품목명을 우선 표시합니다.
+// 영문 모드에서는 한글 품목명이 화면에 섞이지 않도록 영문명, 영문 fallback, 품번 순으로 표시합니다.
 function displayItemName(item, lang){
   if(lang!=="en") return item?.name || "";
-  return String(item?.nameEn||ITEM_NAME_EN_FALLBACKS[String(item?.code||"").trim()]||"").trim() || item?.name || "";
+  return String(item?.nameEn||ITEM_NAME_EN_FALLBACKS[String(item?.code||"").trim()]||item?.code||"").trim();
 }
 
 function CatDot({cat, dark=false, lang="ko"}){
@@ -5279,14 +5362,17 @@ function ApprovalBadge({status, context, detail=""}) {
     fixedWidth={APPROVAL_LABEL_WIDTH} fixedHeight={APPROVAL_LABEL_HEIGHT} fixedFontSize={APPROVAL_LABEL_FONT_SIZE}/>;
 }
 
-function DetailArrowButton({active=false, title="상세 보기"}){
+function DetailArrowButton({title="상세 보기"}){
+  const [hovered,setHovered]=useState(false);
   const [pressed,setPressed]=useState(false);
-  return <button type="button" title={title} aria-pressed={active}
+  const highlighted=hovered||pressed;
+  return <button type="button" title={title}
+    onPointerEnter={()=>setHovered(true)}
     onPointerDown={()=>setPressed(true)}
     onPointerUp={()=>setPressed(false)}
     onPointerCancel={()=>setPressed(false)}
-    onPointerLeave={()=>setPressed(false)}
-    style={{width:26,height:26,background:active?C.charcoalDk:(pressed?C.bg:C.card),border:`1px solid ${active?C.charcoalDk:C.bd2}`,borderRadius:UI.rs,fontSize:12,cursor:"pointer",color:active?"#fff":C.text3,fontWeight:500,boxShadow:"none",transform:active?"translateX(2px)":(pressed?"scale(.94)":"none"),transition:"background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .12s ease"}}>→</button>;
+    onPointerLeave={()=>{setHovered(false);setPressed(false);}}
+    style={{width:26,height:26,background:highlighted?C.charcoalDk:C.card,border:`1px solid ${highlighted?C.charcoalDk:C.bd2}`,borderRadius:UI.rs,fontSize:12,cursor:"pointer",color:highlighted?"#fff":C.text3,fontWeight:500,boxShadow:"none",transform:pressed?"scale(.94)":"none",transition:"background .16s ease, border-color .16s ease, color .16s ease, transform .12s ease"}}>→</button>;
 }
 function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverride, markPrecisionRequested, reloadSharePointDb, onPhotoPreview}){
   const isRequested=selected.precision.requestStatus==="REQUESTED";
@@ -6688,7 +6774,6 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
             <span>{department}</span>
           </span>
         </div>
-        <div aria-hidden="true" style={{height:4,background:C.red}}/>
       </div>
     </div>
   );
@@ -7404,6 +7489,7 @@ export default function App(){
       date:measuredDate,
       sequence,
       role,
+      periodNo,
       attemptNo,
       parentMeasurementId,
       xrfWorst:xrfResult,
@@ -7567,6 +7653,7 @@ export default function App(){
         partNumber:targetItem.code,
         measuredDate,
         role,
+        periodNo,
         attemptNo,
         parentMeasurementId,
         sourceFileName:result.fileName||"",
@@ -9237,7 +9324,7 @@ export default function App(){
   const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang};
   const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
   const precisionColumnWidths=lang==="en"
-    ? {period:86,code:100,name:190,dept:116,date:104,elements:112,reason:150,handoff:102,report:92,confirm:108,result:96,detail:38}
+    ? {period:80,code:84,name:150,dept:88,date:92,elements:94,reason:118,handoff:92,report:72,confirm:100,result:88,detail:34}
     : {period:72,code:90,name:170,dept:84,date:92,elements:94,reason:126,handoff:84,report:74,confirm:84,result:78,detail:34};
   const precisionColumns=[
     {key:"period",el:<FH label="발생 주기" col="paPeriod" {...precisionFhp}/>,w:precisionColumnWidths.period},
@@ -9400,6 +9487,11 @@ export default function App(){
         }
         .responsive-table-scroll > table{
           max-width:none !important;
+        }
+        .app-root[data-lang="en"] .precision-analysis-table > table{
+          width:100% !important;
+          min-width:0 !important;
+          max-width:100% !important;
         }
         .app-root ::placeholder { color:${C.text4}; opacity:1; }
         .num { font-family:${FONT_NUM}; font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
@@ -9911,7 +10003,7 @@ export default function App(){
                     const selectionKey=materialListSelectionKey(item);
                     const isListItemSelected=selectedListItemKeySet.has(selectionKey);
                     const primaryItemName=displayItemName(item,lang)||"—";
-                    const secondaryItemName=lang==="en"?(item.name||"—"):(item.nameEn||ITEM_NAME_EN_FALLBACKS[item.code]||"—");
+                    const secondaryItemName=lang==="en"?"":(item.nameEn||ITEM_NAME_EN_FALLBACKS[item.code]||"—");
                     const departmentText=lang==="en"?translateUiTextKoToEn(item.dept||"—"):(item.dept||"—");
                     const cycleText=isCycleMuted||isEquipmentItem(item)
                       ? "—"
@@ -9946,9 +10038,7 @@ export default function App(){
                           <div title={primaryItemName} style={{fontSize:12,fontWeight:600,color:C.text1,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
                             {primaryItemName}
                           </div>
-                          <div title={secondaryItemName} style={{fontSize:10,color:C.text2,marginTop:3,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>
-                            {secondaryItemName}
-                          </div>
+                          {secondaryItemName&&<div title={secondaryItemName} style={{fontSize:10,color:C.text2,marginTop:3,textAlign:"left",lineHeight:1.35,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"anywhere"}}>{secondaryItemName}</div>}
                         </td>
                         <td data-i18n-skip="true" style={{...tdS,color:C.text3,fontSize:11,padding:lang==="en"?"5px 4px":"0 6px"}}>
                           <div title={departmentText} style={{width:"100%",whiteSpace:String(departmentText).trim().includes(" ")?"normal":"nowrap",overflowWrap:"normal",wordBreak:"keep-all",lineHeight:1.3,textAlign:"center"}}>{departmentText}</div>
@@ -9995,7 +10085,7 @@ export default function App(){
               <span style={{...T.section}}>품목 선택</span>
               <select data-i18n-skip="true" value={selKey||""} onChange={e=>{setSelKey(e.target.value);setSelPeriodNum(null);}} style={{...inp,minWidth:220,width:"min(100%, 420px)",maxWidth:"100%"}}>
                 <option value="">{lang==="en"?"-- Select --":"-- 선택하세요 --"}</option>
-                {xrfSelectableItems.map(i=><option key={i.code} value={i.code}>{i.code}  |  {i.dept}  |  {displayItemName(i,lang)}</option>)}
+                        {xrfSelectableItems.map(i=><option key={i.code} value={i.code}>{i.code}  |  {lang==="en"?translateUiTextKoToEn(i.dept):i.dept}  |  {displayItemName(i,lang)}</option>)}
               </select>
             </div>
             {pendingDiscontinueRequestItems.length>0&&<div style={{...card,padding:"12px 14px",marginBottom:14,background:C.alt}}>
@@ -10325,8 +10415,8 @@ export default function App(){
             const casePeriodLabel=precisionCasePeriodLabel(r);
             const measuredDate=dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—";
             const department=lang==="en"?translateUiTextKoToEn(r.item.dept||"—"):(r.item.dept||"—");
-            const statusBadge=(label,done)=><span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minHeight:22,padding:"0 8px",borderRadius:UI.pill,border:`1px solid ${done?C.charcoalDk:C.bd2}`,background:done?C.charcoalDk:C.card,color:done?"#fff":C.text4,fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>{label}</span>;
-            const tdStyle={height:58,padding:"6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",fontSize:11,color:C.text2,overflow:"hidden"};
+            const statusBadge=(label,done)=><span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",maxWidth:"100%",minHeight:22,padding:lang==="en"?"2px 4px":"0 8px",boxSizing:"border-box",borderRadius:UI.pill,border:`1px solid ${done?C.charcoalDk:C.bd2}`,background:done?C.charcoalDk:C.card,color:done?"#fff":C.text4,fontSize:lang==="en"?9.5:10,fontWeight:600,whiteSpace:lang==="en"?"normal":"nowrap",lineHeight:1.1}}>{label}</span>;
+            const tdStyle={height:lang==="en"?60:58,padding:lang==="en"?"4px 3px":"6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",fontSize:11,color:C.text2,overflow:lang==="en"?"visible":"hidden"};
             return <tr key={r.key} onClick={()=>{
               if(precisionSelCaseId===r.key){
                 setPrecisionSelCaseId(null);
@@ -10340,7 +10430,7 @@ export default function App(){
               onMouseLeave={event=>{if(!active)event.currentTarget.style.background=C.card;}}>
               <td style={tdStyle}><span style={{display:"inline-flex",minWidth:36,height:24,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{casePeriodLabel}</span></td>
               <td style={{...tdStyle,fontWeight:700,overflowWrap:"anywhere"}}>{r.item.code}</td>
-              <td style={{...tdStyle,textAlign:"left",padding:"6px 9px"}}><div style={{fontWeight:650,color:C.text1,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{displayItemName(r.item,lang)}</div></td>
+              <td style={{...tdStyle,textAlign:"left",padding:lang==="en"?"4px 5px":"6px 9px"}}><div style={{fontWeight:650,color:C.text1,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{displayItemName(r.item,lang)}</div></td>
               <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all"}}>{department}</td>
               <td style={{...tdStyle,whiteSpace:"nowrap"}}>{measuredDate}</td>
               <td style={tdStyle}><div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:27,height:20,padding:"0 5px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10.5,fontWeight:650}}>{element}</span>):"—"}</div></td>
@@ -10372,9 +10462,9 @@ export default function App(){
               </div>
               <FilterChips filterState={precisionFilters} onClear={handlePrecisionFilterClear} onClearAll={handlePrecisionFiltersClearAll}/>
               <div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label="품목별 정밀분석 발생 이력 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
-                <table style={{width:"100%",minWidth:precisionTableWeight,maxWidth:"none",borderCollapse:"collapse",tableLayout:"fixed"}}>
+                <table style={{width:"100%",minWidth:lang==="en"?0:precisionTableWeight,maxWidth:lang==="en"?"100%":"none",borderCollapse:"collapse",tableLayout:"fixed"}}>
                   <colgroup>{precisionColumns.map(column=><col key={column.key} style={{width:`${(column.w/precisionTableWeight)*100}%`}}/>)}</colgroup>
-                  <thead><tr style={{height:lang==="en"?62:42}}>{precisionColumns.map(column=><th key={column.key} style={{height:lang==="en"?62:42,padding:lang==="en"?"5px 3px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.15}}>{column.el}</th>)}</tr></thead>
+                  <thead><tr style={{height:lang==="en"?62:42}}>{precisionColumns.map(column=><th key={column.key} style={{height:lang==="en"?62:42,padding:lang==="en"?"4px 2px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",wordBreak:"keep-all",lineHeight:1.15}}>{column.el}</th>)}</tr></thead>
                   {precisionRows.length===0?(
                     <tbody><tr><td colSpan={precisionColumns.length} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>정밀분석 대상이 없습니다.</td></tr></tbody>
                   ):filteredPrecisionRows.length===0?(
@@ -10610,8 +10700,8 @@ export default function App(){
                     {regType==="replacement"&&<div style={{padding:"12px",background:C.bg,border:`1px solid ${C.bd}`,borderRadius:8,marginBottom:14}}>
                       <div style={{fontSize:12,fontWeight:700,color:C.text1,marginBottom:8}}>대체 대상 품목 선택 <span style={{color:C.red}}>*</span></div>
                       <select data-i18n-skip="true" value={reqForm.replacementTargetCode} onChange={e=>updateRequestField("replacementTargetCode",e.target.value)} style={{...inp,width:"100%",boxSizing:"border-box",marginBottom:10}}>
-                        <option value="">대체할 기존 품목을 선택하세요</option>
-                        {selectableExistingItems.map(item=><option key={item.code} value={item.code}>{item.code} | {item.dept} | {displayItemName(item,lang)}</option>)}
+                        <option value="">{lang==="en"?"Select the Existing Item to Replace":"대체할 기존 품목을 선택하세요"}</option>
+                        {selectableExistingItems.map(item=><option key={item.code} value={item.code}>{item.code} | {lang==="en"?translateUiTextKoToEn(item.dept):item.dept} | {displayItemName(item,lang)}</option>)}
                       </select>
                       {selectedReplacementTarget&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:8}}>
                         {[
@@ -10679,8 +10769,8 @@ export default function App(){
                     <div style={{padding:"12px",background:C.bg,border:`1px solid ${C.bd}`,borderRadius:8,marginBottom:14}}>
                       <div style={{fontSize:12,fontWeight:700,color:C.text1,marginBottom:8}}>단종 대상 품목 선택 <span style={{color:C.red}}>*</span></div>
                       <select data-i18n-skip="true" value={reqForm.discontinueTargetCode} onChange={e=>updateRequestField("discontinueTargetCode",e.target.value)} style={{...inp,width:"100%",boxSizing:"border-box",marginBottom:10}}>
-                        <option value="">단종 또는 사용 중지할 기존 품목을 선택하세요</option>
-                        {selectableExistingItems.map(item=><option key={item.code} value={item.code}>{item.code} | {item.dept} | {displayItemName(item,lang)}</option>)}
+                        <option value="">{lang==="en"?"Select the Existing Item to Discontinue or Stop Using":"단종 또는 사용 중지할 기존 품목을 선택하세요"}</option>
+                        {selectableExistingItems.map(item=><option key={item.code} value={item.code}>{item.code} | {lang==="en"?translateUiTextKoToEn(item.dept):item.dept} | {displayItemName(item,lang)}</option>)}
                       </select>
                       {selectedDiscontinueTarget&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:8}}>
                         {[

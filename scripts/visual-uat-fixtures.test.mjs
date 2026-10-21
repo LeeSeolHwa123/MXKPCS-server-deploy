@@ -74,6 +74,18 @@ if(transferCompatibilitySummary.precisionTransferRequired!==2 || transferCompati
 if(app.translateUiTextKoToEn("사진 선택 (JPG, PNG, WEBP / 최대 10MB)")!=="Choose Photo (JPG, PNG, WEBP / max. 10 MB)"){
   structuralFailures.push("photo picker translation mismatch");
 }
+const englishOnlyUiSamples=[
+  "관리자 인증","관리자 비밀번호","닫기","공유","선택 항목 검색 추가","사진 있음",
+  "월1회","반기1회","연간1회","품목별 정밀분석 발생 이력 표","정밀분석 원소별 결과 표",
+  "현재 페이지 링크와 필터 요약 공유","필터가 적용된 전체 결과를 Excel 파일로 내보내기",
+  "현재 화면 링크와 필터 요약을 복사했습니다.","SharePoint 저장 중...","품목 사진 크게 보기",
+  "동일 품번(C-01)의 신규등록이 이미 존재하거나 처리 중입니다.",
+  "R 등록일 2026-01-01 기준 연 1회 · 2027년 측정 이력은 P1에 통합"
+];
+for(const sample of englishOnlyUiSamples){
+  const translated=app.translateUiTextKoToEn(sample);
+  if(/[가-힣]/.test(translated)) structuralFailures.push(`English UI translation still contains Korean: ${sample} => ${translated}`);
+}
 if(app.VISUAL_UAT_MODE!==false) structuralFailures.push("SSR/normal mode must disable Visual UAT");
 if(uatApp.VISUAL_UAT_MODE!==true) structuralFailures.push("?uat=1 must enable Visual UAT");
 if(visualItems.length!==55) structuralFailures.push(`fixture count ${visualItems.length} !== 55`);

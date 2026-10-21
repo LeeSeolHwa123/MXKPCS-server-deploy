@@ -22,6 +22,7 @@ export {
   precisionCycleStopDate,itemHasConfirmedPrecisionResult,
   runtimePrecisionCasesForItem,deriveRuntimeWorkflow,
   itemXrfDisplayPeriods,itemMeasurementRecords,measurementById,measurementAttemptsForPeriod,
+  measurementPeriodSequence,measurementTypeDisplay,
   periodMeasurementsOf,xrfTrendMeasurement,xrfTrendMeasurementEntries,xrfTrendSeries,
   xrfTrendPeriodsThroughSelection,normalizeItemRecord,displayItemName,alignedMaterialScopes
 };
@@ -94,6 +95,17 @@ assert(originalSource.includes('measurementSavePending||registrationSavePending?
 assert(originalSource.includes("const active=materialScopes.operational;"),"risk overview must share the material-list operational scope");
 assert(!originalSource.includes("const active=allItems.filter(i=>i.isCurrent && !isDiscontinueRequestItem(i));"),"risk overview must not maintain a separate active-item rule");
 assert(originalSource.includes('data-precision-item-label="true"'),"precision item code/name group labels must have a distinct visual treatment");
+assert(originalSource.includes('gridTemplateColumns:`minmax(0,1fr) ${lang==="en"?20:16}px`'),"filter headers must reserve a separate non-overlapping arrow column");
+assert(originalSource.includes('period:80,code:84,name:150,dept:88,date:92,elements:94'),"English precision headers must keep their compact proportional widths");
+assert(originalSource.includes('minWidth:lang==="en"?0:precisionTableWeight'),"English precision table must fit the available width without a forced horizontal scroll");
+assert(originalSource.includes('.app-root[data-lang="en"] .precision-analysis-table > table'),"English precision table must override the narrow-screen wide-table minimum");
+assert(originalSource.includes('const UI_TRANSLATABLE_ATTRS = ["placeholder","title","aria-label","alt"]'),"English mode must translate visible fallback image text as well as control attributes");
+assert(originalSource.includes('||item?.code||"").trim();'),"English item labels must fall back to the part number instead of Korean text");
+assert(originalSource.includes('const secondaryItemName=lang==="en"?""'),"English material rows must not render the Korean secondary item name");
+assert(originalSource.includes('lang==="en"?"Select the Existing Item to Replace"'),"translation-excluded replacement selectors must render an explicit English prompt");
+assert(originalSource.includes('lang==="en"?"Select the Existing Item to Discontinue or Stop Using"'),"translation-excluded discontinuation selectors must render an explicit English prompt");
+assert(originalSource.includes("const highlighted=hovered||pressed;"),"detail arrows must use transient pointer highlighting");
+assert(!originalSource.includes('transform:active?"translateX(2px)"'),"detail arrows must not retain black fill from a previous selection");
 const alignedScopes=app.alignedMaterialScopes([
   {code:"ACTIVE",lifecycle:"ExistingActive",isCurrent:true},
   {code:"NEW",lifecycle:"NewItem",isCurrent:true},
@@ -115,6 +127,10 @@ assert(!syntheticEntries.some(row=>row.label.includes("#")),"trend labels must n
 assert(app.measurementAttemptsForPeriod(syntheticItem,syntheticPeriods[0]).length===1,"null periodNo must not be treated as R");
 assert(app.periodMeasurementsOf(syntheticItem,syntheticPeriods[3]).length===2,"P3 must expose original + retest");
 assert(app.xrfTrendMeasurement(syntheticItem,syntheticPeriods[3])?.id==="M3-R","P3 representative must be the latest retest");
+assert(app.measurementTypeDisplay(measurements[2],syntheticPeriods[2])==="Periodic #2","Measurement Type must use the selected Pn number");
+const legacySupplementalPeriod={num:900001,displaySeq:900001,label:"P1",displayLabel:"P1",isSupplementalMeasurement:true};
+assert(app.measurementPeriodSequence({role:"Periodic"},legacySupplementalPeriod)===1,"legacy supplemental sentinel must normalize to P1");
+assert(app.measurementTypeDisplay({role:"Periodic"},legacySupplementalPeriod)==="Periodic #1","Measurement Type must never expose the 900001 supplemental sentinel");
 const syntheticPb=app.xrfTrendSeries(syntheticItem,syntheticPeriods,"Pb",syntheticEntries);
 assert(syntheticPb.length===8,"trend must not cap the x-axis at five periods");
 assert(syntheticPb.find(point=>point.measurementId==="M3-R")?.date==="2026-04-12","retest date must come from its Measurement");
@@ -122,6 +138,18 @@ assert(syntheticPb.find(point=>point.measurementId==="M3-R")?.ppm===35,"retest v
 assert(syntheticPb.every(point=>point.label),"every measurement must have an x-axis label");
 const throughP3=app.xrfTrendPeriodsThroughSelection(syntheticPeriods,syntheticPeriods[3]);
 assert(throughP3.map(period=>period.label).join(",")==="R,P1,P2,P3","selected P3 trend must exclude later periods");
+
+const periodNoRuntime=app.buildRuntimeFromSharePoint({lists:{
+  XRF_Items:[{id:"1",fields:{Title:"ITM-DB-PERIOD",field_1:"DB-PERIOD",field_2:"DB period item",field_4:"Auxiliary Materials",field_5:"Common",field_8:"비접촉",field_9:"ExistingActive",field_10:true}}],
+  XRF_Measurements:[
+    {id:"10",fields:{Title:"DB-PERIOD_20250101_01",field_1:"ITM-DB-PERIOD",Measured_Date:"2025-01-01",field_3:"Initial",Period_No:0,field_4:1}},
+    {id:"11",fields:{Title:"DB-PERIOD_20260101_01",field_1:"ITM-DB-PERIOD",Measured_Date:"2026-01-01",field_3:"Periodic",Period_No:2,field_4:1}},
+  ],
+  XRF_ElementResults:[],XRF_Requests:[],XRF_PrecisionAnalyses:[],XRF_PrecisionElementResults:[],
+}});
+const periodNoRuntimeItem=periodNoRuntime.items.find(item=>item.code==="DB-PERIOD");
+assert(periodNoRuntimeItem?.__measurementMap?.["DB-PERIOD_20260101_01"]?.periodNo===2,"SharePoint Period_No must be restored on the measurement record");
+assert(periodNoRuntimeItem?.history?.find(row=>row.id==="DB-PERIOD_20260101_01")?.periodNo===2,"SharePoint Period_No must survive in item history");
 
 const testLegalLimits={Pb:1000,Hg:1000,Cr:1000,Cd:100,Cl:900,Br:900,"Cl+Br":1500};
 const completeElements=pbPpm=>Object.fromEntries(Object.entries(testLegalLimits).map(([element,legalLimit])=>[
@@ -207,6 +235,28 @@ for(const [cycle,p1Due,p2Due] of cycleExpectations){
   assert(targets.every((period,index)=>period.label===`P${index+1}`),`${cycle}: report periods must grow as continuous P1..Pn rows`);
   assert(!!app.currentCompliancePeriod(item),`${cycle}: a report-upload target period must remain available`);
 }
+
+const unresolvedInitialMeasurement={id:"UNRESOLVED-NG-R",date:"2025-01-15",role:"Initial",attemptNo:1,elements:completeElements(100)};
+const unresolvedNgMeasurement={id:"UNRESOLVED-NG-P1",date:"2025-02-10",role:"Periodic",attemptNo:1,elements:completeElements(850)};
+const unresolvedNgCycleItem={
+  ...registeredCycleItem("Monthly"),
+  isCurrent:true,
+  firstMeasurementId:unresolvedInitialMeasurement.id,
+  latestMeasurementId:unresolvedNgMeasurement.id,
+  latest:unresolvedNgMeasurement,
+  history:[unresolvedInitialMeasurement,unresolvedNgMeasurement].map(row=>({...row,measurementRole:row.role})),
+  __measurementMap:{
+    [unresolvedInitialMeasurement.id]:unresolvedInitialMeasurement,
+    [unresolvedNgMeasurement.id]:unresolvedNgMeasurement,
+  },
+};
+const unresolvedNgPrecisionCases=app.runtimePrecisionCasesForItem(unresolvedNgCycleItem,{});
+const unresolvedNgPeriods=app.itemAllPeriods(unresolvedNgCycleItem);
+assert(unresolvedNgPrecisionCases.some(row=>row.key===unresolvedNgMeasurement.id && row.precision.requestStatus==="NOT_REQUESTED"),"XRF NG without precision progress must remain an unresolved precision case");
+assert(app.precisionCycleStopDate(unresolvedNgCycleItem)===null,"unperformed precision analysis must not set a cycle stop date");
+assert(app.isComplianceTarget(unresolvedNgCycleItem),"XRF NG with unperformed precision analysis must keep periodic XRF management active");
+assert(unresolvedNgPeriods.some(period=>period.label==="P2"),"future Pn rows must continue after unresolved XRF NG");
+assert(!!app.currentCompliancePeriod(unresolvedNgCycleItem),"an unresolved XRF NG item must retain the next report-upload target");
 
 const annualSameYearMeasurements=[
   {id:"ANNUAL_20260120_01",date:"2026-01-20",role:"Periodic",attemptNo:1,elements:elements(20)},
