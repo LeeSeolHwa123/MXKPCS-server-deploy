@@ -63,6 +63,13 @@ function dateOnly(v) { const s = cleanText(v).trim(); return s ? s.slice(0, 10) 
 function yyyymmdd(v) { return cleanText(v).slice(0, 10).replace(/-/g, ""); }
 function unique(arr) { return [...new Set(arr.filter(Boolean))]; }
 function bool(v) { return v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true"; }
+const PERIOD_NO_MARKER = /\s*\[\[MXKPCS:Period_No=(\d+)\]\]\s*$/i;
+function sourceSheetWithPeriodNo(sourceSheet, periodNo) {
+  const marker = `[[MXKPCS:Period_No=${periodNo}]]`;
+  const cleanSource = cleanText(sourceSheet).replace(PERIOD_NO_MARKER, "").trim();
+  const maxSourceLength = Math.max(0, 255 - marker.length - (cleanSource ? 1 : 0));
+  return `${cleanSource.slice(0, maxSourceLength)}${cleanSource ? " " : ""}${marker}`;
+}
 function createFields(obj) {
   return Object.fromEntries(Object.entries(obj || {}).filter(([, value]) => value !== null && value !== undefined));
 }
@@ -845,24 +852,32 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
     throw new Error("측정 저장에 올바른 Period_No가 필요합니다. R은 0, Pn은 n으로 저장해야 합니다.");
   }
 
+  const columns = await graphGetAll(`${listUrl(siteId, "XRF_Measurements")}/columns?$top=200`, accessToken);
+  const nativePeriodColumn = columns.find(column => {
+    const name = cleanText(column?.name).trim();
+    const displayName = cleanText(column?.displayName).trim();
+    return name === "Period_No" || displayName === "Period_No";
+  });
   const measurements = await readList(siteId, "XRF_Measurements", accessToken);
   const measurementId = nextMeasurementId(measurements, itemId, partNumber, measuredDate);
   const created = [];
   let writeStage = "XRF_Measurements Header CREATE";
   try {
-    const header = await createListItem(siteId, "XRF_Measurements", {
+    const headerFields = {
       Title: measurementId,
       field_1: itemId,
-      // 기존 SharePoint XRF_Measurements의 Period_No 내부 열 이름입니다.
-      field_2: periodNo,
       Measured_Date: measuredDate,
       field_3: role,
       field_4: Number(payload?.attemptNo || 1),
       field_5: nonEmpty(payload?.parentMeasurementId),
       field_6: nonEmpty(payload?.sourceFileName),
-      field_7: nonEmpty(payload?.sourceSheet),
+      // 전용 열이 없는 현재 DB에서는 원본 시트명 뒤의 메타데이터로 Pn을 영구 보존합니다.
+      // 관리자가 Period_No 열을 추가하면 아래에서 자동으로 전용 숫자 열 저장으로 전환됩니다.
+      field_7: nonEmpty(nativePeriodColumn ? payload?.sourceSheet : sourceSheetWithPeriodNo(payload?.sourceSheet, periodNo)),
       Requester_Name: nonEmpty(payload?.requesterName),
-    }, accessToken);
+    };
+    if (nativePeriodColumn?.name) headerFields[nativePeriodColumn.name] = periodNo;
+    const header = await createListItem(siteId, "XRF_Measurements", headerFields, accessToken);
     created.push(["XRF_Measurements", header.id]);
 
     for (const element of XRF_SOURCE_ELEMENTS) {

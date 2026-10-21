@@ -26,6 +26,9 @@ try{
     if(url.includes("/oauth2/v2.0/token")){
       return new Response(JSON.stringify({access_token:"fake-token"}),{status:200});
     }
+    if(url.includes("/lists/dd0bf876-6066-4877-be6d-eb10eb5ce35c/columns")&&method==="GET"){
+      return new Response(JSON.stringify({value:[{name:"field_7",displayName:"Source_Sheet"}]}),{status:200});
+    }
     if(url.includes("/lists/dd0bf876-6066-4877-be6d-eb10eb5ce35c/items")){
       if(method==="GET") return new Response(JSON.stringify({value:[]}),{status:200});
       if(method==="POST"){
@@ -53,7 +56,8 @@ try{
   assert.equal(result.status,200);
   assert.equal(result.body.ok,true);
   assert.equal(createdColumn,null);
-  assert.equal(measurementFields.field_2,3);
+  assert.equal(measurementFields.field_7,"[[MXKPCS:Period_No=3]]");
+  assert.equal(measurementFields.field_2,undefined);
   assert.equal(measurementFields.field_3,"Periodic");
   assert.equal(elementSequence,6);
   console.log("measurement-period-db: PASS");
