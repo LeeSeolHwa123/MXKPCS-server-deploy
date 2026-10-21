@@ -45,7 +45,6 @@ const FILE_REFERENCE_COLUMNS = {
     { name: "Requester_Name", displayName: "Requester Name", text: { allowMultipleLines: false, maxLength: 255 } },
   ],
   XRF_Measurements: [
-    { name: "Period_No", displayName: "Period No", number: { decimalPlaces: "none", minimum: 0 } },
     { name: "Source_File_ID", displayName: "XRF Source File ID", text: { allowMultipleLines: false, maxLength: 255 } },
     { name: "Source_File_URL", displayName: "XRF Source File URL", text: { allowMultipleLines: true, linesForEditing: 3 } },
     { name: "Requester_Name", displayName: "Requester Name", text: { allowMultipleLines: false, maxLength: 255 } },
@@ -56,7 +55,6 @@ const FILE_REFERENCE_COLUMNS = {
   ],
 };
 let graphTokenCache = { key: "", token: "", expiresAt: 0 };
-const ensuredSchemaColumns = new Map();
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function cleanText(v) { return v == null ? "" : String(v); }
@@ -618,33 +616,6 @@ async function graphGetAll(firstUrl, accessToken) {
   return rows;
 }
 
-async function ensureListColumn(siteId, listName, definition, accessToken) {
-  const cacheKey = `${siteId}|${listName}|${definition.name}`;
-  if (!ensuredSchemaColumns.has(cacheKey)) {
-    const task = (async () => {
-      const columns = await graphGetAll(`${listUrl(siteId, listName)}/columns?$top=200`, accessToken);
-      if (columns.some(column => cleanText(column?.name).trim() === definition.name)) return { created: false };
-      const response = await fetchWithRetry(`${listUrl(siteId, listName)}/columns`, {
-        method: "POST",
-        headers: graphHeaders(accessToken, { "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          description: "MXKPCS measurement period number (R=0, Pn=n)",
-          enforceUniqueValues: false,
-          hidden: false,
-          indexed: false,
-          ...definition,
-        }),
-      }, { retry5xx: false, retryNetwork: false });
-      return { created: true, column: await response.json() };
-    })().catch(error => {
-      ensuredSchemaColumns.delete(cacheKey);
-      throw error;
-    });
-    ensuredSchemaColumns.set(cacheKey, task);
-  }
-  return ensuredSchemaColumns.get(cacheKey);
-}
-
 async function patchListItemExistingFields(siteId, listName, itemId, fields, accessToken, options = {}) {
   const columns = await graphGetAll(`${listUrl(siteId, listName)}/columns?$top=200`, accessToken);
   const names = new Set(columns.map(column => cleanText(column?.name).trim()));
@@ -874,8 +845,6 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
     throw new Error("측정 저장에 올바른 Period_No가 필요합니다. R은 0, Pn은 n으로 저장해야 합니다.");
   }
 
-  await ensureListColumn(siteId, "XRF_Measurements", FILE_REFERENCE_COLUMNS.XRF_Measurements[0], accessToken);
-
   const measurements = await readList(siteId, "XRF_Measurements", accessToken);
   const measurementId = nextMeasurementId(measurements, itemId, partNumber, measuredDate);
   const created = [];
@@ -884,9 +853,10 @@ async function createMeasurementRecord(siteId, accessToken, payload) {
     const header = await createListItem(siteId, "XRF_Measurements", {
       Title: measurementId,
       field_1: itemId,
+      // 기존 SharePoint XRF_Measurements의 Period_No 내부 열 이름입니다.
+      field_2: periodNo,
       Measured_Date: measuredDate,
       field_3: role,
-      Period_No: periodNo,
       field_4: Number(payload?.attemptNo || 1),
       field_5: nonEmpty(payload?.parentMeasurementId),
       field_6: nonEmpty(payload?.sourceFileName),

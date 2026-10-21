@@ -609,8 +609,9 @@ function buildSharePointMeasurementMap(measurementRows,elementRows){
       sequence:measurementSequenceFromId(id),
       role:f.field_3||"",
       Measurement_Role:f.field_3||"",
-      periodNo:f.Period_No ?? null,
-      Period_No:f.Period_No ?? null,
+      // SharePoint 표시명은 Period_No이고 기존 리스트의 내부 열 이름은 field_2입니다.
+      periodNo:f.Period_No ?? f.field_2 ?? null,
+      Period_No:f.Period_No ?? f.field_2 ?? null,
       attemptNo:Number(f.field_4||1),
       parentMeasurementId:f.field_5||null,
       sourceFileName:f.field_6||"",
