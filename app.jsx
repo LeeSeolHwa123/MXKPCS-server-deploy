@@ -9341,7 +9341,7 @@ export default function App(){
   const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang,balancedHeader:true,breakTwoWordEnglish:true};
   const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
   const precisionColumnWidths=lang==="en"
-    ? {period:80,code:84,name:150,dept:88,date:92,elements:94,reason:118,handoff:92,report:72,confirm:100,result:88,detail:34}
+    ? {period:108,code:84,name:150,dept:88,date:92,elements:94,reason:118,handoff:92,report:72,confirm:100,result:88,detail:34}
     : {period:72,code:90,name:170,dept:84,date:92,elements:94,reason:126,handoff:84,report:74,confirm:84,result:78,detail:34};
   const precisionColumns=[
     {key:"period",el:<FH label="발생 주기" col="paPeriod" {...precisionFhp}/>,w:precisionColumnWidths.period},
