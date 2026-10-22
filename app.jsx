@@ -233,6 +233,23 @@ function sourceSigmaValue(d){
 function sourceJudgementValue(d){
   return d?.rawJudgement ?? d?.sourceJudgement ?? d?.judge ?? "";
 }
+function xrfReportMatchesMeasurement(measurement,incomingElements){
+  const storedElements=measurement?.elements||{};
+  // Cl+Br는 저장 원본 행이 아니라 Cl/Br에서 계산되는 파생값이므로 실제 6개 측정 원소만 비교합니다.
+  return XRF_REPORT_ELEMENTS.filter(element=>element!=="Cl+Br").every(element=>{
+    const stored=storedElements[element];
+    const incoming=incomingElements?.[element];
+    if(!stored || !incoming) return false;
+    const storedPpm=xrfNumber(sourcePpmValue(stored));
+    const incomingPpm=xrfNumber(sourcePpmValue(incoming));
+    if(storedPpm==null || incomingPpm==null) return false;
+    const tolerance=Math.max(1e-6,Math.abs(storedPpm)*1e-9,Math.abs(incomingPpm)*1e-9);
+    if(Math.abs(storedPpm-incomingPpm)>tolerance) return false;
+    const storedDecision=xrfJudgementDecision(stored);
+    const incomingDecision=xrfJudgementDecision(incoming);
+    return !storedDecision || !incomingDecision || storedDecision===incomingDecision;
+  });
+}
 function elementDataMissing(d){
   const ppm=sourcePpmValue(d);
   return !!d?.dataMissing || (isXrfMissing(ppm) && !isXrfContentND(ppm));
@@ -3638,6 +3655,31 @@ function periodForMeasuredDate(item,measuredDate,sourcePeriods=null){
     if(!nextBoundary || dateLt(date,nextBoundary)) return period;
   }
   return periods[periods.length-1]||null;
+}
+function resolveMeasurementUploadPeriod(item,measuredDate,targetPeriod,sourcePeriods=null){
+  const periods=sourcePeriods||itemAllPeriods(item);
+  if(targetPeriod){
+    const targetNo=Number(targetPeriod?.num);
+    const targetIsReference=!!targetPeriod?.isReference || targetNo===0;
+    // 사용자가 업로드 버튼을 누른 Pn이 저장 대상입니다. 보고서 날짜는 그 Pn의 이행/지연 판정에만 사용합니다.
+    // 날짜로 Pn을 다시 선택하면 비어 있는 현재 Pn에 올린 보고서가 과거 Pn의 기존 값과 충돌할 수 있습니다.
+    return periods.find(period=>{
+      const isReference=!!period?.isReference || Number(period?.num)===0;
+      return targetIsReference ? isReference : (!isReference && Number(period?.num)===targetNo);
+    }) || targetPeriod;
+  }
+  if(cycleMonthsOf(item)===12){
+    const measuredYear=String(dateOnly(measuredDate)||"").slice(0,4);
+    const annualMatch=periods.find(period=>
+      !(period?.isReference||Number(period?.num)===0)
+      && String(period?.due||period?.targetDate||"").slice(0,4)===measuredYear
+    );
+    if(annualMatch) return annualMatch;
+  }
+  return periodForMeasuredDate(item,measuredDate,periods)
+    || currentCompliancePeriod(item)
+    || periods.find(period=>!(period?.isReference||Number(period?.num)===0)&&!period?.measurementId&&!period?.measured)
+    || null;
 }
 function precisionPeriodicSequence(item,measurement){
   const measurementId=String(measurement?.id||measurement?.measurementId||"").trim();
@@ -7521,36 +7563,26 @@ export default function App(){
     reader.readAsDataURL(file);
   },[]);
   const commitParsedMeasurement=useCallback(async(targetItem,result,targetPeriod=null,sourceLabel="XRF 결과 업로드",sourceFile=null)=>{
-    if(!targetItem || !result?.parsed) return null;
+    const failed=(error)=>({ok:false,error:String(error||"측정 결과를 저장하지 못했습니다.")});
+    if(!targetItem || !result?.parsed) return failed("유효한 XRF 측정 결과가 없습니다.");
     if(targetItem.__readOnlyFixture){
       if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
-      return null;
+      return failed(VISUAL_UAT_READ_ONLY_MESSAGE);
     }
     const measuredDate=dateOnly(result.measuredDate);
     if(!measuredDate){
-      if(typeof window!=="undefined") window.alert("보고서에서 측정일을 확인하지 못했습니다. 원본 보고서의 O5 측정일을 확인하세요.");
-      return null;
+      const error="보고서에서 측정일을 확인하지 못했습니다. 원본 보고서의 O5 측정일을 확인하세요.";
+      if(typeof window!=="undefined") window.alert(error);
+      return failed(error);
     }
     const historyRows=Array.isArray(targetItem.history)?targetItem.history:[];
     const sameDateCount=historyRows.filter(h=>dateOnly(h?.date)===measuredDate).length;
     const sequence=sameDateCount+1;
     const isInitial=!(targetItem.firstMeasurementId || historyRows.length || targetItem.lastMeasured);
     const allTargetPeriods=!isInitial ? itemAllPeriods(targetItem) : [];
-    const fallbackPeriod=!isInitial ? (currentCompliancePeriod(targetItem) || allTargetPeriods.find(p=>!(p?.isReference||Number(p?.num)===0)&&!p?.measurementId&&!p?.measured)) : null;
-    // 연 1회 품목은 업로드 대상 행보다 실제 측정연도를 우선합니다.
-    // 같은 연도의 추가 측정은 항상 그 연도에 해당하는 동일 Pn으로 다시 묶입니다.
-    const annualPeriodForMeasuredYear=!isInitial && cycleMonthsOf(targetItem)===12
-      ? allTargetPeriods.find(p=>!(p?.isReference||Number(p?.num)===0) && String(p?.due||p?.targetDate||"").slice(0,4)===String(measuredDate).slice(0,4))
-      : null;
-    const selectedReferencePeriod=targetPeriod && (targetPeriod?.isReference || Number(targetPeriod?.num)===0)
-      ? targetPeriod
-      : null;
-    const dateMatchedPeriod=!isInitial && !selectedReferencePeriod
-      ? periodForMeasuredDate(targetItem,measuredDate,allTargetPeriods)
-      : null;
     const resolvedPeriod=isInitial
       ? null
-      : (selectedReferencePeriod || annualPeriodForMeasuredYear || dateMatchedPeriod || targetPeriod || fallbackPeriod);
+      : resolveMeasurementUploadPeriod(targetItem,measuredDate,targetPeriod,allTargetPeriods);
     const periodNo=isInitial ? 0 : Number(resolvedPeriod?.num || 1);
     const isReferenceRetest=!isInitial && (resolvedPeriod?.isReference || periodNo===0);
     const periodAttempts=isInitial ? [] : measurementAttemptsForPeriod(targetItem,resolvedPeriod);
@@ -7559,6 +7591,30 @@ export default function App(){
     const latestPeriodMeasurement=latestPeriodId?measurementById(targetItem,latestPeriodId):null;
     const latestPeriodNeedsRemeasure=pendingXrfRemeasureElements(latestPeriodMeasurement).length>0;
     const latestPeriodRole=String(latestPeriodRow?.measurementRole||latestPeriodRow?.role||latestPeriodMeasurement?.role||"");
+    const exactDateRow=periodAttempts.slice().reverse().find(row=>dateOnly(row?.date)===measuredDate)||null;
+    const exactDateId=exactDateRow?.id||exactDateRow?.measurementId||null;
+    const exactDateMeasurement=exactDateId?measurementById(targetItem,exactDateId):null;
+    if(!isInitial && exactDateId && sourceFile && xrfReportMatchesMeasurement(exactDateMeasurement||exactDateRow,result.elements||{})){
+      const existingSourceFile=String(exactDateMeasurement?.sourceFileName||exactDateRow?.sourceFileName||"").trim();
+      if(existingSourceFile){
+        return failed(`${periodLabel(resolvedPeriod)}의 ${measuredDate} 측정값에는 이미 XRF 보고서 '${existingSourceFile}'이 연결되어 있습니다.`);
+      }
+      if(measurementSavePendingRef.current) return failed("다른 XRF 보고서를 저장하고 있습니다. 완료 후 다시 시도하세요.");
+      measurementSavePendingRef.current=true;
+      setMeasurementSavePending(true);
+      try{
+        await uploadPrecisionBinary(exactDateId,"source",sourceFile);
+        await reloadSharePointDb();
+        return {ok:true,updatedItem:targetItem,measurementId:exactDateId,periodNo,sourceFileAttached:true,sourceFileUploadError:""};
+      }catch(error){
+        const detail=error?.message||String(error);
+        if(typeof window!=="undefined") window.alert(`기존 측정값은 유지됐지만 XRF 보고서 연결에 실패했습니다.\n${detail}`);
+        return failed(`기존 측정값은 유지됐지만 XRF 보고서 연결에 실패했습니다. ${detail}`);
+      }finally{
+        measurementSavePendingRef.current=false;
+        setMeasurementSavePending(false);
+      }
+    }
     let role="Initial";
     let attemptNo=1;
     let parentMeasurementId=null;
@@ -7570,8 +7626,9 @@ export default function App(){
       }else if(latestPeriodNeedsRemeasure){
         // 같은 측정건의 ?? 보완은 Retest 1회만 허용합니다.
         if(latestPeriodRole==="Retest" || Number(latestPeriodRow?.attemptNo||latestPeriodMeasurement?.attemptNo||1)>=2){
-          if(typeof window!=="undefined") window.alert("XRF 재측정은 1회까지만 가능합니다. 이후에는 정밀분석 단계에서 처리하세요.");
-          return null;
+          const error="XRF 재측정은 1회까지만 가능합니다. 이후에는 정밀분석 단계에서 처리하세요.";
+          if(typeof window!=="undefined") window.alert(error);
+          return failed(error);
         }
         role="Retest";
         attemptNo=2;
@@ -7581,8 +7638,13 @@ export default function App(){
         role="Periodic";
         attemptNo=1;
       }else{
-        if(typeof window!=="undefined") window.alert("해당 주기에는 이미 XRF 측정값이 있습니다. 추가 등록은 재측정(??)이 필요한 경우에만 가능합니다.");
-        return null;
+        const existingDate=dateOnly(latestPeriodRow?.date||latestPeriodMeasurement?.date)||"날짜 미상";
+        const mismatchNote=exactDateRow
+          ? "보고서 측정값이 기존 DB 값과 달라 원본 파일로 자동 연결하지 않았습니다."
+          : `업로드한 보고서 날짜 ${measuredDate}도 같은 주기로 계산됩니다.`;
+        const error=`${periodLabel(resolvedPeriod)}에는 ${existingDate} XRF 측정값이 이미 있습니다. ${mismatchNote} 추가 측정 등록은 재측정(??)이 필요한 경우에만 가능합니다.`;
+        if(typeof window!=="undefined") window.alert(error);
+        return failed(error);
       }
     }
     const measurementId=`${targetItem.code}_${measuredDate.replaceAll("-","")}_${String(sequence).padStart(2,"0")}`;
@@ -7759,7 +7821,7 @@ export default function App(){
 
     // SharePoint가 source-of-truth가 되도록 Measurement header + 6개 원소 Raw 결과를 영구 저장합니다.
     // 저장 성공 전에는 화면의 Item/측정 이력을 변경하지 않아 DB 실패가 성공처럼 보이지 않게 합니다.
-    if(measurementSavePendingRef.current) return null;
+    if(measurementSavePendingRef.current) return failed("다른 XRF 보고서를 저장하고 있습니다. 완료 후 다시 시도하세요.");
     measurementSavePendingRef.current=true;
     setMeasurementSavePending(true);
     let saved=null;
@@ -7789,7 +7851,7 @@ export default function App(){
       measurementSavePendingRef.current=false;
       setMeasurementSavePending(false);
     }
-    if(!saved) return null;
+    if(!saved) return failed("SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다.");
 
     let sourceFileUploadError="";
     if(sourceFile){
@@ -7805,8 +7867,8 @@ export default function App(){
     setRequestItems(prev=>prev.map(item=>itemStateKey(item)===targetStateKey?{...updatedItem,_sourceCode:itemStateKey(item)}:item));
     setItemOverrides(prev=>({...prev,[targetStateKey]:{...(prev[targetStateKey]||{}),...updatedItem,_sourceCode:targetStateKey}}));
     setApprovalOverrides(prev=>({...prev,[targetItem.code]:policyApproval}));
-    return {updatedItem,measurementId,periodNo,sourceFileUploadError};
-  },[currentPortfolioPeriodNo,persistSharePointAction]);
+    return {ok:true,updatedItem,measurementId,periodNo,sourceFileUploadError};
+  },[currentPortfolioPeriodNo,persistSharePointAction,reloadSharePointDb]);
 
   const buildRequesterPartNumber=useCallback((handlingDept)=>{
     const prefix=((handlingDept||"").trim().charAt(0)||"X").toUpperCase();
@@ -8754,12 +8816,12 @@ export default function App(){
       return;
     }
     const committed=await commitParsedMeasurement(sel,result,null,"관리자 최초 XRF 업로드",file);
-    if(committed){
+    if(committed?.ok){
       setSelPeriodNum(committed.periodNo);
       setSelMeasurementId(committed.measurementId);
       setTab("xrf");
     }else{
-      setAdminUploadResultByCode(prev=>({...prev,[sel.code]:{...result,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."}}));
+      setAdminUploadResultByCode(prev=>({...prev,[sel.code]:{...result,error:committed?.error||"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."}}));
     }
     e.target.value="";
   },[commitParsedMeasurement,isAdminUser,sel,selectedIsMeasuring]);
@@ -8781,13 +8843,13 @@ export default function App(){
       return;
     }
     const committed=await commitParsedMeasurement(sel,result,periodUploadTarget,`관리자 주기 ${periodLabel(periodUploadTarget)} XRF 업로드`,file);
-    if(committed){
+    if(committed?.ok){
       setPeriodUploadState({key,fileName:file.name,error:"",saved:true});
       setSelPeriodNum(committed.periodNo);
       setSelMeasurementId(committed.measurementId);
       setTab("xrf");
     }else{
-      setPeriodUploadState({key,fileName:file.name,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다.",saved:false});
+      setPeriodUploadState({key,fileName:file.name,error:committed?.error||"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다.",saved:false});
     }
     e.target.value="";
   },[commitParsedMeasurement,isAdminUser,periodUploadAllowed,periodUploadTarget,sel]);
@@ -8832,7 +8894,7 @@ export default function App(){
     }
 
     const committed=await commitParsedMeasurement(target,result,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`,file);
-    if(committed){
+    if(committed?.ok){
       setSelKey(target.code);
       setSelPeriodNum(committed.periodNo);
       setTab("xrf");
@@ -8841,7 +8903,7 @@ export default function App(){
       setReqUploadResult(emptyUploadedXrfResult());
       setReqUploadFileName("");
     }else{
-      setReqUploadResult({...result,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."});
+      setReqUploadResult({...result,error:committed?.error||"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."});
     }
     e.target.value="";
   },[allItems,commitParsedMeasurement,regType,reqForm.replacementTargetCode]);
@@ -8877,7 +8939,7 @@ export default function App(){
         return;
       }
       const committed=await commitParsedMeasurement(target,reqUploadResult,targetPeriod,`관리자 직접 주기 ${periodLabel(targetPeriod)} 등록`,reqUploadFileRef.current);
-      if(committed){
+      if(committed?.ok){
         setSelKey(target.code);
         setSelPeriodNum(committed.periodNo);
         setTab("xrf");
@@ -8886,7 +8948,7 @@ export default function App(){
         setReqUploadResult(emptyUploadedXrfResult());
         setReqUploadFileName("");
       }else{
-        setReqUploadResult({...reqUploadResult,error:"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."});
+        setReqUploadResult({...reqUploadResult,error:committed?.error||"SharePoint DB 저장에 실패했습니다. 측정 결과는 DB에 반영되지 않았습니다."});
       }
       return;
     }
