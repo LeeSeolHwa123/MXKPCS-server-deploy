@@ -18,7 +18,8 @@ source+=`
 export {
   buildRuntimeFromSharePoint,applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
   buildRollingPeriods,itemAllPeriods,itemListPeriods,currentCompliancePeriod,itemCycleFromRisk,
-  itemStatusPeriods,getCS,isComplianceTarget,precisionCycleStopDate,itemHasConfirmedPrecisionResult
+  itemStatusPeriods,getCS,isComplianceTarget,precisionCycleStopDate,itemHasConfirmedPrecisionResult,
+  xrfReportMatchesMeasurement,resolveMeasurementUploadPeriod
 };
 `;
 
@@ -56,6 +57,10 @@ const completeElements=ppm=>Object.fromEntries(["Pb","Hg","Cr","Cd","Cl","Br"].m
   element,
   {rawPpm:String(ppm),ppm,rawSigma:"1",sigma:1,rawJudgement:ppm>=700?"NG":"OK",judge:ppm>=700?"NG":"OK",legalLimit:1000,internalLimit:700}
 ]));
+
+const storedReport={elements:completeElements(100)};
+check(app.xrfReportMatchesMeasurement(storedReport,completeElements(100)),"existing measurement report: identical values can attach without duplicate DB rows");
+check(!app.xrfReportMatchesMeasurement(storedReport,{...completeElements(100),Pb:{...completeElements(100).Pb,rawPpm:"101",ppm:101}}),"existing measurement report: different values cannot overwrite the linked DB measurement");
 
 const makeManagedItem=(cycle,completedCount=0)=>{
   const months=cycleMonths[cycle];
@@ -190,6 +195,12 @@ for(const [label,item] of [
   check(Number(app.currentCompliancePeriod(item)?.num)===18,`${label}: current period advances to P18`,{actual:app.currentCompliancePeriod(item)});
   check(app.getCS(item)!=="overdue",`${label}: material-list current status no longer remains overdue`,{actual:app.getCS(item)});
 }
+
+const selectedTargetItem=makeDateDrivenItem(2);
+const selectedTargetPeriods=app.itemAllPeriods(selectedTargetItem);
+const selectedP3=selectedTargetPeriods.find(period=>Number(period.num)===3);
+check(app.resolveMeasurementUploadPeriod(selectedTargetItem,dateDrivenMeasured,selectedP3,selectedTargetPeriods)?.num===3,"upload target: selected empty Pn stays authoritative even when report date falls in an older Pn");
+check(app.resolveMeasurementUploadPeriod(selectedTargetItem,dateDrivenMeasured,null,selectedTargetPeriods)?.num===17,"upload target: date inference remains available only when no Pn was selected");
 
 const notAllowedPeriodic=[
   {id:"NA-P1",date:"2026-01-30",role:"Periodic",attemptNo:1,elements:completeElements(850)},
