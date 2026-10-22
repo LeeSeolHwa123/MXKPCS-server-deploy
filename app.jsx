@@ -3179,7 +3179,9 @@ function uploadedRecordFromGrid(grid,sheetName=""){
     throw new Error("Element, Content(ppm), Std.Deviation(ppm), Judgment 행을 찾지 못했습니다.");
   }
 
-  const record={Measured_Date:uploadedDateToISO(uploadedCell(grid,4,14)),Source_Sheet:sheetName};
+  const measuredDate=uploadedDateToISO(uploadedCell(grid,4,14));
+  if(!measuredDate) throw new Error("O5 셀에서 측정일을 확인하지 못했습니다.");
+  const record={Measured_Date:measuredDate,Source_Sheet:sheetName};
   const found=[];
   const maxCols=Math.max(...grid.map(row=>row?.length||0),0);
   for(let c=elementHeader.col+1;c<maxCols;c++){
@@ -3359,20 +3361,26 @@ function appendPeriodMeasurementLink(period,measurementId,measuredDate){
 function dateLte(a,b){ return !dateGt(a,b); }
 function collectPeriodMeasurements(item){
   const map=new Map();
-  const add=(date,id,status,role,attemptNo)=>{
+  const add=(date,id,status,role,attemptNo,periodNo=null)=>{
     const d=String(date||"").slice(0,10);
     if(!d) return;
     // 재측정(Retest)은 동일 Pn의 판정 보완이므로 다음 Pn 이행 실적으로 소비하지 않습니다.
     // 과거 데이터의 Cycle_Reset은 별도 기준점으로 쓰지 않고, R 이후 실제 XRF 측정 1건으로만 취급합니다.
     if(String(role||"").toLowerCase()==="retest") return;
     const key=`${d}|${id||""}`;
-    if(!map.has(key)) map.set(key,{date:d,id:id||null,status:status||"",role:normalizeMeasurementRole(role),attemptNo:Number(attemptNo||1)});
+    const parsedPeriodNo=Number(periodNo);
+    const normalizedPeriodNo=Number.isInteger(parsedPeriodNo) && parsedPeriodNo>=0 ? parsedPeriodNo : null;
+    if(!map.has(key)){
+      map.set(key,{date:d,id:id||null,status:status||"",role:normalizeMeasurementRole(role),attemptNo:Number(attemptNo||1),periodNo:normalizedPeriodNo});
+    }else if(map.get(key)?.periodNo==null && normalizedPeriodNo!=null){
+      map.set(key,{...map.get(key),periodNo:normalizedPeriodNo});
+    }
   };
-  (item?.periods||[]).forEach(p=>add(p.measured,p.measurementId,p.status,p.measurementRole,p.attemptNo));
-  (item?.history||[]).forEach(h=>add(h.date,h.id||h.measurementId,h.status,h.measurementRole||h.role,h.attemptNo));
+  (item?.periods||[]).forEach(p=>add(p.measured,p.measurementId,p.status,p.measurementRole,p.attemptNo,p.num));
+  (item?.history||[]).forEach(h=>add(h.date,h.id||h.measurementId,h.status,h.measurementRole||h.role,h.attemptNo,h.periodNo));
   if(item?.latestMeasurementId){
     const m=(item?.__measurementMap||{})[item.latestMeasurementId]||item.latest;
-    add(m?.date||item.lastMeasured,item.latestMeasurementId,m?.status,m?.role||m?.measurementRole,m?.attemptNo);
+    add(m?.date||item.lastMeasured,item.latestMeasurementId,m?.status,m?.role||m?.measurementRole,m?.attemptNo,m?.periodNo);
   }
   return Array.from(map.values()).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
 }
@@ -3421,7 +3429,21 @@ function buildRollingPeriods(item){
   const riskCycle=itemCycleFromRisk(item);
   const isAnnual=months===12;
   const windowDays=windowDaysOf(item);
-  const measurements=collectPeriodMeasurements(item);
+  const collectedMeasurements=collectPeriodMeasurements(item);
+  // 신규 DB 측정은 저장된 Period_No를 화면 재구성의 최우선 기준으로 사용합니다.
+  // Period_No가 없는 구형 이력만 날짜 window로 추정해, 명시적으로 P17에 저장된 측정이
+  // 이전 미이행 P16에 지연측정으로 잘못 소비되지 않도록 합니다.
+  const explicitMeasurementsByPeriod=new Map();
+  const measurements=[];
+  collectedMeasurements.forEach(measurement=>{
+    const periodNo=Number(measurement?.periodNo);
+    if(Number.isInteger(periodNo) && periodNo>0){
+      if(!explicitMeasurementsByPeriod.has(periodNo)) explicitMeasurementsByPeriod.set(periodNo,[]);
+      explicitMeasurementsByPeriod.get(periodNo).push(measurement);
+    }else{
+      measurements.push(measurement);
+    }
+  });
   const out=[];
   let mi=0;
   let futureOpenCount=0;
@@ -3478,20 +3500,28 @@ function buildRollingPeriods(item){
     const nextDue=addMonthsISO(baseDate,months*(n+1));
     const windowStart=addDaysISO(due,-windowDays);
 
+    const explicitHits=[...(explicitMeasurementsByPeriod.get(n)||[])];
     let hits=[];
     let hitLate=false;
     if(isAnnual){
       // 연 1회: Pn의 도래연도와 실제 측정연도가 같으면 모두 동일 Pn에 귀속합니다.
-      hits=[...(annualMeasurementsByYear.get(String(due).slice(0,4))||[])];
+      hits=[...explicitHits,...(annualMeasurementsByYear.get(String(due).slice(0,4))||[])];
+      hits=Array.from(new Map(hits.map(hit=>[hit.id||`${hit.date}|${hit.attemptNo||1}`,hit])).values())
+        .sort((a,b)=>String(a.date).localeCompare(String(b.date)));
       if(hits.length) hitLate=!hits.some(hit=>dateLte(hit.date,due));
+    }else if(explicitHits.length){
+      hits=explicitHits.sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+      hitLate=!hits.some(hit=>dateLte(hit.date,due));
     }else{
-      // 월/반기: 기존대로 하나의 실제 측정을 하나의 Pn에 순차 연결합니다.
+      // Period_No가 없는 월/반기 구형 이력은 다음 Pn의 측정권장 window가 시작되기 전까지만
+      // 직전 Pn의 지연측정으로 봅니다. 다음 window 안의 측정은 다음 Pn 이행으로 보존합니다.
       while(mi<measurements.length && prevDue && dateLte(measurements[mi].date,prevDue)) mi++;
       if(mi<measurements.length){
         const md=measurements[mi].date;
+        const nextWindowStart=nextDue?addDaysISO(nextDue,-windowDays):null;
         if(dateLte(md,due)){
           hits=[measurements[mi++]];
-        }else if(nextDue && dateLt(md,nextDue)){
+        }else if(nextDue && dateLt(md,nextDue) && (!nextWindowStart || dateLt(md,nextWindowStart))){
           hits=[measurements[mi++]];
           hitLate=true;
         }
@@ -3586,6 +3616,28 @@ function itemAllPeriods(item){
     const due=dateOnly(period?.due||period?.targetDate);
     return !!due && dateLte(due,stopDate);
   });
+}
+function periodForMeasuredDate(item,measuredDate,sourcePeriods=null){
+  const date=dateOnly(measuredDate);
+  const periods=(sourcePeriods||itemAllPeriods(item))
+    .filter(period=>!(period?.isReference||Number(period?.num)===0)&&!!(period?.due||period?.targetDate))
+    .sort((a,b)=>String(a.due||a.targetDate).localeCompare(String(b.due||b.targetDate)));
+  if(!date || !periods.length) return null;
+
+  // 연 1회는 기존 정책대로 측정연도와 도래연도가 같은 Pn에 귀속합니다.
+  if(cycleMonthsOf(item)===12){
+    return periods.find(period=>String(period?.due||period?.targetDate).slice(0,4)===date.slice(0,4)) || null;
+  }
+
+  // 월/반기는 다음 Pn의 권장 window 시작일을 주기 경계로 사용합니다.
+  // 예: P16 도래 09-15, P17 window 시작 09-30이면 10-14 측정은 P16 지연이 아니라 P17 이행입니다.
+  for(let index=0;index<periods.length;index++){
+    const period=periods[index];
+    const next=periods[index+1]||null;
+    const nextBoundary=dateOnly(next?.windowStart||next?.due||next?.targetDate);
+    if(!nextBoundary || dateLt(date,nextBoundary)) return period;
+  }
+  return periods[periods.length-1]||null;
 }
 function precisionPeriodicSequence(item,measurement){
   const measurementId=String(measurement?.id||measurement?.measurementId||"").trim();
@@ -3891,10 +3943,12 @@ function itemListPeriods(item){
 function itemStatusPeriods(item){
   if(isDiscontinueRequestItem(item) || isDiscontinuedItem(item)) return [];
   // 과거 누락은 이력에 보존하되 현재 KPI/이행 상태에는 포함하지 않습니다.
-  return itemAllPeriods(item).filter(p=>
+  const periods=itemAllPeriods(item).filter(p=>
     !(p?.isReference || Number(p?.num)===0)
     && p?.isCurrentCycle!==false
   );
+  const latestCompletedNum=periods.reduce((latest,p)=>p?.measured?Math.max(latest,Number(p?.num||0)):latest,0);
+  return periods.filter(p=>!!p?.measured || Number(p?.num||0)>latestCompletedNum);
 }
 function currentCompliancePeriod(item){
   if(!isComplianceTarget(item)) return null;
@@ -7472,7 +7526,11 @@ export default function App(){
       if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
       return null;
     }
-    const measuredDate=result.measuredDate || TODAY_STR;
+    const measuredDate=dateOnly(result.measuredDate);
+    if(!measuredDate){
+      if(typeof window!=="undefined") window.alert("보고서에서 측정일을 확인하지 못했습니다. 원본 보고서의 O5 측정일을 확인하세요.");
+      return null;
+    }
     const historyRows=Array.isArray(targetItem.history)?targetItem.history:[];
     const sameDateCount=historyRows.filter(h=>dateOnly(h?.date)===measuredDate).length;
     const sequence=sameDateCount+1;
@@ -7484,7 +7542,15 @@ export default function App(){
     const annualPeriodForMeasuredYear=!isInitial && cycleMonthsOf(targetItem)===12
       ? allTargetPeriods.find(p=>!(p?.isReference||Number(p?.num)===0) && String(p?.due||p?.targetDate||"").slice(0,4)===String(measuredDate).slice(0,4))
       : null;
-    const resolvedPeriod=isInitial ? null : (annualPeriodForMeasuredYear || targetPeriod || fallbackPeriod);
+    const selectedReferencePeriod=targetPeriod && (targetPeriod?.isReference || Number(targetPeriod?.num)===0)
+      ? targetPeriod
+      : null;
+    const dateMatchedPeriod=!isInitial && !selectedReferencePeriod
+      ? periodForMeasuredDate(targetItem,measuredDate,allTargetPeriods)
+      : null;
+    const resolvedPeriod=isInitial
+      ? null
+      : (selectedReferencePeriod || annualPeriodForMeasuredYear || dateMatchedPeriod || targetPeriod || fallbackPeriod);
     const periodNo=isInitial ? 0 : Number(resolvedPeriod?.num || 1);
     const isReferenceRetest=!isInitial && (resolvedPeriod?.isReference || periodNo===0);
     const periodAttempts=isInitial ? [] : measurementAttemptsForPeriod(targetItem,resolvedPeriod);

@@ -18,7 +18,7 @@ source+=`
 export {
   buildRuntimeFromSharePoint,applyPeriodBasedCategories,deriveReplacementRelations,applyCurrentRiskPolicy,
   buildRollingPeriods,itemAllPeriods,itemListPeriods,currentCompliancePeriod,itemCycleFromRisk,
-  isComplianceTarget,precisionCycleStopDate,itemHasConfirmedPrecisionResult
+  itemStatusPeriods,getCS,isComplianceTarget,precisionCycleStopDate,itemHasConfirmedPrecisionResult
 };
 `;
 
@@ -43,6 +43,11 @@ const addMonths=(value,months)=>{
   date.setMonth(date.getMonth()+months);
   const last=new Date(date.getFullYear(),date.getMonth()+1,0).getDate();
   date.setDate(Math.min(day,last));
+  return iso(date);
+};
+const addDays=(value,days)=>{
+  const date=new Date(`${value}T12:00:00`);
+  date.setDate(date.getDate()+days);
   return iso(date);
 };
 const todayIso=iso(today);
@@ -143,6 +148,48 @@ check(app.precisionCycleStopDate(ngItem)===todayIso,"precision NG: stop date is 
 check(!app.isComplianceTarget(ngItem),"precision NG: cycle target stops");
 check(app.currentCompliancePeriod(ngItem)===null,"precision NG: no next report target remains");
 check(app.itemAllPeriods(ngItem).every(period=>period.isReference||period.measured||String(period.due)<=todayIso),"precision NG: no unmeasured Pn after confirmation survives");
+
+const dateDrivenBase=addMonths(todayIso,-17);
+const dateDrivenMeasured=addDays(todayIso,-1);
+const makeDateDrivenItem=periodNo=>{
+  const measurement={
+    id:`DATE-DRIVEN-${periodNo??"LEGACY"}`,
+    date:dateDrivenMeasured,
+    ...(periodNo==null?{}:{periodNo}),
+    role:"Periodic",
+    measurementRole:"Periodic",
+    attemptNo:1,
+    elements:completeElements(100),
+  };
+  return {
+    code:`DATE-DRIVEN-${periodNo??"LEGACY"}`,
+    type:"Auxiliary Materials",
+    lifecycle:"ExistingActive",
+    category:"existing",
+    isCurrent:true,
+    cycle:"Monthly",
+    firstDate:dateDrivenBase,
+    latestMeasurementId:measurement.id,
+    latest:measurement,
+    periods:[{num:0,label:"R",displayLabel:"R",isReference:true,referenceDate:dateDrivenBase,date:dateDrivenBase,measured:dateDrivenBase,status:"reference"}],
+    history:[measurement],
+    __measurementMap:{[measurement.id]:measurement},
+  };
+};
+
+for(const [label,item] of [
+  ["explicit Period_No",makeDateDrivenItem(17)],
+  ["legacy date window",makeDateDrivenItem(null)],
+]){
+  const periods=app.itemAllPeriods(item);
+  const completed=periods.find(period=>Number(period.num)===17);
+  check(completed?.measured===dateDrivenMeasured,`${label}: report date is linked to P17`,{actual:completed});
+  check(completed?.status==="compliant",`${label}: measurement before due date changes P17 to compliant`,{actual:completed?.status});
+  check(app.itemListPeriods(item).some(period=>Number(period.num)===17&&period.status==="compliant"),`${label}: four-dot window uses the completed color state`);
+  check(app.itemStatusPeriods(item).every(period=>period.measured||Number(period.num)>17),`${label}: older missed periods stay historical, not current`);
+  check(Number(app.currentCompliancePeriod(item)?.num)===18,`${label}: current period advances to P18`,{actual:app.currentCompliancePeriod(item)});
+  check(app.getCS(item)!=="overdue",`${label}: material-list current status no longer remains overdue`,{actual:app.getCS(item)});
+}
 
 const notAllowedPeriodic=[
   {id:"NA-P1",date:"2026-01-30",role:"Periodic",attemptNo:1,elements:completeElements(850)},
