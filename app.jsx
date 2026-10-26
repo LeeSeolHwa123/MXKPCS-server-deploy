@@ -387,7 +387,7 @@ const FILTER_LABELS = {
   crLevel: {H:"H · 직접접촉+잔류", M:"M · 직접접촉+비잔류", L:"L · 비접촉"},
   risk: {"Not Allowed":"사용불허", H:"H", M:"M", L:"L", "—":"—"},
   retest: {review:"재측정", trusted:"재측정 불필요"},
-  approval: {approved:"사용/단종 승인", measuring:"측정 진행중", request:"의뢰 필요", exception:"미인계 예외", rejected:"사용/단종 반려", hold:"보류/검토중", cancelled:"처리 취소"},
+  approval: {approved:"사용/단종 승인", measuring:"측정 진행중", request:"의뢰 필요", exception:"해당 없음", rejected:"사용/단종 반려", hold:"보류/검토중", cancelled:"처리 취소"},
   lifecycle: {ExistingActive:"기존 운영", NewReplacement:"신규 대체", ReplacedOld:"대체됨", Discontinued:"단종", NewItem:"신규 도입", Cancelled:"처리 취소"},
   nextDue: {},
   dDay: {},
@@ -399,7 +399,7 @@ const FILTER_LABELS = {
   paMeasuredDate: {},
   paElements: {},
   paReason: {},
-  paHandoff: {"인계 필요":"인계 필요","인계 완료":"인계 완료","미인계 예외":"미인계 예외"},
+  paHandoff: {"인계 필요":"인계 필요","인계 완료":"인계 완료","해당 없음":"해당 없음"},
   paReport: {"미첨부":"미첨부","첨부 완료":"첨부 완료"},
   paConfirm: {"미확정":"미확정","최종 컨펌":"최종 컨펌"},
   paResult: {OK:"OK",NG:"NG","—":"—"},
@@ -1712,7 +1712,9 @@ const UI_EN_MAP = {
   "등록완료":"Registered","처리 완료":"Complete","처리 취소":"Cancelled","진행 중":"In Progress",
   "진행중":"In Progress","완료":"Complete","승인":"Approved","반려":"Rejected","보류":"On Hold",
   "측정 진행중":"Measuring","측정중":"Measuring","의뢰 필요":"Request Required",
-  "미인계 예외":"Handoff Exception","예외 처리":"Exception Applied",
+  "미인계 예외":"Not Applicable","예외 처리":"Exclusion","예외 사유 확인":"Review Exclusion Reason","제외 사유 확인":"Review Exclusion Reason",
+  "대상 제외":"Excluded","대상 제외 해제":"Remove Exclusion","대상 제외 목록":"Excluded Items",
+  "제외 사유":"Exclusion Reason","제외 상세":"Exclusion Details","제외 처리일":"Excluded At","제외 처리자":"Excluded By",
   "확인 필요":"Review Required","재측정 필요":"Remeasurement Required","재측정":"Remeasure",
   "재측정 불필요":"No Remeasurement","필요":"Required","불필요":"Not Required","필요 없음":"Not Required",
   "사용 가능":"Allowed","사용불허":"Not Allowed","사용 불허":"Not Allowed","사용불가":"Not Allowed",
@@ -1751,7 +1753,7 @@ const UI_EN_MAP = {
   "XRF 재측정 필요":"XRF Remeasurement Required",
   "정밀분석 필요":"Precision Analysis Required","정밀분석 및 XRF 재측정 필요":"Precision Analysis and XRF Remeasurement Required","정밀분석 인계":"Transfer to Precision Analysis",
   "정밀분석 인계 필요":"Transfer Required","정밀분석 인계 완료":"Transfer Complete",
-  "정밀분석 미인계 예외":"Precision Handoff Exception","정밀분석 미인계 예외처리":"Apply Handoff Exception","미인계 예외 해제":"Remove Handoff Exception",
+  "정밀분석 대상 제외":"Excluded from Precision Analysis","정밀분석 대상 제외 처리":"Exclude from Precision Analysis","정밀분석 대상 제외 해제":"Remove Precision Analysis Exclusion",
   "정밀분석 의뢰 필요":"Precision Request Required","정밀분석 결과":"Precision Result",
   "정밀 결과":"Precision Result","정밀분석 결과 대기":"Awaiting Precision Result",
   "정밀분석 결과 없음":"No Precision Result","정밀분석 결과 확인":"Review Precision Result",
@@ -1903,7 +1905,7 @@ const UI_EN_MAP = {
   "관리자가 수동으로 신규 도입, 기존 주기 측정 추가, 변경·대체, 단종 처리를 직접 선택합니다.":"The administrator directly selects new registration, an additional periodic measurement, replacement, or discontinuation.",
   "기본 정보, C&R 등급, XRF 결과, 위험도 산정, 승인 상태를 관리자가 직접 확인합니다.":"The administrator reviews basic information, C&R level, XRF result, risk assessment, and approval status directly.",
   "승인 시 선택 품목은 Discontinued로 전환되고, 리스트에서는 이력 상태로 관리됩니다.":"On approval the selected item becomes Discontinued and is managed as a history record in the list.",
-  "최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.":"This risk assessment is calculated at initial registration from the R XRF Level and the C&R level. It is kept separate from later precision analysis approvals.",
+  "최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다.":"This risk assessment is calculated at initial registration from the R XRF Level and the C&R level.",
   "기존 품목이 신규 항목으로 대체된 이력":"History of existing items replaced by new items",
   "R 단계에서 확정된 Final Risk 기준":"Based on the Final Risk fixed at the R stage",
   "단종·취소·요청 기록":"Discontinuation / cancellation / request records",
@@ -2324,7 +2326,7 @@ function workflowPrecisionTransfer(caseData){ return caseData?.precisionTransfer
 function workflowFollowUp(caseData){ return caseData?.followUpId ? MOCK_WORKFLOW_DB.followUps[caseData.followUpId]||null : null; }
 function workflowApproval(caseData){ return caseData?.approvalId ? MOCK_WORKFLOW_DB.approvals[caseData.approvalId]||null : null; }
 function workflowStageLabel(stage){
-  const map={XRF_REQUIRED:"확인 필요",XRF_REMEASURE_REQUIRED:"XRF 재측정",PRECISION_TRANSFER_REQUEST_REQUIRED:"정밀분석 인계 필요",PRECISION_TRANSFER_RESULT_WAITING:"정밀분석 결과 대기",PRECISION_FOLLOWUP_REQUIRED:"후속조치 필요",PRECISION_REQUEST_REQUIRED:"정밀분석 의뢰 필요",PRECISION_HANDOFF_EXEMPTED:"정밀분석 미인계 예외",PRECISION_RESULT_WAITING:"정밀분석 결과 대기",APPROVED:"처리 완료",PRECISION_NG_REVIEW:"정밀분석 NG",RISK_NOT_ALLOWED:"사용불허"};
+  const map={XRF_REQUIRED:"확인 필요",XRF_REMEASURE_REQUIRED:"XRF 재측정",PRECISION_TRANSFER_REQUEST_REQUIRED:"정밀분석 인계 필요",PRECISION_TRANSFER_RESULT_WAITING:"정밀분석 결과 대기",PRECISION_FOLLOWUP_REQUIRED:"후속조치 필요",PRECISION_REQUEST_REQUIRED:"정밀분석 의뢰 필요",PRECISION_HANDOFF_EXEMPTED:"정밀분석 대상 제외",PRECISION_RESULT_WAITING:"정밀분석 결과 대기",APPROVED:"처리 완료",PRECISION_NG_REVIEW:"정밀분석 NG",RISK_NOT_ALLOWED:"사용불허"};
   return map[stage]||stage||"—";
 }
 function baseWorkflowForItem(item){
@@ -3968,7 +3970,7 @@ function precisionCaseFilterValues(row,column,lang="ko"){
     paMeasuredDate:[dateOnly(row?.measurement?.date||row?.measurement?.measuredDate)||"—"],
     paElements:(row?.targets||[]).map(value=>String(value)),
     paReason:[String(row?.triggerLabel||"—")],
-    paHandoff:[isException?"미인계 예외":(isRequested?"인계 완료":"인계 필요")],
+    paHandoff:[isException?"해당 없음":(isRequested?"인계 완료":"인계 필요")],
     paReport:[hasReport?"첨부 완료":"미첨부"],
     paConfirm:[isConfirmed?"최종 컨펌":"미확정"],
     paResult:[String(row?.precision?.result||"—")],
@@ -3978,7 +3980,7 @@ function precisionCaseFilterValues(row,column,lang="ko"){
 
 // 위험도 현황의 분석 Flow와 정밀분석 탭은 동일한 측정 Case를 동일한 단계로 집계합니다.
 // 각 Case는 아래 여섯 상태 중 정확히 하나에만 포함되므로 상태 합계는 정밀분석 전체 건수와 일치합니다.
-// 미인계 예외는 이력에는 남지만 진행중 건수에서는 제외됩니다.
+// 정밀분석 대상 제외 건은 이력에는 남지만 진행중 건수에서는 제외됩니다.
 function precisionCaseFlowKey(row){
   const isRequested=row?.precision?.requestStatus==="REQUESTED";
   const isException=row?.precision?.requestStatus==="EXEMPTED" || row?.precision?.handoffException===true;
@@ -4861,8 +4863,8 @@ function FH({label, col, filterState, openFilter, onOpen, lang="ko", balancedHea
   const splitIntoTwoLines=lang==="en"&&breakTwoWordEnglish&&englishWords.length===2;
   return(
     <div data-filter-header={col} data-i18n-skip="true" onClick={e=>onOpen(col,e)}
-      style={{position:"relative",display:"grid",gridTemplateColumns:balancedHeader?"20px minmax(0,1fr) 20px":`minmax(0,1fr) ${lang==="en"?20:16}px`,columnGap:2,alignItems:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
-      {balancedHeader&&<span aria-hidden="true" style={{display:"block",width:20}}/>}
+      style={{position:"relative",display:"grid",gridTemplateColumns:balancedHeader?"16px minmax(0,1fr) 16px":`minmax(0,1fr) ${lang==="en"?20:16}px`,columnGap:2,alignItems:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
+      {balancedHeader&&<span aria-hidden="true" style={{display:"block",width:16}}/>}
       <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.15,textAlign:"center",overflow:"visible",overflowWrap:"normal",wordBreak:"keep-all"}}>
         {splitIntoTwoLines?<>{englishWords[0]}<br/>{englishWords[1]}</>:displayLabel}
       </span>
@@ -5810,7 +5812,7 @@ function ApprovalBadge({status, context, detail=""}) {
     approved:{t:A.green,  label:"승인"},
     measuring:{t:A.blue,  label:"측정 진행중"},
     request:{t:A.amber,   label:"의뢰 필요"},
-    exception:{t:A.slate, label:"미인계 예외"},
+    exception:{t:A.slate, label:"해당 없음"},
     rejected:{t:A.rose,   label:"반려"},
     hold:{t:A.amber,      label:"보류"},
     cancelled:{t:A.slate, label:"처리 취소"},
@@ -5863,6 +5865,24 @@ function precisionExceptionReasonLabel(code,lang="ko"){
 function isPrecisionHandoffExceptionCase(row){
   return row?.precision?.requestStatus==="EXEMPTED" || row?.precision?.handoffException===true;
 }
+function activePrecisionExceptionCaseOf(workflow){
+  const activeCase=workflow?.precisionCases?.find(caseRow=>caseRow.key===workflow?.activePrecisionCaseKey) || null;
+  if(isPrecisionHandoffExceptionCase(activeCase)) return activeCase;
+  if(workflow?.stage!=="PRECISION_HANDOFF_EXEMPTED") return null;
+  return {
+    key:workflow?.activePrecisionCaseKey||workflow?.caseData?.id||workflow?.triggerMeasurement?.id||"",
+    measurement:workflow?.triggerMeasurement||null,
+    precision:workflow?.precision||{},
+  };
+}
+function riskPrecisionPresentationOf(item,workflow=workflowForItem(item)){
+  const exceptionCase=activePrecisionExceptionCaseOf(workflow);
+  return {
+    exceptionCase,
+    resultLabel:exceptionCase?"해당 없음":precisionAnalysisResultOf(item),
+    actionLabel:exceptionCase?"제외 사유 확인":"",
+  };
+}
 function precisionRowsForListMode(rows,mode="targets"){
   return (rows||[]).filter(row=>mode==="exceptions"
     ? isPrecisionHandoffExceptionCase(row)
@@ -5870,7 +5890,7 @@ function precisionRowsForListMode(rows,mode="targets"){
 }
 function PrecisionExceptionSwitch({checked=false,disabled=false,onChange,lang="ko"}){
   return <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={()=>{if(!disabled)onChange?.(!checked);}}
-    title={checked?(lang==="en"?"Turn off exception":"예외처리 해제"):(lang==="en"?"Turn on exception":"예외처리 적용")}
+    title={checked?(lang==="en"?"Remove exclusion":"대상 제외 해제"):(lang==="en"?"Exclude from precision analysis":"정밀분석 대상 제외")}
     style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:checked?"flex-end":"flex-start",width:50,height:22,padding:2,border:`1px solid ${disabled?C.bd2:C.charcoalDk}`,borderRadius:11,background:checked?C.charcoalDk:C.card,boxSizing:"border-box",cursor:disabled?"not-allowed":"pointer",opacity:disabled?.42:1,transition:"background .16s ease,border-color .16s ease",verticalAlign:"middle"}}>
     <span aria-hidden="true" style={{position:"absolute",left:checked?6:25,right:"auto",fontSize:7.5,fontWeight:800,color:checked?"#fff":C.text3,lineHeight:1}}>{checked?"ON":"OFF"}</span>
     <span aria-hidden="true" style={{width:16,height:16,borderRadius:"50%",background:checked?"#fff":C.charcoalDk,boxShadow:"0 1px 2px rgba(0,0,0,.22)",transition:"transform .16s ease"}}/>
@@ -5878,6 +5898,8 @@ function PrecisionExceptionSwitch({checked=false,disabled=false,onChange,lang="k
 }
 function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,onClose}){
   const applying=mode==="apply";
+  const editing=mode==="edit";
+  const editable=applying||editing;
   const [reasonCode,setReasonCode]=useState("");
   const [reasonDetail,setReasonDetail]=useState("");
   const [evidence,setEvidence]=useState("");
@@ -5893,17 +5915,17 @@ function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,on
     setAuthStep(!applying);
     setBusy(false);
     setError("");
-  },[row?.key,applying]);
+  },[row?.key,mode,applying]);
   if(!row) return null;
+  const isAllowedReason=PRECISION_EXCEPTION_REASONS.some(reason=>reason.code===reasonCode);
   const requiresCustomReason=reasonCode===PRECISION_EXCEPTION_OTHER_REASON;
-  const submit=async event=>{
-    event.preventDefault();
+  const save=async enabled=>{
     if(busy) return;
-    if(applying&&!reasonCode){
+    if(enabled&&!isAllowedReason){
       setError(lang==="en"?"Select an exception reason.":"예외 사유를 선택하세요.");
       return;
     }
-    if(applying&&requiresCustomReason&&!reasonDetail.trim()){
+    if(enabled&&requiresCustomReason&&!reasonDetail.trim()){
       setError(lang==="en"?"Enter the detailed reason for Other.":"기타 상세 사유를 입력하세요.");
       return;
     }
@@ -5919,7 +5941,7 @@ function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,on
     setBusy(true);
     setError("");
     const completed=await onSave?.(row.key,{
-      enabled:applying,
+      enabled,
       reasonCode,
       reasonDetail:reasonDetail.trim(),
       evidence:evidence.trim(),
@@ -5930,40 +5952,58 @@ function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,on
     if(completed){ onClose?.(); return; }
     setError(lang==="en"?"The exception could not be saved. Check the password and case status.":"예외 상태를 저장하지 못했습니다. 비밀번호와 현재 인계 상태를 확인하세요.");
   };
+  const submit=event=>{
+    event.preventDefault();
+    void save(mode!=="remove");
+  };
   const itemName=displayItemName(row.item,lang)||"—";
   const period=precisionCasePeriodLabel(row);
   const measuredDate=dateOnly(row.measurement?.date||row.measurement?.measuredDate)||"—";
   return <div role="presentation" onMouseDown={()=>{if(!busy)onClose?.();}} style={{position:"fixed",inset:0,zIndex:1300,display:"flex",alignItems:"center",justifyContent:"center",padding:20,background:"rgba(15,23,32,.58)",backdropFilter:"blur(2px)"}}>
     <form role="dialog" aria-modal="true" aria-labelledby="precision-quick-exception-title" onSubmit={submit} onMouseDown={event=>event.stopPropagation()} style={{width:"min(540px,100%)",maxHeight:"calc(100vh - 40px)",overflowY:"auto",padding:22,background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
-      <div id="precision-quick-exception-title" style={{fontSize:16,fontWeight:750,color:C.text1}}>{applying?(lang==="en"?"Apply Precision Handoff Exception":"정밀분석 미인계 예외처리"):(lang==="en"?"Remove Handoff Exception":"미인계 예외 해제")}</div>
+      <div id="precision-quick-exception-title" style={{fontSize:16,fontWeight:750,color:C.text1}}>{applying
+        ? (lang==="en"?"Exclude from Precision Analysis":"정밀분석 대상 제외 처리")
+        : editing
+          ? (lang==="en"?"Edit Precision Analysis Exclusion":"정밀분석 대상 제외 편집")
+          : (lang==="en"?"Remove Precision Analysis Exclusion":"정밀분석 대상 제외 해제")}</div>
       <div style={{marginTop:10,padding:"10px 12px",border:`1px solid ${C.bd}`,borderRadius:8,background:C.bg,fontSize:11,lineHeight:1.65,color:C.text2}}>
         <strong style={{color:C.text1}}>{row.item?.code||"—"} · {itemName}</strong><br/>
         {period} · {measuredDate} · {row.key}
       </div>
       <div style={{marginTop:9,fontSize:11,color:C.text3,lineHeight:1.6}}>{applying
-        ? (lang==="en"?"The case will leave the active precision-analysis list and appear in the exception list. Its XRF NG result, risk, and cycle history remain unchanged.":"이 건은 정밀분석 대상 목록에서 빠지고 예외처리 목록으로 이동합니다. XRF NG 결과, 위험도와 주기 이력은 그대로 유지됩니다.")
-        : (lang==="en"?"Removing the exception returns this case to the active precision-analysis list.":"예외를 해제하면 이 건은 정밀분석 대상 목록으로 다시 돌아옵니다.")}</div>
-      {applying&&<>
-        <label style={{display:"block",marginTop:14,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Exception reason":"예외 사유"}
-          <select autoFocus value={reasonCode} disabled={busy} onChange={event=>{const nextReason=event.target.value;setReasonCode(nextReason);if(nextReason!==PRECISION_EXCEPTION_OTHER_REASON)setReasonDetail("");setError("");}} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}>
-            <option value="">{lang==="en"?"Select a reason":"예외 사유를 선택하세요"}</option>
+        ? (lang==="en"?"The case will leave the active precision-analysis list and appear in the excluded-items list. Its XRF NG result, risk, and cycle history remain unchanged.":"이 건은 정밀분석 대상에서 제외되고 대상 제외 목록으로 이동합니다. XRF NG 결과, 위험도와 주기 이력은 그대로 유지됩니다.")
+        : editing
+          ? (lang==="en"?"Edit the saved exclusion reason, details, or related document, or remove the exclusion.":"저장된 제외 사유, 상세 사유, 근거자료/관련 문서를 수정하거나 대상 제외를 해제할 수 있습니다.")
+          : (lang==="en"?"Removing the exclusion returns this case to the active precision-analysis list.":"대상 제외를 해제하면 이 건은 정밀분석 대상 목록으로 다시 돌아옵니다.")}</div>
+      {editable&&<>
+        <label style={{display:"block",marginTop:14,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Exclusion reason":"제외 사유"}
+          <select autoFocus value={reasonCode} disabled={busy} onChange={event=>{setReasonCode(event.target.value);setError("");}} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}>
+            <option value="">{lang==="en"?"Select a reason":"제외 사유를 선택하세요"}</option>
+            {reasonCode&&!isAllowedReason&&<option value={reasonCode} disabled>{precisionExceptionReasonLabel(reasonCode,lang)}</option>}
             {PRECISION_EXCEPTION_REASONS.map(reason=><option key={reason.code} value={reason.code}>{lang==="en"?reason.en:reason.ko}</option>)}
           </select>
         </label>
-        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:requiresCustomReason?C.text2:C.text4}}>{lang==="en"?"Detailed reason (required for Other)":"상세 사유 (기타 선택 시 필수)"}
-          <textarea value={reasonDetail} required={requiresCustomReason} disabled={busy||!requiresCustomReason} onChange={event=>{setReasonDetail(event.target.value);setError("");}} placeholder={requiresCustomReason?(lang==="en"?"Enter the detailed reason. Use 'Cause not identified' when applicable.":"상세 사유를 입력하세요. 원인이 확인되지 않은 경우 '원인 미확인'으로 입력하세요."):(lang==="en"?"Available when Other is selected":"기타 선택 시 입력할 수 있습니다.")} style={{...inp,width:"100%",minHeight:82,resize:requiresCustomReason?"vertical":"none",marginTop:6,boxSizing:"border-box",background:requiresCustomReason?C.card:C.bg,cursor:requiresCustomReason?"text":"not-allowed"}}/>
+        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Detailed reason (required for Other)":"상세 사유 (기타 선택 시 필수)"}
+          <textarea value={reasonDetail} required={requiresCustomReason} disabled={busy} onChange={event=>{setReasonDetail(event.target.value);setError("");}} placeholder={requiresCustomReason?(lang==="en"?"Enter the detailed reason. Use 'Cause not identified' when applicable.":"상세 사유를 입력하세요. 원인이 확인되지 않은 경우 '원인 미확인'으로 입력하세요."):(lang==="en"?"Enter additional details if needed (optional).":"필요한 경우 상세 사유를 입력하세요. (선택)")} style={{...inp,width:"100%",minHeight:82,resize:"vertical",marginTop:6,boxSizing:"border-box",background:C.card,cursor:"text"}}/>
         </label>
         <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Evidence / related document (optional)":"근거자료/관련 문서 (선택)"}
           <input value={evidence} disabled={busy} onChange={event=>setEvidence(event.target.value)} placeholder={lang==="en"?"Document URL, approval number, or authoritative Measurement ID":"문서 URL, 승인번호 또는 대표 Measurement_ID"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
         </label>
       </>}
       {authStep&&<label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Administrator password":"관리자 비밀번호"}
-        <input type="password" autoFocus autoComplete="off" value={password} disabled={busy} onChange={event=>{setPassword(event.target.value);setError("");}} placeholder={lang==="en"?"Password":"비밀번호"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
+        <input type="password" autoFocus={!editable} autoComplete="off" value={password} disabled={busy} onChange={event=>{setPassword(event.target.value);setError("");}} placeholder={lang==="en"?"Password":"비밀번호"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
       </label>}
       {error&&<div role="alert" style={{marginTop:8,fontSize:11,color:C.redDk}}>{error}</div>}
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
         <button type="button" disabled={busy} onClick={()=>onClose?.()} style={{padding:"8px 14px",border:`1px solid ${C.bd2}`,borderRadius:UI.rs,background:C.card,color:C.text2,fontWeight:650,cursor:busy?"wait":"pointer"}}>{lang==="en"?"Cancel":"취소"}</button>
-        <button type="submit" disabled={busy||(applying&&(!reasonCode||(requiresCustomReason&&!reasonDetail.trim())))||(authStep&&!password)} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontWeight:650,opacity:(busy||(applying&&(!reasonCode||(requiresCustomReason&&!reasonDetail.trim())))||(authStep&&!password))?.58:1,cursor:busy?"wait":"pointer"}}>{busy?(lang==="en"?"Saving...":"저장 중..."):(authStep?(lang==="en"?"Approve":"승인"):(lang==="en"?"Apply Exception":"예외 처리"))}</button>
+        {editing&&<button type="button" disabled={busy||!password} onClick={()=>void save(false)} style={{padding:"8px 14px",border:`1px solid ${C.redDk}`,borderRadius:UI.rs,background:C.card,color:C.redDk,fontWeight:700,opacity:(busy||!password)?.58:1,cursor:busy?"wait":"pointer"}}>{lang==="en"?"Remove Exclusion":"대상 제외 해제"}</button>}
+        <button type="submit" disabled={busy||(editable&&(!isAllowedReason||(requiresCustomReason&&!reasonDetail.trim())))||(authStep&&!password)} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontWeight:650,opacity:(busy||(editable&&(!isAllowedReason||(requiresCustomReason&&!reasonDetail.trim())))||(authStep&&!password))?.58:1,cursor:busy?"wait":"pointer"}}>{busy
+          ? (lang==="en"?"Saving...":"저장 중...")
+          : editing
+            ? (lang==="en"?"Save Changes":"변경 저장")
+            : authStep
+              ? (lang==="en"?"Approve":"승인")
+              : (lang==="en"?"Exclude":"대상 제외")}</button>
       </div>
     </form>
   </div>;
@@ -6009,7 +6049,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
   const canUploadPrecisionPdf=isRequested && hasSourceFile && !fileBusy;
   const canEditPrecisionResult=isRequested && hasPrecisionReportPdf && !fileBusy;
   const derivedResult=derivePrecisionResult(targets,selected.precision,elementResults);
-  const handoffStatusLabel=isException?(lang==="en"?"Handoff Exception":"미인계 예외"):(isRequested?(lang==="en"?"Transfer Complete":"인계 완료"):(lang==="en"?"Transfer Required":"인계 필요"));
+  const handoffStatusLabel=isException?(lang==="en"?"Not Applicable":"해당 없음"):(isRequested?(lang==="en"?"Transfer Complete":"인계 완료"):(lang==="en"?"Transfer Required":"인계 필요"));
   const infoRows=[
     ["XRF 원본 파일",sourceFileName||"—"],
     ["XRF 측정 ID",selected.measurement?.id||"—"],
@@ -6019,10 +6059,10 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
     ["인계일",selected.precision.requestedAt||"—"],
     ["담당자",selected.precision.requestedBy||"—"],
     ...(isException?[
-      ["예외 사유",precisionExceptionReasonLabel(selected.precision.exceptionReasonCode,lang)],
-      ["예외 상세",selected.precision.exceptionReasonDetail||"—"],
-      ["예외 처리일",selected.precision.exceptionAt||"—"],
-      ["예외 처리자",selected.precision.exceptionBy||"—"],
+      ["제외 사유",precisionExceptionReasonLabel(selected.precision.exceptionReasonCode,lang)],
+      ["제외 상세",selected.precision.exceptionReasonDetail||"—"],
+      ["제외 처리일",selected.precision.exceptionAt||"—"],
+      ["제외 처리자",selected.precision.exceptionBy||"—"],
       ["근거",selected.precision.exceptionEvidence||"—"],
     ]:[])
   ];
@@ -6089,7 +6129,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
     setHandoffError(lang==="en"?"Check the password and try again.":"비밀번호를 확인한 뒤 다시 시도하세요.");
   };
   const resultExplain=isException
-    ? "이 측정 건은 정밀분석 미인계 예외로 기록되었습니다. XRF NG 결과와 위험도는 유지되며 정밀분석 진행 건수에서만 제외됩니다."
+    ? "이 측정 건은 정밀분석 대상에서 제외되었습니다. XRF NG 결과와 위험도는 유지되며 정밀분석 진행 건수에서만 제외됩니다."
     : !isRequested
     ? "정밀분석 인계 버튼을 먼저 클릭해야 합니다. 인계 후 성적서 PDF를 업로드하면 결과 입력이 활성화됩니다."
     : !hasPrecisionReportPdf
@@ -6137,7 +6177,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
           <span style={{color:C.text3,flex:"0 0 auto"}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right",minWidth:0,flex:"1 1 auto"}}><AutoFitText value={v} title={String(v)} baseFontSize={11} minFontSize={7} align="right" style={{fontWeight:600,color:C.text1}}/></span>
         </div>)}
         <button disabled={isRequested||isException} onClick={()=>{if(!isRequested&&!isException){setHandoffPassword("");setHandoffError("");setHandoffAuthOpen(true);}}} className="pill-btn" style={{marginTop:12,width:"100%",padding:"10px",border:`1px solid ${isRequested?A.green.ln:(isException?A.slate.ln:A.blue.solid)}`,background:isRequested?A.green.bg:(isException?A.slate.bg:A.blue.solid),color:isRequested?A.green.tx:(isException?A.slate.tx:"#fff"),borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:isRequested||isException?"default":"pointer"}}>
-          {isException?"정밀분석 미인계 예외":(isRequested?"정밀분석 인계 완료":"정밀분석 인계")}
+          {isException?"정밀분석 대상 제외":(isRequested?"정밀분석 인계 완료":"정밀분석 인계")}
         </button>
       </div>
       <div style={{padding:"16px 20px"}}>
@@ -6150,7 +6190,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
 
         <div style={{marginBottom:12,padding:"10px 12px",border:`1px solid ${canEditPrecisionResult?A.green.ln:C.bd}`,background:canEditPrecisionResult?A.green.bg:C.alt,borderRadius:8,fontSize:11,color:canEditPrecisionResult?A.green.tx:C.text3,lineHeight:1.55}}>
           {isException
-            ? "미인계 예외 처리된 측정 건입니다. XRF NG 이력은 유지되고 정밀분석 인계·성적서 입력은 잠깁니다. 예외 해제 후 다시 인계할 수 있습니다."
+            ? "정밀분석 대상에서 제외된 측정 건입니다. XRF NG 이력은 유지되고 정밀분석 인계·성적서 입력은 잠깁니다. 대상 제외 해제 후 다시 인계할 수 있습니다."
             : !isRequested
             ? "1. 정밀분석 인계 버튼을 클릭하세요.  2. 성적서 PDF를 업로드하세요.  3. 원소별 결과를 입력하세요."
             : !hasPrecisionReportPdf
@@ -7047,17 +7087,20 @@ function CycleManagementChart({cycleRows,statusRows,lang="ko",onStatusPick}){
 }
 
 function AnalysisFlowChart({steps,lang="ko",onPick}){
-  return <div className="analysis-flow-chart" style={{display:"grid",gridTemplateColumns:`repeat(${Math.max(1,steps.length)},minmax(0,1fr))`,gap:12,alignItems:"stretch",minWidth:0,width:"100%"}}>
+  const columns=Array.from({length:Math.max(1,steps.length*2-1)},(_,index)=>index%2?"14px":"minmax(0,1fr)").join(" ");
+  return <div className="analysis-flow-chart" style={{display:"grid",gridTemplateColumns:columns,gap:0,alignItems:"stretch",minWidth:0,width:"100%"}}>
     {steps.map((step,index)=>{
       const clickable=step.value>0&&!!onPick;
-      return <div key={step.key} onClick={()=>clickable&&onPick(step)} title={`${step.label} ${step.value}${lang==="en"?" items":"건"}`}
-        style={{position:"relative",display:"flex",flexDirection:"column",justifyContent:"space-between",minWidth:0,minHeight:104,padding:"12px",border:`1px solid ${step.value?step.border:C.bd}`,borderRadius:9,background:step.value?step.background:C.card,cursor:clickable?"pointer":"default",opacity:step.value?1:.62,boxSizing:"border-box"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,minWidth:0}}>
-          <span data-i18n-skip="true" style={{fontSize:9.5,fontWeight:750,color:step.value?step.color:C.text4,whiteSpace:"nowrap"}}>{lang==="en"?`Step ${index+1}`:`${index+1}단계`}</span>
-          <strong style={{fontSize:20,lineHeight:1,color:step.value?step.color:C.text4,whiteSpace:"nowrap"}}>{step.value}<small style={{fontSize:9.5,fontWeight:650,marginLeft:2}}>{lang==="en"?"":"건"}</small></strong>
+      return <div key={step.key} style={{display:"contents"}}>
+        <div onClick={()=>clickable&&onPick(step)} title={`${step.label} ${step.value}${lang==="en"?" items":"건"}`}
+          style={{display:"flex",flexDirection:"column",justifyContent:"space-between",minWidth:0,minHeight:104,padding:"12px",border:`1px solid ${step.value?step.border:C.bd}`,borderRadius:9,background:step.value?step.background:C.card,cursor:clickable?"pointer":"default",opacity:step.value?1:.62,boxSizing:"border-box"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,minWidth:0}}>
+            <span data-i18n-skip="true" style={{fontSize:9.5,fontWeight:750,color:step.value?step.color:C.text4,whiteSpace:"nowrap"}}>{lang==="en"?`Step ${index+1}`:`${index+1}단계`}</span>
+            <strong style={{fontSize:20,lineHeight:1,color:step.value?step.color:C.text4,whiteSpace:"nowrap"}}>{step.value}<small style={{fontSize:9.5,fontWeight:650,marginLeft:2}}>{lang==="en"?"":"건"}</small></strong>
+          </div>
+          <div data-i18n-skip="true" style={{minWidth:0,fontSize:10.5,fontWeight:700,color:step.value?C.text1:C.text4,lineHeight:1.35,marginTop:14,wordBreak:"keep-all"}}>{step.label}</div>
         </div>
-        <div data-i18n-skip="true" style={{minWidth:0,fontSize:10.5,fontWeight:700,color:step.value?C.text1:C.text4,lineHeight:1.35,marginTop:14,wordBreak:"keep-all"}}>{step.label}</div>
-        {index<steps.length-1&&<span className="analysis-flow-arrow" aria-hidden="true" style={{position:"absolute",right:-12,top:"50%",transform:"translate(50%,-50%)",zIndex:2,width:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:500,color:C.text4}}>›</span>}
+        {index<steps.length-1&&<span className="analysis-flow-arrow" aria-hidden="true" style={{width:14,minWidth:14,display:"flex",alignItems:"center",justifyContent:"center",alignSelf:"center",fontSize:15,lineHeight:1,fontWeight:500,color:C.text4}}>›</span>}
       </div>;
     })}
   </div>;
@@ -7961,7 +8004,7 @@ export default function App(){
       }
       if(!query) return true;
       const searchable=[
-        precisionCasePeriodLabel(row),row?.item?.code,row?.item?.name,row?.item?.nameEn,row?.item?.dept,
+        row?.key,precisionCasePeriodLabel(row),row?.item?.code,row?.item?.name,row?.item?.nameEn,row?.item?.dept,
         row?.measurement?.date,row?.measurement?.measuredDate,row?.triggerLabel,...(row?.targets||[]),
         precisionExceptionReasonLabel(row?.precision?.exceptionReasonCode,lang),row?.precision?.exceptionReasonDetail,
         row?.precision?.exceptionEvidence,row?.precision?.exceptionBy,
@@ -10160,6 +10203,16 @@ export default function App(){
     return ()=>document.removeEventListener("pointerdown",closeOnOutsidePointer,true);
   },[precisionOpenFilter]);
   const gotoXrf=(code)=>{ setSelKey(code); setSelPeriodNum(null); setSelMeasurementId(null); setTab("xrf"); };
+  const gotoPrecisionExceptionCase=(item,caseRow)=>{
+    const measurementKey=String(caseRow?.key||caseRow?.measurement?.id||"").trim();
+    setSelKey(item?.code||null);
+    setPrecisionListMode("exceptions");
+    setPrecisionSearch(measurementKey||String(item?.code||"").trim());
+    setPrecisionFilters(createEmptyPrecisionFilters());
+    setPrecisionSelCaseId(null);
+    setPrecisionDetailCaseId(null);
+    setTab("precision");
+  };
   const gotoPrecisionDetail=(item)=>{
     if(!item) return;
     const wf=workflowForItem(item);
@@ -10170,12 +10223,7 @@ export default function App(){
     }
     const selectedCase=wf.precisionCases?.find(caseRow=>caseRow.key===key) || (wf.precision?{precision:wf.precision}:null);
     if(isPrecisionHandoffExceptionCase(selectedCase)){
-      setPrecisionListMode("exceptions");
-      setPrecisionSearch("");
-      setPrecisionFilters(createEmptyPrecisionFilters());
-      setPrecisionSelCaseId(null);
-      setPrecisionDetailCaseId(null);
-      setTab("precision");
+      gotoPrecisionExceptionCase(item,{...selectedCase,key});
       return;
     }
     setSelKey(item.code);
@@ -10184,7 +10232,7 @@ export default function App(){
     setTab("precision-detail");
   };
   const gotoPrecisionWithFlowFilter=(filter)=>{
-    const exceptionFilter=(filter?.paHandoff||[]).includes("미인계 예외");
+    const exceptionFilter=(filter?.paHandoff||[]).includes("해당 없음");
     setPrecisionListMode(exceptionFilter?"exceptions":"targets");
     setPrecisionSearch("");
     setPrecisionFilters({...createEmptyPrecisionFilters(),...(filter||{})});
@@ -10215,7 +10263,7 @@ export default function App(){
   const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang,balancedHeader:true,breakTwoWordEnglish:true};
   const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
   const precisionColumnWidths=lang==="en"
-    ? {period:108,code:84,name:150,dept:88,date:92,elements:94,reason:118,handoff:92,report:72,confirm:100,result:88,exception:86,detail:34}
+    ? {period:112,code:72,name:136,dept:96,date:104,elements:102,reason:110,handoff:100,report:68,confirm:112,result:100,exception:76,detail:32}
     : {period:72,code:90,name:170,dept:84,date:92,elements:94,reason:126,handoff:84,report:74,confirm:84,result:78,exception:76,detail:34};
   const precisionColumns=[
     {key:"period",el:<FH label="발생 주기" col="paPeriod" {...precisionFhp}/>,w:precisionColumnWidths.period},
@@ -10229,7 +10277,7 @@ export default function App(){
     {key:"report",el:<FH label="성적서" col="paReport" {...precisionFhp}/>,w:precisionColumnWidths.report},
     {key:"confirm",el:<FH label="컨펌 상태" col="paConfirm" {...precisionFhp}/>,w:precisionColumnWidths.confirm},
     {key:"result",el:<FH label="정밀 결과" col="paResult" {...precisionFhp}/>,w:precisionColumnWidths.result},
-    {key:"exception",el:<PlainH label="예외 처리" lang={lang}/>,w:precisionColumnWidths.exception},
+    {key:"exception",el:<PlainH label="대상 제외" lang={lang}/>,w:precisionColumnWidths.exception},
     {key:"detail",el:null,w:precisionColumnWidths.detail},
   ];
   const precisionTableWeight=precisionColumns.reduce((sum,column)=>sum+column.w,0);
@@ -10584,6 +10632,7 @@ export default function App(){
           .replacement-history-row{grid-template-columns:1fr !important;}
           .replacement-history-relation{grid-template-columns:1fr !important;}
           .replacement-history-arrow{transform:rotate(90deg);min-height:18px;}
+          .replacement-history-target-main{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
           .responsive-table-scroll > table{
             width:100% !important;
             min-width:720px !important;
@@ -10632,6 +10681,7 @@ export default function App(){
           }
         }
         @media (max-width: 560px){
+          .replacement-history-target-main{grid-template-columns:1fr !important;}
           .app-shell{
             padding-left:10px;
             padding-right:10px;
@@ -11316,7 +11366,7 @@ export default function App(){
             {key:"confirmation",label:lang==="en"?"Confirmation required":"최종 확인 필요",value:precisionFlowSummary.confirmation,color:A.blue.tx},
             {key:"ok",label:lang==="en"?"Precision OK":"정밀분석 OK",value:precisionFlowSummary.ok,color:A.green.tx},
             {key:"ng",label:lang==="en"?"Precision NG":"정밀분석 NG",value:precisionFlowSummary.ng,color:A.rose.tx},
-            {key:"exception",label:lang==="en"?"Handoff Exception":"미인계 예외",value:precisionFlowSummary.exception,color:A.slate.tx},
+            {key:"exception",label:lang==="en"?"Excluded":"대상 제외",value:precisionFlowSummary.exception,color:A.slate.tx},
           ];
           const renderPrecisionRow=r=>{
             const active=selected?.key===r.key;
@@ -11349,7 +11399,7 @@ export default function App(){
               <td style={{...tdStyle,whiteSpace:"nowrap"}}>{measuredDate}</td>
               <td style={tdStyle}><div style={{display:"flex",gap:3,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:25,height:18,padding:"0 4px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10,fontWeight:650}}>{element}</span>):"—"}</div></td>
               <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{r.triggerLabel||"—"}</td>
-              <td style={tdStyle}>{statusBadge(isException?"미인계 예외":(isRequested?"인계 완료":"인계 필요"),isRequested||isException)}</td>
+              <td style={tdStyle}>{statusBadge(isException?"해당 없음":(isRequested?"인계 완료":"인계 필요"),isRequested||isException)}</td>
               <td style={tdStyle}>{statusBadge(hasReport?"첨부 완료":"미첨부",hasReport)}</td>
               <td style={tdStyle}>{statusBadge(isConfirmed?"최종 컨펌":"미확정",isConfirmed)}</td>
               <td style={tdStyle}>{result?<AnalysisResultBadge value={result}/>:<span style={{color:C.text4,fontWeight:500}}>—</span>}</td>
@@ -11365,7 +11415,7 @@ export default function App(){
               <div role="tablist" aria-label={lang==="en"?"Precision analysis list type":"정밀분석 목록 구분"} style={{display:"inline-flex",alignItems:"center",gap:4,padding:4,background:C.charcoalBg,border:`1px solid ${C.bd2}`,borderRadius:9}}>
                 {[
                   {key:"targets",ko:"정밀분석 대상",en:"Analysis Targets",count:precisionRowsForListMode(precisionRows,"targets").length},
-                  {key:"exceptions",ko:"예외처리 목록",en:"Exception List",count:precisionRowsForListMode(precisionRows,"exceptions").length},
+                  {key:"exceptions",ko:"대상 제외 목록",en:"Excluded Items",count:precisionRowsForListMode(precisionRows,"exceptions").length},
                 ].map(option=>{
                   const active=precisionListMode===option.key;
                   return <button key={option.key} type="button" role="tab" aria-selected={active} onClick={()=>{setPrecisionListMode(option.key);setPrecisionSelCaseId(null);setPrecisionSearch("");setPrecisionFilters(createEmptyPrecisionFilters());}} style={{minHeight:32,padding:"0 13px",border:`1px solid ${active?C.charcoalDk:"transparent"}`,borderRadius:7,background:active?C.charcoalDk:"transparent",color:active?"#fff":C.text2,fontSize:11,fontWeight:700,cursor:"pointer"}}>{lang==="en"?option.en:option.ko} <span style={{marginLeft:5,opacity:.78}}>{option.count}</span></button>;
@@ -11389,14 +11439,14 @@ export default function App(){
                 {precisionHasFilters&&<button type="button" onClick={handlePrecisionFiltersClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
               </div>
               <FilterChips filterState={precisionFilters} onClear={handlePrecisionFilterClear} onClearAll={handlePrecisionFiltersClearAll}/>
-              {precisionListMode==="exceptions"?<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label={lang==="en"?"Precision handoff exception list":"정밀분석 미인계 예외처리 목록"} tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
+              {precisionListMode==="exceptions"?<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label={lang==="en"?"Items excluded from precision analysis":"정밀분석 대상 제외 목록"} tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
                 <table style={{width:"100%",minWidth:980,borderCollapse:"collapse",tableLayout:"fixed"}}>
                   <colgroup><col style={{width:"7%"}}/><col style={{width:"9%"}}/><col style={{width:"16%"}}/><col style={{width:"9%"}}/><col style={{width:"9%"}}/><col style={{width:"16%"}}/><col style={{width:"18%"}}/><col style={{width:"9%"}}/><col style={{width:"7%"}}/></colgroup>
                   <thead><tr>{[
                     lang==="en"?"Period":"발생 주기",lang==="en"?"Part No.":"품번",lang==="en"?"Item Name":"품목명",lang==="en"?"Measured":"측정일",lang==="en"?"Elements":"대상 원소",
-                    lang==="en"?"Exception Reason":"예외 사유",lang==="en"?"Details":"상세 사유",lang==="en"?"Applied":"처리일",lang==="en"?"Manage":"관리"
+                    lang==="en"?"Exclusion Reason":"제외 사유",lang==="en"?"Details":"상세 사유",lang==="en"?"Applied":"처리일",lang==="en"?"Manage":"관리"
                   ].map(label=><th key={label} style={{height:42,padding:"4px 6px",borderBottom:`1px solid ${C.bd}`,background:C.card,textAlign:"center",fontSize:10.5,fontWeight:700,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.2}}>{label}</th>)}</tr></thead>
-                  <tbody>{precisionListRows.length===0?<tr><td colSpan={9} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No active exception cases.":"예외처리된 항목이 없습니다."}</td></tr>:filteredPrecisionRows.length===0?<tr><td colSpan={9} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No exception cases match the current search or filters.":"검색 또는 필터 조건에 맞는 예외 항목이 없습니다."}</td></tr>:filteredPrecisionRows.map(r=>{
+                  <tbody>{precisionListRows.length===0?<tr><td colSpan={9} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No excluded items.":"정밀분석 대상에서 제외된 항목이 없습니다."}</td></tr>:filteredPrecisionRows.length===0?<tr><td colSpan={9} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No excluded items match the current search or filters.":"검색 또는 필터 조건에 맞는 제외 항목이 없습니다."}</td></tr>:filteredPrecisionRows.map(r=>{
                     const cell={padding:"5px 6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",fontSize:10.5,color:C.text2,lineHeight:1.25,wordBreak:"keep-all"};
                     return <tr key={r.key} style={{background:C.card}}>
                       <td style={cell}><span style={{display:"inline-flex",minWidth:32,height:20,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{precisionCasePeriodLabel(r)}</span></td>
@@ -11407,7 +11457,7 @@ export default function App(){
                       <td style={{...cell,fontWeight:650}}>{precisionExceptionReasonLabel(r.precision?.exceptionReasonCode,lang)}</td>
                       <td style={{...cell,textAlign:"left"}}><div>{r.precision?.exceptionReasonDetail||"—"}</div>{r.precision?.exceptionEvidence&&<div style={{marginTop:4,fontSize:10,color:C.text4}}>{lang==="en"?"Evidence":"근거"}: {r.precision.exceptionEvidence}</div>}</td>
                       <td style={cell}><div style={{whiteSpace:"nowrap"}}>{dateOnly(r.precision?.exceptionAt)||"—"}</div><div style={{marginTop:3,fontSize:10,color:C.text4}}>{r.precision?.exceptionBy||"—"}</div></td>
-                      <td style={cell}><PrecisionExceptionSwitch checked lang={lang} onChange={enabled=>{if(!enabled)setPrecisionQuickException({row:r,mode:"remove"});}}/></td>
+                      <td style={cell}><button type="button" onClick={()=>setPrecisionQuickException({row:r,mode:"edit"})} title={lang==="en"?"Edit or remove this exception":"예외 사유·문서 수정 또는 예외 해제"} style={{minWidth:48,height:26,padding:"0 10px",border:`1px solid ${C.charcoalDk}`,borderRadius:7,background:C.charcoalDk,color:"#fff",fontSize:10.5,fontWeight:700,cursor:"pointer"}}>{lang==="en"?"Edit":"편집"}</button></td>
                     </tr>;
                   })}</tbody>
                 </table>
@@ -11416,7 +11466,7 @@ export default function App(){
                   <colgroup>{precisionColumns.map(column=><col key={column.key} style={{width:`${(column.w/precisionTableWeight)*100}%`}}/>)}</colgroup>
                   <thead><tr style={{height:lang==="en"?62:42}}>{precisionColumns.map(column=><th key={column.key} style={{height:lang==="en"?62:42,padding:lang==="en"?"4px 2px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",wordBreak:"keep-all",lineHeight:1.15}}>{column.el}</th>)}</tr></thead>
                   {precisionListRows.length===0?(
-                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{precisionListMode==="exceptions"?(lang==="en"?"No active exception cases.":"예외처리된 항목이 없습니다."):(lang==="en"?"No precision-analysis targets.":"정밀분석 대상이 없습니다.")}</td></tr></tbody>
+                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{precisionListMode==="exceptions"?(lang==="en"?"No excluded items.":"정밀분석 대상에서 제외된 항목이 없습니다."):(lang==="en"?"No precision-analysis targets.":"정밀분석 대상이 없습니다.")}</td></tr></tbody>
                   ):filteredPrecisionRows.length===0?(
                     <tbody><tr><td colSpan={precisionColumns.length} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>조건에 맞는 정밀분석 항목이 없습니다.<button type="button" onClick={handlePrecisionFiltersClearAll} style={{marginLeft:10,padding:"4px 10px",background:"none",border:`1px solid ${C.bd}`,fontSize:11,cursor:"pointer",color:C.text3}}>초기화</button></td></tr></tbody>
                   ):precisionGroups.map(group=>{
@@ -11488,7 +11538,7 @@ export default function App(){
             {key:"confirmation",label:lang==="en"?"Confirmation required":"최종 확인 필요",value:precisionFlowSummary.confirmation,filter:{paReport:["첨부 완료"],paConfirm:["미확정"]},color:A.blue.tx,border:A.blue.ln,background:A.blue.bg},
             {key:"ok",label:lang==="en"?"Precision OK":"정밀분석 OK",value:precisionFlowSummary.ok,filter:{paConfirm:["최종 컨펌"],paResult:["OK"]},color:A.green.tx,border:A.green.ln,background:A.green.bg},
             {key:"ng",label:lang==="en"?"Precision NG":"정밀분석 NG",value:precisionFlowSummary.ng,filter:{paConfirm:["최종 컨펌"],paResult:["NG"]},color:A.rose.tx,border:A.rose.ln,background:A.rose.bg},
-            {key:"exception",label:lang==="en"?"Handoff Exception":"미인계 예외",value:precisionFlowSummary.exception,filter:{paHandoff:["미인계 예외"]},color:A.slate.tx,border:A.slate.ln,background:A.slate.bg},
+            {key:"exception",label:lang==="en"?"Excluded":"정밀분석 대상 제외",value:precisionFlowSummary.exception,filter:{paHandoff:["해당 없음"]},color:A.slate.tx,border:A.slate.ln,background:A.slate.bg},
           ];
           const precisionActionStages=new Set([
             "PRECISION_TRANSFER_REQUEST_REQUIRED",
@@ -11515,11 +11565,11 @@ export default function App(){
               <ChartCard title={lang==="en"?"Cycle Management Status":"주기 관리 현황"} hint={lang==="en"?`Active managed items ${active.length}`:`운영 관리 대상 ${active.length}건`}>
                 <CycleManagementChart cycleRows={cycleChartRows} statusRows={cycleStatusRows} lang={lang} onStatusPick={row=>row.filter&&gotoListWithFilter(row.filter)}/>
               </ChartCard>
-              <ChartCard title={lang==="en"?"Analysis Flow Status":"분석 Flow 현황"} hint={lang==="en"?`${precisionFlowSummary.total} measurement cases · same as Precision Analysis`:`측정 Case ${precisionFlowSummary.total}건 · 정밀분석 탭과 동일`}>
+              <ChartCard title={lang==="en"?"Analysis Flow Status":"분석 Flow 현황"} hint={lang==="en"?`${precisionFlowSummary.total} measurement cases`:`측정 Case ${precisionFlowSummary.total}건`}>
                 <AnalysisFlowChart steps={analysisFlowSteps} lang={lang} onPick={step=>gotoPrecisionWithFlowFilter(step.filter)}/>
               </ChartCard>
             </div>
-            <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 현황표" tabIndex={0} style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접 접촉+잔류`],["M",`${crCounts.M}건 · 직접 접촉+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
+            <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 현황표" tabIndex={0} style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접 접촉+잔류`],["M",`${crCounts.M}건 · 직접 접촉+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
             <div style={{...card,padding:"18px 20px"}}>
               <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:12,marginBottom:5,flexWrap:"wrap"}}>
                 <div style={{...T.cardTitle}}>고위험 / 후속분석 대상 품목</div>
@@ -11536,8 +11586,13 @@ export default function App(){
                     {attention.length?attention.map((it,idx)=>{
                       const wf=workflowForItem(it);
                       const complianceKey=getCS(it);
+                      const precisionPresentation=riskPrecisionPresentationOf(it,wf);
+                      const precisionExceptionCase=precisionPresentation.exceptionCase;
+                      const precisionResultLabel=precisionPresentation.resultLabel;
                       const precisionLinked=!!(itemHasPrecisionTrigger(it) || wf.precision || wf.precisionCases?.length || precisionActionStages.has(wf.stage));
                       const currentAction=(()=>{
+                        // 대상 제외된 측정 건은 동일 Measurement ID의 제외 사유로 연결합니다.
+                        if(precisionExceptionCase) return {label:precisionPresentation.actionLabel,target:"precisionException"};
                         // 분석 Workflow가 아직 끝나지 않았다면 그 조치를 가장 먼저 보여 줍니다.
                         if(wf.stage && wf.stage!=="APPROVED"){
                           return {
@@ -11551,10 +11606,15 @@ export default function App(){
                         if(complianceKey==="dueSoon") return {label:"주기 측정 권장",target:"xrf"};
                         return {label:"후속조치 없음",target:"xrf"};
                       })();
-                      const openPrecision=(e)=>{e.stopPropagation(); precisionLinked?gotoPrecisionDetail(it):gotoXrf(it.code);};
+                      const openPrecision=(e)=>{
+                        e.stopPropagation();
+                        if(precisionExceptionCase) gotoPrecisionExceptionCase(it,precisionExceptionCase);
+                        else precisionLinked?gotoPrecisionDetail(it):gotoXrf(it.code);
+                      };
                       const openCurrentAction=(e)=>{
                         e.stopPropagation();
-                        currentAction.target==="precision" && precisionLinked ? gotoPrecisionDetail(it) : gotoXrf(it.code);
+                        if(currentAction.target==="precisionException") gotoPrecisionExceptionCase(it,precisionExceptionCase);
+                        else currentAction.target==="precision" && precisionLinked ? gotoPrecisionDetail(it) : gotoXrf(it.code);
                       };
                       const openXrf=(e)=>{e.stopPropagation(); gotoXrf(it.code);};
                       return <tr key={it.code} className="risk-attention-row" tabIndex={0} role="button"
@@ -11567,8 +11627,8 @@ export default function App(){
                         <td onClick={openXrf} title="R 기준 위험도와 XRF 상세로 이동" style={{padding:"9px",border:`1px solid ${C.bd}`,textAlign:"center"}}><RiskBadge risk={itemFinalRisk(it)}/></td>
                         <td onClick={openXrf} title="해당 품목의 이행/XRF 상세로 이동" style={{padding:"9px",border:`1px solid ${C.bd}`,fontSize:11,textAlign:"center"}}><CompText item={it}/></td>
                         <td onClick={openXrf} title="XRF 결과 상세로 이동" style={{padding:"9px",border:`1px solid ${C.bd}`,textAlign:"center"}}><Chip v={itemXrfWorst(it)} small result/></td>
-                        <td onClick={openPrecision} title={precisionLinked?"정밀분석 상세로 이동":"정밀분석 대상이 없어 XRF 상세로 이동"} style={{padding:"9px",border:`1px solid ${C.bd}`,textAlign:"center"}}><AnalysisResultBadge value={precisionAnalysisResultOf(it)}/></td>
-                        <td onClick={openCurrentAction} title={currentAction.target==="precision"?"현재 조치의 정밀분석 상세로 이동":"현재 조치의 주기/XRF 상세로 이동"} style={{padding:"9px 5px",border:`1px solid ${C.bd}`,fontSize:10.5,fontWeight:500,color:C.text2,textAlign:"center",overflow:"hidden",lineHeight:1.35}}><AutoFitText value={currentAction.label} title={currentAction.label} baseFontSize={10.5} minFontSize={7} align="center" style={{fontWeight:500,color:C.text2,lineHeight:1.35}}/></td>
+                        <td onClick={openPrecision} title={precisionExceptionCase?"해당 측정 건의 제외 사유 확인":(precisionLinked?"정밀분석 상세로 이동":"정밀분석 대상이 없어 XRF 상세로 이동")} style={{padding:"9px",border:`1px solid ${C.bd}`,textAlign:"center"}}><AnalysisResultBadge value={precisionResultLabel}/></td>
+                        <td onClick={openCurrentAction} title={currentAction.target==="precisionException"?"해당 측정 건의 제외 사유 확인":(currentAction.target==="precision"?"현재 조치의 정밀분석 상세로 이동":"현재 조치의 주기/XRF 상세로 이동")} style={{padding:"9px 5px",border:`1px solid ${C.bd}`,fontSize:10.5,fontWeight:500,color:C.text2,textAlign:"center",overflow:"hidden",lineHeight:1.35}}><AutoFitText value={currentAction.label} title={currentAction.label} baseFontSize={10.5} minFontSize={7} align="center" style={{fontWeight:500,color:C.text2,lineHeight:1.35}}/></td>
                         <td onClick={e=>{e.stopPropagation();gotoItemDetail(it);}} title="현재 Workflow 상세로 이동" style={{padding:"9px",border:`1px solid ${C.bd}`,textAlign:"center"}}><ApprovalBadge status={approvalStatusOf(it)}/></td>
                       </tr>;
                     }):<tr><td colSpan={8} style={{padding:24,textAlign:"center",color:C.text4}}>현재 조치 대상이 없습니다.</td></tr>}
@@ -11577,8 +11637,7 @@ export default function App(){
               </div>
             </div>
             {replacementHistoryGroups.length>0&&<div style={{...card,padding:"16px 20px"}}>
-              <div data-i18n-skip="true" style={{...T.cardTitle,fontFamily:FONT_SANS,marginBottom:4}}>{lang==="en"?`Replacement History - ${replacementHistoryEntries.length} events`:`대체 이력 - ${replacementHistoryEntries.length}건`}</div>
-              <div data-i18n-skip="true" style={{fontFamily:FONT_SANS,fontSize:11,fontWeight:400,lineHeight:1.45,color:C.text3,marginBottom:14}}>{lang==="en"?"Derived replacement items are grouped under the same previous item. Period substitutions and return-to-use events remain separate.":"동일한 변경 전 품목에서 파생된 대체품은 한 행으로 묶고, 주기별 대체·사용 복귀 이력은 개별 표시합니다."}</div>
+              <div data-i18n-skip="true" style={{...T.cardTitle,fontFamily:FONT_SANS,marginBottom:14}}>{lang==="en"?`Replacement History - ${replacementHistoryEntries.length} events`:`대체 이력 - ${replacementHistoryEntries.length}건`}</div>
               {replacementHistoryGroups.map((group,index)=>{
                 const entry=group.primary;
                 const groupKinds=new Set(group.entries.map(row=>row.kind));
@@ -11596,34 +11655,43 @@ export default function App(){
                   const canOpen=!!code;
                   return <button type="button" onClick={()=>canOpen&&gotoXrf(code)} disabled={!canOpen}
                     title={canOpen?`${code} XRF ${lang==="en"?"details":"상세로 이동"}`:""}
-                    style={{width:"100%",minWidth:0,textAlign:side==="from"?"center":"left",padding:"10px 12px",background:side==="to"?C.charcoalBg:C.alt,border:`1px ${side==="from"?"dashed":"solid"} ${C.bd2}`,borderRadius:7,cursor:canOpen?"pointer":"default",fontFamily:FONT_SANS,boxSizing:"border-box"}}>
-                    <div data-i18n-skip="true" style={{fontSize:9.5,color:C.text4,marginBottom:3}}>{side==="from"?(lang==="en"?"Before":"변경 전"):(lang==="en"?"Derived item":"파생 품목")}</div>
-                    <div style={{fontSize:11.5,fontWeight:750,color:C.text1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{code||"—"}</div>
-                    <div data-i18n-skip="true" style={{fontSize:11,color:C.text2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",marginTop:2}}>{name||displayItemName(item,lang)||"—"}</div>
+                    style={{width:"100%",minWidth:0,minHeight:side==="to"?64:"auto",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",padding:side==="to"?"7px 9px":"9px 11px",background:side==="to"?C.charcoalBg:C.alt,border:`1px ${side==="from"?"dashed":"solid"} ${C.bd2}`,borderRadius:7,cursor:canOpen?"pointer":"default",fontFamily:FONT_SANS,boxSizing:"border-box"}}>
+                    <div style={{fontSize:11.5,fontWeight:750,color:C.text1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"100%"}}>{code||"—"}</div>
+                    <div data-i18n-skip="true" style={{fontSize:11,color:C.text2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",marginTop:2,maxWidth:"100%"}}>{name||displayItemName(item,lang)||"—"}</div>
                   </button>;
                 };
                 return <div className="replacement-history-row" key={group.key} style={{display:"grid",gridTemplateColumns:"minmax(104px,118px) minmax(0,1fr)",gap:12,alignItems:"start",padding:"14px 0",borderTop:index?`1px solid ${C.bd}`:"none"}}>
-                  <div data-i18n-skip="true" style={{alignSelf:"stretch",display:"flex",flexDirection:"column",justifyContent:"center",gap:5}}>
-                    <span style={{alignSelf:"flex-start",padding:"3px 8px",borderRadius:7,border:`1px solid ${kindMeta.border}`,background:kindMeta.background,color:kindMeta.color,fontSize:10,fontWeight:750}}>{lang==="en"?kindMeta.en:kindMeta.ko}</span>
-                    <strong style={{fontSize:11,color:C.text2}}>{group.latestDate||"—"}</strong>
-                    {group.entries.length>1&&<span style={{fontSize:10,color:C.text4}}>{lang==="en"?`${group.entries.length} derived items`:`파생 ${group.entries.length}건`}</span>}
-                    {group.entries.length===1&&entry.periodNo&&<span style={{fontSize:10,color:C.text4}}>P{entry.periodNo}</span>}
+                  <div data-i18n-skip="true" style={{alignSelf:"stretch",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:5,textAlign:"center"}}>
+                    <span style={{alignSelf:"center",padding:"3px 8px",borderRadius:7,border:`1px solid ${kindMeta.border}`,background:kindMeta.background,color:kindMeta.color,fontSize:10,fontWeight:750}}>{lang==="en"?kindMeta.en:kindMeta.ko}</span>
                   </div>
                   <div className="replacement-history-relation" style={{display:"grid",gridTemplateColumns:"minmax(180px,.72fr) 22px minmax(0,1.5fr)",gap:9,alignItems:"stretch",minWidth:0}}>
                     <div style={{minWidth:0,display:"flex",alignItems:"center"}}>{renderHistoryItem("from",entry.fromPartNumber,fromName,entry.fromItem)}</div>
                     <span className="replacement-history-arrow" aria-hidden="true" style={{display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:kindMeta.color}}>→</span>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:8,minWidth:0}}>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(270px,1fr))",gap:7,minWidth:0}}>
                       {group.entries.map((target,targetIndex)=>{
                         const toName=lang==="en"?(target.toItemNameEn||target.toItemName):(target.toItemName||target.toItemNameEn);
-                        return <div key={target.eventId||`${target.toPartNumber||"target"}-${targetIndex}`} style={{minWidth:0,padding:8,background:C.bg,border:`1px solid ${C.bd}`,borderRadius:8,boxSizing:"border-box"}}>
-                          {renderHistoryItem("to",target.toPartNumber,toName,target.toItem)}
-                          <div data-i18n-skip="true" style={{display:"flex",alignItems:"center",gap:"4px 9px",flexWrap:"wrap",padding:"7px 3px 2px",fontSize:10.5,lineHeight:1.45,color:C.text3}}>
-                            <span><strong style={{color:C.text2}}>{lang==="en"?"Effective":"적용일"}</strong> · {target.effectiveDate||"—"}</span>
-                            <span><strong style={{color:C.text2}}>{lang==="en"?"Status":"상태"}</strong> · {target.status||"—"}</span>
-                            {target.periodNo&&<span><strong style={{color:C.text2}}>{lang==="en"?"Period":"주기"}</strong> · P{target.periodNo}</span>}
-                            {target.linkedMeasurementId&&<span style={{minWidth:0,overflowWrap:"anywhere"}}><strong style={{color:C.text2}}>Measurement</strong> · {target.linkedMeasurementId}</span>}
+                        const normalizedStatus=String(target.status||"").trim().toUpperCase();
+                        const showExceptionalStatus=!!normalizedStatus&&!['APPLIED','ACTIVE'].includes(normalizedStatus);
+                        return <div key={target.eventId||`${target.toPartNumber||"target"}-${targetIndex}`} style={{minWidth:0,padding:6,background:C.bg,border:`1px solid ${C.bd}`,borderRadius:8,boxSizing:"border-box"}}>
+                          <div className="replacement-history-target-main" style={{display:"grid",gridTemplateColumns:target.linkedMeasurementId?"minmax(150px,1fr) 104px 68px minmax(176px,.9fr)":target.periodNo?"minmax(150px,1fr) 104px 68px":"minmax(0,1fr) 112px",gap:6,alignItems:"stretch",minWidth:0}}>
+                            <div style={{minWidth:0}}>{renderHistoryItem("to",target.toPartNumber,toName,target.toItem)}</div>
+                            <div data-i18n-skip="true" style={{minWidth:0,minHeight:64,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"7px 6px",background:C.card,border:`1px solid ${C.bd2}`,borderRadius:7,boxSizing:"border-box",textAlign:"center"}}>
+                              <strong style={{fontSize:10,color:C.text3}}>{lang==="en"?"Effective":"적용일"}</strong>
+                              <span style={{marginTop:3,fontSize:11.5,fontWeight:750,color:C.text1,whiteSpace:"nowrap"}}>{target.effectiveDate||"—"}</span>
+                            </div>
+                            {target.periodNo&&<div data-i18n-skip="true" style={{minWidth:0,minHeight:64,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"7px 6px",background:C.card,border:`1px solid ${C.bd2}`,borderRadius:7,boxSizing:"border-box",textAlign:"center"}}>
+                              <strong style={{fontSize:10,color:C.text3}}>{lang==="en"?"Period":"주기"}</strong>
+                              <span style={{marginTop:3,fontSize:11.5,fontWeight:750,color:C.text1,whiteSpace:"nowrap"}}>P{target.periodNo}</span>
+                            </div>}
+                            {target.linkedMeasurementId&&<div data-i18n-skip="true" style={{minWidth:0,minHeight:64,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"7px 8px",background:C.card,border:`1px solid ${C.bd2}`,borderRadius:7,boxSizing:"border-box",textAlign:"center"}}>
+                              <strong style={{fontSize:10,color:C.text3}}>Measurement</strong>
+                              <span title={target.linkedMeasurementId} style={{maxWidth:"100%",marginTop:3,fontSize:10.5,fontWeight:750,color:C.text1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{target.linkedMeasurementId}</span>
+                            </div>}
                           </div>
-                          {target.reason&&<div data-i18n-skip="true" style={{marginTop:6,padding:"7px 8px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:6,fontSize:10.5,lineHeight:1.55,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"break-word"}}><strong style={{color:C.text2}}>{lang==="en"?"Reason":"사유"}</strong> · {target.reason}</div>}
+                          {showExceptionalStatus&&<div data-i18n-skip="true" style={{display:"flex",alignItems:"center",gap:"4px 9px",flexWrap:"wrap",padding:"5px 2px 0",fontSize:10,lineHeight:1.35,color:C.text3}}>
+                            {showExceptionalStatus&&<span><strong style={{color:C.text2}}>{lang==="en"?"Status":"상태"}</strong> · {target.status}</span>}
+                          </div>}
+                          {target.reason&&<div data-i18n-skip="true" style={{marginTop:6,padding:"7px 8px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:6,fontSize:10.5,lineHeight:1.55,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"break-word"}}><strong style={{color:C.text2}}>{lang==="en"?"Reason":"사유"}</strong> {target.reason}</div>}
                         </div>;
                       })}
                     </div>
@@ -11642,9 +11710,9 @@ export default function App(){
                   <div style={{...T.pageTitle,marginBottom:5}}>품목 / 변경 관리</div>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                  <div style={{display:"flex",gap:6,background:C.bg,border:`1px solid ${C.bd}`,padding:3}}>
+                  <div role="tablist" aria-label={lang==="en"?"Item registration mode":"품목 등록 방식"} style={{display:"inline-flex",alignItems:"center",gap:4,padding:4,background:C.charcoalBg,border:`1px solid ${C.bd2}`,borderRadius:9}}>
                     {[['requester','의뢰자 등록'],['admin','관리자 직접 등록']].map(([m,l])=>(
-                      <button key={m} onClick={()=>handleRegistrationModeClick(m)} style={{padding:"6px 12px",background:regMode===m?C.charcoalDk:C.card,color:regMode===m?'#fff':C.text2,border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>{l}</button>
+                      <button key={m} type="button" role="tab" aria-selected={regMode===m} onClick={()=>handleRegistrationModeClick(m)} style={{minHeight:32,padding:"0 13px",border:`1px solid ${regMode===m?C.charcoalDk:"transparent"}`,borderRadius:7,background:regMode===m?C.charcoalDk:"transparent",color:regMode===m?'#fff':C.text2,fontSize:11,fontWeight:700,cursor:"pointer"}}>{l}</button>
                     ))}
                   </div>
                 </div>

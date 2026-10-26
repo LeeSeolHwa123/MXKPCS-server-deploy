@@ -20,7 +20,8 @@ source+=`
 export {
   buildRuntimeFromSharePoint,runtimePrecisionCasesForItem,deriveRuntimeWorkflow,
   precisionCaseFlowKey,summarizePrecisionCases,approvalFilterKey,workflowStageLabel,
-  itemXrfWorst,isPrecisionHandoffExceptionCase,precisionRowsForListMode
+  itemXrfWorst,isPrecisionHandoffExceptionCase,precisionRowsForListMode,
+  activePrecisionExceptionCaseOf,riskPrecisionPresentationOf
 };
 `;
 
@@ -68,6 +69,7 @@ const item=runtime.items[0];
 const precisionCase=app.runtimePrecisionCasesForItem(item,runtime.precisionOverrides)[0];
 const workflow=app.deriveRuntimeWorkflow(item,runtime.precisionOverrides,{});
 const summary=app.summarizePrecisionCases([precisionCase]);
+const riskPresentation=app.riskPrecisionPresentationOf(item,workflow);
 
 assert(runtime.precisionOverrides[measurementId]?.requestStatus==="EXEMPTED","DB exception must map to EXEMPTED instead of REQUESTED");
 assert(runtime.precisionOverrides[measurementId]?.exceptionReasonCode==="HAZARDOUS_SUBSTANCE_SCREENING","exception reason code must survive DB mapping");
@@ -77,14 +79,22 @@ assert(summary.total===1 && summary.exception===1 && summary.inProgress===0,"exc
 assert(workflow.stage==="PRECISION_HANDOFF_EXEMPTED","latest-item workflow must expose the exception stage");
 assert(workflow.approval?.status==="미인계 예외","other tabs must receive the same exception status");
 assert(app.approvalFilterKey(workflow.approval?.status)==="exception","material-list approval filters must map the exception consistently");
-assert(app.workflowStageLabel(workflow.stage)==="정밀분석 미인계 예외","current-action labels must expose the exception state");
+assert(app.workflowStageLabel(workflow.stage)==="정밀분석 대상 제외","current-action labels must expose the excluded state");
 assert(app.itemXrfWorst(item)==="NG","exception must not overwrite the source XRF NG result");
 assert(app.isPrecisionHandoffExceptionCase(precisionCase)===true,"exception case classifier must recognize the DB-mapped row");
 assert(app.precisionRowsForListMode([precisionCase],"targets").length===0,"active precision target list must exclude exception cases");
 assert(app.precisionRowsForListMode([precisionCase],"exceptions").length===1,"exception list must retain exception cases for later review");
-assert(source.includes('ko:"예외처리 목록"'),"precision tab must expose a separate exception list selector");
+assert(app.activePrecisionExceptionCaseOf(workflow)?.key===measurementId,"risk overview must resolve the active exception by measurement ID");
+assert(riskPresentation.resultLabel==="해당 없음","risk overview precision result must expose the shared excluded state as not applicable");
+assert(riskPresentation.actionLabel==="제외 사유 확인","risk overview current action must link to the exclusion reason");
+assert(source.includes('row?.key,precisionCasePeriodLabel(row)'),"precision exception search must support exact measurement-ID navigation");
+assert(source.includes('ko:"대상 제외 목록"'),"precision tab must expose a separate excluded-items selector");
+assert(source.includes('"정밀분석 대상 제외 처리"'),"precision exclusion dialog must use an intuitive title");
 assert(source.includes('setPrecisionQuickException({row:r,mode:"apply"})'),"precision target rows must expose a direct exception action");
-assert(source.includes('setPrecisionQuickException({row:r,mode:"remove"})'),"exception rows must expose exception removal");
+assert(source.includes('setPrecisionQuickException({row:r,mode:"edit"})'),"exception rows must expose exception editing");
+assert(source.includes('mode==="edit"'),"exception editor must support editing an active exception");
+assert(source.includes('void save(false)'),"exception editor must support exception removal");
+assert(source.includes('Save Changes'),"exception editor must expose a dedicated save action");
 assert(source.includes('row?.precision?.exceptionReasonDetail'),"exception-list search must include the saved detailed reason");
 assert(source.includes('role="switch" aria-checked={checked}'),"exception actions must use an accessible ON/OFF switch");
 assert(source.includes('background:checked?C.charcoalDk:C.card'),"active exception switches must use the requested black styling");
@@ -96,6 +106,7 @@ assert(!source.includes('정밀분석 인계에서 제외된 건입니다. XRF N
 assert(apiSource.includes('action === "setPrecisionHandoffException"'),"API must expose the exception mutation action");
 assert(apiSource.includes('field_1: "PrecisionHandoffException"'),"API must store exceptions as isolated XRF_Requests audit events");
 assert(apiSource.includes('Before_Target_Snapshot_JSON: JSON.stringify(event)'),"API must persist the complete exception audit payload");
+assert(apiSource.includes('정밀분석 대상 제외 편집값의 DB 저장 검증에 실패했습니다.'),"API must verify edited exclusion values after saving");
 assert(apiSource.includes('if (activeException) throw new Error'),"precision transfer must reject an active exception until it is removed");
 
 if(failures.length){
