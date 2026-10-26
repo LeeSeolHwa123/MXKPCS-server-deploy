@@ -1624,14 +1624,14 @@ async function handleSetPrecisionHandoffException(siteId, accessToken, payload) 
   }
 
   const triggerMeasurementId = cleanText(payload?.triggerMeasurementId).trim();
-  if (!triggerMeasurementId) throw new Error("예외처리할 XRF Measurement_ID가 없습니다.");
+  if (!triggerMeasurementId) throw new Error("정밀분석 대상에서 제외할 XRF Measurement_ID가 없습니다.");
   const enabled = bool(payload?.enabled);
   const reasonCode = cleanText(payload?.reasonCode).trim().toUpperCase();
   const reasonDetail = cleanText(payload?.reasonDetail).trim();
   const evidence = cleanText(payload?.evidence).trim();
 
   if (enabled && !PRECISION_EXCEPTION_REASON_CODES.has(reasonCode)) {
-    throw new Error("허용된 정밀분석 미인계 예외 사유를 선택하세요.");
+    throw new Error("허용된 정밀분석 대상 제외 사유를 선택하세요.");
   }
   if (enabled && reasonCode === PRECISION_EXCEPTION_OTHER_REASON && !reasonDetail) {
     throw new Error("기타 상세 사유를 입력하세요.");
@@ -1640,7 +1640,7 @@ async function handleSetPrecisionHandoffException(siteId, accessToken, payload) 
   const measurements = await readList(siteId, "XRF_Measurements", accessToken);
   const measurement = measurements.find(row => cleanText(row?.fields?.Title).trim() === triggerMeasurementId) || null;
   if (!measurement) {
-    throw new Error("실제 DB에 등록된 XRF 측정 건만 미인계 예외처리할 수 있습니다.");
+    throw new Error("실제 DB에 등록된 XRF 측정 건만 정밀분석 대상에서 제외할 수 있습니다.");
   }
 
   const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
@@ -1648,7 +1648,7 @@ async function handleSetPrecisionHandoffException(siteId, accessToken, payload) 
   const alreadyRequested = !!cleanText(header?.fields?.Requested_At).trim();
   const hasPrecisionResult = !!cleanText(header?.fields?.field_5).trim() || header?.fields?.field_6 === true;
   if (enabled && (alreadyRequested || hasPrecisionResult)) {
-    throw new Error("이미 정밀분석에 인계되었거나 결과가 등록된 건은 미인계 예외처리할 수 없습니다.");
+    throw new Error("이미 정밀분석에 인계되었거나 결과가 등록된 건은 정밀분석 대상에서 제외할 수 없습니다.");
   }
 
   const requestRows = await readList(siteId, "XRF_Requests", accessToken);
@@ -1662,7 +1662,7 @@ async function handleSetPrecisionHandoffException(siteId, accessToken, payload) 
   const now = new Date().toISOString();
   const actor = cleanText(payload?.actor || "admin").trim() || "admin";
   if (!enabled && (!eventRow || String(previousEvent?.status || eventRow?.fields?.field_2 || "").toUpperCase() !== "ACTIVE")) {
-    throw new Error("해제할 정밀분석 미인계 예외 기록이 없습니다.");
+    throw new Error("해제할 정밀분석 대상 제외 기록이 없습니다.");
   }
 
   const event = enabled ? {
@@ -1716,13 +1716,21 @@ async function handleSetPrecisionHandoffException(siteId, accessToken, payload) 
   const verifiedEvent = parseJsonObject(verified?.fields?.Before_Target_Snapshot_JSON);
   if ((String(verifiedEvent?.status || "").toUpperCase() === "ACTIVE") !== enabled
     || cleanText(verifiedEvent?.triggerMeasurementId).trim() !== triggerMeasurementId) {
-    throw new Error("정밀분석 미인계 예외 상태의 DB 저장 검증에 실패했습니다.");
+    throw new Error("정밀분석 대상 제외 상태의 DB 저장 검증에 실패했습니다.");
+  }
+  if (enabled && (cleanText(verifiedEvent?.reasonCode).trim() !== reasonCode
+    || cleanText(verifiedEvent?.reasonDetail).trim() !== reasonDetail
+    || cleanText(verifiedEvent?.evidence).trim() !== evidence)) {
+    throw new Error("정밀분석 대상 제외 편집값의 DB 저장 검증에 실패했습니다.");
   }
   return {
     eventId,
     requestSpItemId: eventRow.id,
     triggerMeasurementId,
     handoffException: enabled,
+    reasonCode: enabled ? reasonCode : "",
+    reasonDetail: enabled ? reasonDetail : "",
+    evidence: enabled ? evidence : "",
   };
 }
 
@@ -1740,7 +1748,7 @@ async function handleUpsertPrecision(siteId, accessToken, payload) {
     return cleanText(event?.triggerMeasurementId || fields.field_4).trim() === triggerMeasurementId
       && String(event?.status || fields.field_2 || "").toUpperCase() === "ACTIVE";
   });
-  if (activeException) throw new Error("정밀분석 미인계 예외를 먼저 해제한 뒤 인계하세요.");
+  if (activeException) throw new Error("정밀분석 대상 제외를 먼저 해제한 뒤 인계하세요.");
   if (!alreadyRequested && !verifyPrecisionHandoffPassword(payload?.precisionHandoffPassword)) {
     const error = new Error("정밀분석 인계 비밀번호가 올바르지 않습니다.");
     error.status = 403;
