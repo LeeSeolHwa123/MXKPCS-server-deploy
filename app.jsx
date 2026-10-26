@@ -1734,6 +1734,7 @@ const UI_EN_MAP = {
   "직접접촉+잔류":"Direct Contact + Residual","직접접촉·잔류":"Direct Contact + Residual",
   "직접접촉+비잔류":"Direct Contact + Non-residual","직접접촉·비잔류":"Direct Contact + Non-residual",
   "비접촉":"Non-contact","직접+잔류":"Direct + Residual","직접+비잔류":"Direct + Non-residual",
+  "직접 접촉+잔류":"Direct Contact + Residual","직접 접촉+비잔류":"Direct Contact + Non-residual",
   "염소+브롬":"Cl+Br","납":"Lead","수은":"Mercury","크롬":"Chromium","카드뮴":"Cadmium",
   "염소":"Chlorine","브롬":"Bromine",
 
@@ -5838,17 +5839,26 @@ function DetailArrowButton({title="상세 보기"}){
     onPointerLeave={()=>{setHovered(false);setPressed(false);}}
     style={{width:26,height:26,background:highlighted?C.charcoalDk:C.card,border:`1px solid ${highlighted?C.charcoalDk:C.bd2}`,borderRadius:UI.rs,fontSize:12,cursor:"pointer",color:highlighted?"#fff":C.text3,fontWeight:500,boxShadow:"none",transform:pressed?"scale(.94)":"none",transition:"background .16s ease, border-color .16s ease, color .16s ease, transform .12s ease"}}>→</button>;
 }
+const PRECISION_EXCEPTION_OTHER_REASON="기타 (직접 입력)";
 const PRECISION_EXCEPTION_REASONS=Object.freeze([
-  {code:"HAZARDOUS_SUBSTANCE_SCREENING",ko:"유해물질 확인 목적의 조사성 측정",en:"Investigative hazardous-substance screening"},
-  {code:"CALIBRATION_VALIDATION",ko:"표준시료·교정·장비 검증 측정",en:"Reference sample, calibration, or equipment validation"},
-  {code:"DUPLICATE_WITH_AUTHORITATIVE_CASE",ko:"대표 측정 건이 연결된 중복·상관성 측정",en:"Duplicate or correlation measurement linked to an authoritative case"},
-  {code:"RND_NON_PRODUCTION",ko:"개발·연구용 비양산 시료",en:"Development or R&D non-production sample"},
-  {code:"DISCONTINUED_HISTORY_CHECK",ko:"미사용·단종 자재의 과거 이력 확인",en:"Historical check of unused or discontinued material"},
-  {code:"EXISTING_PRECISION_EVIDENCE",ko:"동일 시료의 유효한 기존 정밀분석 근거 보유",en:"Valid existing precision evidence for the same sample"},
+  {code:"원재료 및 구성성분 영향",ko:"원재료 및 구성성분 영향",en:"Raw material and constituent impact"},
+  {code:"제조공정 및 오염 영향",ko:"제조공정 및 오염 영향",en:"Manufacturing process and contamination impact"},
+  {code:"시료 및 측정조건 영향",ko:"시료 및 측정조건 영향",en:"Sample and measurement condition impact"},
+  {code:"관리기준 및 판정 오류",ko:"관리기준 및 판정 오류",en:"Control criteria and judgment error"},
+  {code:PRECISION_EXCEPTION_OTHER_REASON,ko:PRECISION_EXCEPTION_OTHER_REASON,en:"Other (manual entry)"},
 ]);
+const LEGACY_PRECISION_EXCEPTION_REASON_LABELS=Object.freeze({
+  HAZARDOUS_SUBSTANCE_SCREENING:{ko:"유해물질 확인 목적의 조사성 측정",en:"Investigative hazardous-substance screening"},
+  CALIBRATION_VALIDATION:{ko:"표준시료·교정·장비 검증 측정",en:"Reference sample, calibration, or equipment validation"},
+  DUPLICATE_WITH_AUTHORITATIVE_CASE:{ko:"대표 측정 건이 연결된 중복·상관성 측정",en:"Duplicate or correlation measurement linked to an authoritative case"},
+  RND_NON_PRODUCTION:{ko:"개발·연구용 비양산 시료",en:"Development or R&D non-production sample"},
+  DISCONTINUED_HISTORY_CHECK:{ko:"미사용·단종 자재의 과거 이력 확인",en:"Historical check of unused or discontinued material"},
+  EXISTING_PRECISION_EVIDENCE:{ko:"동일 시료의 유효한 기존 정밀분석 근거 보유",en:"Valid existing precision evidence for the same sample"},
+});
 function precisionExceptionReasonLabel(code,lang="ko"){
   const reason=PRECISION_EXCEPTION_REASONS.find(row=>row.code===code);
-  return reason ? (lang==="en"?reason.en:reason.ko) : (code||"—");
+  const legacyReason=LEGACY_PRECISION_EXCEPTION_REASON_LABELS[code];
+  return reason ? (lang==="en"?reason.en:reason.ko) : (legacyReason?(lang==="en"?legacyReason.en:legacyReason.ko):(code||"—"));
 }
 function isPrecisionHandoffExceptionCase(row){
   return row?.precision?.requestStatus==="EXEMPTED" || row?.precision?.handoffException===true;
@@ -5861,9 +5871,9 @@ function precisionRowsForListMode(rows,mode="targets"){
 function PrecisionExceptionSwitch({checked=false,disabled=false,onChange,lang="ko"}){
   return <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={()=>{if(!disabled)onChange?.(!checked);}}
     title={checked?(lang==="en"?"Turn off exception":"예외처리 해제"):(lang==="en"?"Turn on exception":"예외처리 적용")}
-    style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:checked?"flex-end":"flex-start",width:62,height:28,padding:2,border:`1px solid ${disabled?C.bd2:C.charcoalDk}`,borderRadius:14,background:checked?C.charcoalDk:C.card,boxSizing:"border-box",cursor:disabled?"not-allowed":"pointer",opacity:disabled?.42:1,transition:"background .16s ease,border-color .16s ease",verticalAlign:"middle"}}>
-    <span aria-hidden="true" style={{position:"absolute",left:checked?7:29,right:"auto",fontSize:8.5,fontWeight:800,color:checked?"#fff":C.text3,lineHeight:1}}>{checked?"ON":"OFF"}</span>
-    <span aria-hidden="true" style={{width:22,height:22,borderRadius:"50%",background:checked?"#fff":C.charcoalDk,boxShadow:"0 1px 3px rgba(0,0,0,.22)",transition:"transform .16s ease"}}/>
+    style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:checked?"flex-end":"flex-start",width:50,height:22,padding:2,border:`1px solid ${disabled?C.bd2:C.charcoalDk}`,borderRadius:11,background:checked?C.charcoalDk:C.card,boxSizing:"border-box",cursor:disabled?"not-allowed":"pointer",opacity:disabled?.42:1,transition:"background .16s ease,border-color .16s ease",verticalAlign:"middle"}}>
+    <span aria-hidden="true" style={{position:"absolute",left:checked?6:25,right:"auto",fontSize:7.5,fontWeight:800,color:checked?"#fff":C.text3,lineHeight:1}}>{checked?"ON":"OFF"}</span>
+    <span aria-hidden="true" style={{width:16,height:16,borderRadius:"50%",background:checked?"#fff":C.charcoalDk,boxShadow:"0 1px 2px rgba(0,0,0,.22)",transition:"transform .16s ease"}}/>
   </button>;
 }
 function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,onClose}){
@@ -5872,6 +5882,7 @@ function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,on
   const [reasonDetail,setReasonDetail]=useState("");
   const [evidence,setEvidence]=useState("");
   const [password,setPassword]=useState("");
+  const [authStep,setAuthStep]=useState(!applying);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   useEffect(()=>{
@@ -5879,15 +5890,30 @@ function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,on
     setReasonDetail(applying?"":(row?.precision?.exceptionReasonDetail||""));
     setEvidence(applying?"":(row?.precision?.exceptionEvidence||""));
     setPassword("");
+    setAuthStep(!applying);
     setBusy(false);
     setError("");
   },[row?.key,applying]);
   if(!row) return null;
+  const requiresCustomReason=reasonCode===PRECISION_EXCEPTION_OTHER_REASON;
   const submit=async event=>{
     event.preventDefault();
-    if(busy||!password) return;
-    if(applying&&(!reasonCode||reasonDetail.trim().length<5)){
-      setError(lang==="en"?"Select a reason and enter at least 5 characters of detail.":"예외 사유를 선택하고 상세 사유를 5자 이상 입력하세요.");
+    if(busy) return;
+    if(applying&&!reasonCode){
+      setError(lang==="en"?"Select an exception reason.":"예외 사유를 선택하세요.");
+      return;
+    }
+    if(applying&&requiresCustomReason&&!reasonDetail.trim()){
+      setError(lang==="en"?"Enter the detailed reason for Other.":"기타 상세 사유를 입력하세요.");
+      return;
+    }
+    if(applying&&!authStep){
+      setAuthStep(true);
+      setError("");
+      return;
+    }
+    if(!password){
+      setError(lang==="en"?"Enter the administrator password.":"관리자 비밀번호를 입력하세요.");
       return;
     }
     setBusy(true);
@@ -5919,25 +5945,25 @@ function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,on
         : (lang==="en"?"Removing the exception returns this case to the active precision-analysis list.":"예외를 해제하면 이 건은 정밀분석 대상 목록으로 다시 돌아옵니다.")}</div>
       {applying&&<>
         <label style={{display:"block",marginTop:14,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Exception reason":"예외 사유"}
-          <select autoFocus value={reasonCode} disabled={busy} onChange={event=>{setReasonCode(event.target.value);setError("");}} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}>
+          <select autoFocus value={reasonCode} disabled={busy} onChange={event=>{const nextReason=event.target.value;setReasonCode(nextReason);if(nextReason!==PRECISION_EXCEPTION_OTHER_REASON)setReasonDetail("");setError("");}} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}>
             <option value="">{lang==="en"?"Select a reason":"예외 사유를 선택하세요"}</option>
             {PRECISION_EXCEPTION_REASONS.map(reason=><option key={reason.code} value={reason.code}>{lang==="en"?reason.en:reason.ko}</option>)}
           </select>
         </label>
-        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Detailed reason":"상세 사유"}
-          <textarea value={reasonDetail} disabled={busy} onChange={event=>{setReasonDetail(event.target.value);setError("");}} placeholder={lang==="en"?"Enter the internal decision basis (minimum 5 characters).":"내부 확인 내용과 판단 근거를 5자 이상 입력하세요."} style={{...inp,width:"100%",minHeight:82,resize:"vertical",marginTop:6,boxSizing:"border-box"}}/>
+        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:requiresCustomReason?C.text2:C.text4}}>{lang==="en"?"Detailed reason (required for Other)":"상세 사유 (기타 선택 시 필수)"}
+          <textarea value={reasonDetail} required={requiresCustomReason} disabled={busy||!requiresCustomReason} onChange={event=>{setReasonDetail(event.target.value);setError("");}} placeholder={requiresCustomReason?(lang==="en"?"Enter the detailed reason. Use 'Cause not identified' when applicable.":"상세 사유를 입력하세요. 원인이 확인되지 않은 경우 '원인 미확인'으로 입력하세요."):(lang==="en"?"Available when Other is selected":"기타 선택 시 입력할 수 있습니다.")} style={{...inp,width:"100%",minHeight:82,resize:requiresCustomReason?"vertical":"none",marginTop:6,boxSizing:"border-box",background:requiresCustomReason?C.card:C.bg,cursor:requiresCustomReason?"text":"not-allowed"}}/>
         </label>
-        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Evidence / reference (optional)":"근거자료·관련 문서 (선택)"}
+        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Evidence / related document (optional)":"근거자료/관련 문서 (선택)"}
           <input value={evidence} disabled={busy} onChange={event=>setEvidence(event.target.value)} placeholder={lang==="en"?"Document URL, approval number, or authoritative Measurement ID":"문서 URL, 승인번호 또는 대표 Measurement_ID"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
         </label>
       </>}
-      <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Administrator password":"관리자 비밀번호"}
-        <input type="password" autoFocus={!applying} autoComplete="off" value={password} disabled={busy} onChange={event=>{setPassword(event.target.value);setError("");}} placeholder={lang==="en"?"Password":"비밀번호"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
-      </label>
+      {authStep&&<label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Administrator password":"관리자 비밀번호"}
+        <input type="password" autoFocus autoComplete="off" value={password} disabled={busy} onChange={event=>{setPassword(event.target.value);setError("");}} placeholder={lang==="en"?"Password":"비밀번호"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
+      </label>}
       {error&&<div role="alert" style={{marginTop:8,fontSize:11,color:C.redDk}}>{error}</div>}
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
         <button type="button" disabled={busy} onClick={()=>onClose?.()} style={{padding:"8px 14px",border:`1px solid ${C.bd2}`,borderRadius:UI.rs,background:C.card,color:C.text2,fontWeight:650,cursor:busy?"wait":"pointer"}}>{lang==="en"?"Cancel":"취소"}</button>
-        <button type="submit" disabled={!password||busy||(applying&&(!reasonCode||reasonDetail.trim().length<5))} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontWeight:650,opacity:(!password||busy||(applying&&(!reasonCode||reasonDetail.trim().length<5)))?.58:1,cursor:busy?"wait":"pointer"}}>{busy?(lang==="en"?"Saving...":"저장 중..."):(applying?(lang==="en"?"Apply Exception":"예외처리"):(lang==="en"?"Remove Exception":"예외 해제"))}</button>
+        <button type="submit" disabled={busy||(applying&&(!reasonCode||(requiresCustomReason&&!reasonDetail.trim())))||(authStep&&!password)} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontWeight:650,opacity:(busy||(applying&&(!reasonCode||(requiresCustomReason&&!reasonDetail.trim())))||(authStep&&!password))?.58:1,cursor:busy?"wait":"pointer"}}>{busy?(lang==="en"?"Saving...":"저장 중..."):(authStep?(lang==="en"?"Approve":"승인"):(lang==="en"?"Apply Exception":"예외 처리"))}</button>
       </div>
     </form>
   </div>;
@@ -11303,8 +11329,8 @@ export default function App(){
             const casePeriodLabel=precisionCasePeriodLabel(r);
             const measuredDate=dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—";
             const department=lang==="en"?translateUiTextKoToEn(r.item.dept||"—"):(r.item.dept||"—");
-            const statusBadge=(label,done)=><span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",maxWidth:"100%",minHeight:22,padding:lang==="en"?"2px 4px":"0 8px",boxSizing:"border-box",borderRadius:UI.pill,border:`1px solid ${done?C.charcoalDk:C.bd2}`,background:done?C.charcoalDk:C.card,color:done?"#fff":C.text4,fontSize:lang==="en"?9.5:10,fontWeight:600,whiteSpace:lang==="en"?"normal":"nowrap",lineHeight:1.1}}>{label}</span>;
-            const tdStyle={height:lang==="en"?60:58,padding:lang==="en"?"4px 3px":"6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",fontSize:11,color:C.text2,overflow:lang==="en"?"visible":"hidden"};
+            const statusBadge=(label,done)=><span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",maxWidth:"100%",minHeight:18,padding:lang==="en"?"2px 3px":"0 6px",boxSizing:"border-box",borderRadius:UI.pill,border:`1px solid ${done?C.charcoalDk:C.bd2}`,background:done?C.charcoalDk:C.card,color:done?"#fff":C.text4,fontSize:lang==="en"?9:9.5,fontWeight:600,whiteSpace:lang==="en"?"normal":"nowrap",lineHeight:1.05}}>{label}</span>;
+            const tdStyle={height:lang==="en"?46:44,padding:lang==="en"?"3px 2px":"4px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",fontSize:10.5,color:C.text2,overflow:lang==="en"?"visible":"hidden"};
             return <tr key={r.key} onClick={()=>{
               if(precisionSelCaseId===r.key){
                 setPrecisionSelCaseId(null);
@@ -11316,12 +11342,12 @@ export default function App(){
               style={{background:active?UI.selRow:C.card,cursor:"pointer",transition:"background .12s"}}
               onMouseEnter={event=>{if(!active)event.currentTarget.style.background=UI.hoverRow;}}
               onMouseLeave={event=>{if(!active)event.currentTarget.style.background=C.card;}}>
-              <td style={tdStyle}><span style={{display:"inline-flex",minWidth:36,height:24,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{casePeriodLabel}</span></td>
+              <td style={tdStyle}><span style={{display:"inline-flex",minWidth:32,height:20,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{casePeriodLabel}</span></td>
               <td style={{...tdStyle,fontWeight:700,overflowWrap:"anywhere"}}>{r.item.code}</td>
               <td style={{...tdStyle,textAlign:"center",padding:lang==="en"?"4px 5px":"6px 9px"}}><div style={{width:"100%",fontWeight:650,color:C.text1,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3,textAlign:"center"}}>{displayItemName(r.item,lang)}</div></td>
               <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all"}}>{department}</td>
               <td style={{...tdStyle,whiteSpace:"nowrap"}}>{measuredDate}</td>
-              <td style={tdStyle}><div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:27,height:20,padding:"0 5px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10.5,fontWeight:650}}>{element}</span>):"—"}</div></td>
+              <td style={tdStyle}><div style={{display:"flex",gap:3,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:25,height:18,padding:"0 4px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10,fontWeight:650}}>{element}</span>):"—"}</div></td>
               <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{r.triggerLabel||"—"}</td>
               <td style={tdStyle}>{statusBadge(isException?"미인계 예외":(isRequested?"인계 완료":"인계 필요"),isRequested||isException)}</td>
               <td style={tdStyle}>{statusBadge(hasReport?"첨부 완료":"미첨부",hasReport)}</td>
@@ -11369,11 +11395,11 @@ export default function App(){
                   <thead><tr>{[
                     lang==="en"?"Period":"발생 주기",lang==="en"?"Part No.":"품번",lang==="en"?"Item Name":"품목명",lang==="en"?"Measured":"측정일",lang==="en"?"Elements":"대상 원소",
                     lang==="en"?"Exception Reason":"예외 사유",lang==="en"?"Details":"상세 사유",lang==="en"?"Applied":"처리일",lang==="en"?"Manage":"관리"
-                  ].map(label=><th key={label} style={{height:48,padding:"6px 7px",borderBottom:`1px solid ${C.bd}`,background:C.card,textAlign:"center",fontSize:10.5,fontWeight:700,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.25}}>{label}</th>)}</tr></thead>
+                  ].map(label=><th key={label} style={{height:42,padding:"4px 6px",borderBottom:`1px solid ${C.bd}`,background:C.card,textAlign:"center",fontSize:10.5,fontWeight:700,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.2}}>{label}</th>)}</tr></thead>
                   <tbody>{precisionListRows.length===0?<tr><td colSpan={9} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No active exception cases.":"예외처리된 항목이 없습니다."}</td></tr>:filteredPrecisionRows.length===0?<tr><td colSpan={9} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No exception cases match the current search or filters.":"검색 또는 필터 조건에 맞는 예외 항목이 없습니다."}</td></tr>:filteredPrecisionRows.map(r=>{
-                    const cell={padding:"9px 7px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",fontSize:11,color:C.text2,lineHeight:1.4,wordBreak:"keep-all"};
+                    const cell={padding:"5px 6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",fontSize:10.5,color:C.text2,lineHeight:1.25,wordBreak:"keep-all"};
                     return <tr key={r.key} style={{background:C.card}}>
-                      <td style={cell}><span style={{display:"inline-flex",minWidth:36,height:24,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{precisionCasePeriodLabel(r)}</span></td>
+                      <td style={cell}><span style={{display:"inline-flex",minWidth:32,height:20,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{precisionCasePeriodLabel(r)}</span></td>
                       <td style={{...cell,fontWeight:750,color:C.text1,overflowWrap:"anywhere"}}>{r.item?.code||"—"}</td>
                       <td style={{...cell,fontWeight:650,color:C.text1}}>{displayItemName(r.item,lang)||"—"}</td>
                       <td style={{...cell,whiteSpace:"nowrap"}}>{dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—"}</td>
@@ -11493,7 +11519,7 @@ export default function App(){
                 <AnalysisFlowChart steps={analysisFlowSteps} lang={lang} onPick={step=>gotoPrecisionWithFlowFilter(step.filter)}/>
               </ChartCard>
             </div>
-            <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 현황표" tabIndex={0} style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접+잔류`],["M",`${crCounts.M}건 · 직접+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
+            <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 현황표" tabIndex={0} style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접 접촉+잔류`],["M",`${crCounts.M}건 · 직접 접촉+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
             <div style={{...card,padding:"18px 20px"}}>
               <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:12,marginBottom:5,flexWrap:"wrap"}}>
                 <div style={{...T.cardTitle}}>고위험 / 후속분석 대상 품목</div>

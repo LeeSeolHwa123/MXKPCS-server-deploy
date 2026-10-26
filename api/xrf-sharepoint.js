@@ -55,13 +55,13 @@ const FILE_REFERENCE_COLUMNS = {
   ],
 };
 const PRECISION_EXCEPTION_REASON_CODES = new Set([
-  "HAZARDOUS_SUBSTANCE_SCREENING",
-  "CALIBRATION_VALIDATION",
-  "DUPLICATE_WITH_AUTHORITATIVE_CASE",
-  "RND_NON_PRODUCTION",
-  "DISCONTINUED_HISTORY_CHECK",
-  "EXISTING_PRECISION_EVIDENCE",
+  "원재료 및 구성성분 영향",
+  "제조공정 및 오염 영향",
+  "시료 및 측정조건 영향",
+  "관리기준 및 판정 오류",
+  "기타 (직접 입력)",
 ]);
+const PRECISION_EXCEPTION_OTHER_REASON = "기타 (직접 입력)";
 let graphTokenCache = { key: "", token: "", expiresAt: 0 };
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -1633,8 +1633,8 @@ async function handleSetPrecisionHandoffException(siteId, accessToken, payload) 
   if (enabled && !PRECISION_EXCEPTION_REASON_CODES.has(reasonCode)) {
     throw new Error("허용된 정밀분석 미인계 예외 사유를 선택하세요.");
   }
-  if (enabled && reasonDetail.length < 5) {
-    throw new Error("예외 상세 사유를 5자 이상 입력하세요.");
+  if (enabled && reasonCode === PRECISION_EXCEPTION_OTHER_REASON && !reasonDetail) {
+    throw new Error("기타 상세 사유를 입력하세요.");
   }
 
   const measurements = await readList(siteId, "XRF_Measurements", accessToken);
