@@ -54,6 +54,14 @@ const FILE_REFERENCE_COLUMNS = {
     { name: "Report_File_URL", displayName: "Precision Report File URL", text: { allowMultipleLines: true, linesForEditing: 3 } },
   ],
 };
+const PRECISION_EXCEPTION_REASON_CODES = new Set([
+  "HAZARDOUS_SUBSTANCE_SCREENING",
+  "CALIBRATION_VALIDATION",
+  "DUPLICATE_WITH_AUTHORITATIVE_CASE",
+  "RND_NON_PRODUCTION",
+  "DISCONTINUED_HISTORY_CHECK",
+  "EXISTING_PRECISION_EVIDENCE",
+]);
 let graphTokenCache = { key: "", token: "", expiresAt: 0 };
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -72,6 +80,16 @@ function sourceSheetWithPeriodNo(sourceSheet, periodNo) {
 }
 function createFields(obj) {
   return Object.fromEntries(Object.entries(obj || {}).filter(([, value]) => value !== null && value !== undefined));
+}
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function sendJson(res, status, body) {
@@ -1075,6 +1093,447 @@ async function handleSaveMeasurement(siteId, accessToken, payload) {
   return measurement;
 }
 
+async function handleSavePeriodSubstitution(siteId, accessToken, payload) {
+  if (!verifyPrecisionHandoffPassword(payload?.adminPassword)) {
+    const error = new Error("관리자 비밀번호가 올바르지 않습니다.");
+    error.status = 403;
+    throw error;
+  }
+  const sourceItem = await findListItem(siteId, "XRF_Items", payload?.itemSpItemId, accessToken);
+  const substituteItem = await findListItem(siteId, "XRF_Items", payload?.substituteItemSpItemId, accessToken);
+  const periodNo = Number(payload?.periodNo);
+  const linkedMeasurementId = cleanText(payload?.linkedMeasurementId).trim();
+  if (!sourceItem || !substituteItem) throw new Error("원품목 또는 대체품 DB 행을 찾지 못했습니다.");
+  if (!Number.isInteger(periodNo) || periodNo < 1) throw new Error("대체품 사용 이력에는 올바른 Pn 번호가 필요합니다.");
+  if (!linkedMeasurementId) throw new Error("대체품 XRF 측정 ID가 필요합니다.");
+  const measurements = await readList(siteId, "XRF_Measurements", accessToken);
+  const linkedMeasurement = measurements.find(row => cleanText(row?.fields?.Title).trim() === linkedMeasurementId);
+  if (!linkedMeasurement) throw new Error("연결할 대체품 XRF 측정 건을 찾지 못했습니다.");
+  if (cleanText(linkedMeasurement?.fields?.field_1).trim() !== cleanText(substituteItem?.fields?.Title).trim()) {
+    throw new Error("선택한 XRF 측정 건이 대체품 Item_ID와 일치하지 않습니다.");
+  }
+
+  const now = new Date().toISOString();
+  const eventId = cleanText(payload?.eventId).trim()
+    || `SUB_${cleanText(sourceItem?.fields?.Title).trim()}_P${periodNo}_${yyyymmdd(payload?.effectiveDate || linkedMeasurement?.fields?.Measured_Date || now)}`;
+  const event = {
+    eventId,
+    eventType: "SUBSTITUTED",
+    status: "ACTIVE",
+    periodNo,
+    effectiveDate: dateOnly(payload?.effectiveDate || linkedMeasurement?.fields?.Measured_Date),
+    substituteItemId: cleanText(substituteItem?.fields?.Title).trim(),
+    substitutePartNumber: cleanText(substituteItem?.fields?.field_1).trim(),
+    substituteItemName: cleanText(substituteItem?.fields?.field_2).trim(),
+    substituteItemNameEn: cleanText(substituteItem?.fields?.field_3).trim(),
+    linkedMeasurementId,
+    reason: nonEmpty(payload?.reason) || "해당 주기 대체품 사용",
+    createdAt: now,
+    createdBy: nonEmpty(payload?.actor || "admin"),
+  };
+  const requestRows = await readList(siteId, "XRF_Requests", accessToken);
+  const existing = requestRows.find(row => cleanText(row?.fields?.Title).trim() === eventId) || null;
+  const fields = {
+    Title: eventId,
+    field_1: "PeriodSubstitution",
+    field_2: "Applied",
+    field_3: cleanText(sourceItem?.fields?.Title).trim(),
+    field_4: event.substituteItemId,
+    field_5: event.substitutePartNumber,
+    field_6: event.substituteItemName,
+    field_15: event.reason,
+    Effective_Date: event.effectiveDate,
+    Processed_At: now,
+    Processed_By: event.createdBy,
+    Before_Target_Snapshot_JSON: JSON.stringify(event),
+    Is_Migration: false,
+  };
+  let request;
+  if (existing) {
+    await patchListItem(siteId, "XRF_Requests", existing.id, fields, accessToken);
+    request = existing;
+  } else {
+    request = await createListItem(siteId, "XRF_Requests", fields, accessToken);
+  }
+  return { event, itemSpItemId: sourceItem.id, requestSpItemId: request.id };
+}
+
+async function handleCorrectM02Cb100PartNumber(siteId, accessToken, payload) {
+  if (!verifyPrecisionHandoffPassword(payload?.adminPassword)) {
+    const error = new Error("관리자 비밀번호가 올바르지 않습니다.");
+    error.status = 403;
+    throw error;
+  }
+
+  const oldItemId = "ITM_M_07_01";
+  const oldPartNumber = "M-07-01";
+  const oldMeasurementId = "M-07-01_20260130_01";
+  const newItemId = "ITM_M_02_01";
+  const newPartNumber = "M-02-01";
+  const newMeasurementId = "M-02-01_20260130_01";
+  const eventId = "SUB_ITM_M_02_P1_20260130";
+
+  const itemRows = await readList(siteId, "XRF_Items", accessToken);
+  const measurementRows = await readList(siteId, "XRF_Measurements", accessToken);
+  const elementRows = await readList(siteId, "XRF_ElementResults", accessToken);
+  const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
+  const requestRows = await readList(siteId, "XRF_Requests", accessToken);
+
+  const newItem = itemRows.find(row => cleanText(row?.fields?.Title).trim() === newItemId
+    || cleanText(row?.fields?.field_1).trim() === newPartNumber) || null;
+  const newMeasurement = measurementRows.find(row => cleanText(row?.fields?.Title).trim() === newMeasurementId) || null;
+  const oldItem = itemRows.find(row => cleanText(row?.fields?.Title).trim() === oldItemId
+    && cleanText(row?.fields?.field_1).trim() === oldPartNumber) || null;
+  const oldMeasurement = measurementRows.find(row => cleanText(row?.fields?.Title).trim() === oldMeasurementId
+    && cleanText(row?.fields?.field_1).trim() === oldItemId) || null;
+  const eventRow = requestRows.find(row => cleanText(row?.fields?.Title).trim() === eventId
+    && cleanText(row?.fields?.field_1).trim().toLowerCase() === "periodsubstitution") || null;
+
+  if (!oldItem && !oldMeasurement && newItem && newMeasurement && eventRow) {
+    const event = parseJsonObject(eventRow?.fields?.Before_Target_Snapshot_JSON);
+    if (event?.substituteItemId === newItemId && event?.substitutePartNumber === newPartNumber
+      && event?.linkedMeasurementId === newMeasurementId) {
+      return {
+        alreadyApplied: true,
+        substituteItemSpItemId: newItem.id,
+        substituteMeasurementSpItemId: newMeasurement.id,
+        requestSpItemId: eventRow.id,
+      };
+    }
+  }
+  if (newItem || newMeasurement) throw new Error("M-02-01 품번 또는 측정 ID가 이미 다른 행에서 사용 중입니다.");
+  if (!oldItem || !oldMeasurement || !eventRow) throw new Error("정정할 CB-100 품목, 측정 또는 대체 이력 행을 찾지 못했습니다.");
+  if (precisionRows.some(row => cleanText(row?.fields?.field_1).trim() === oldMeasurementId)) {
+    throw new Error("CB-100 측정 건에 정밀분석 참조가 있어 자동 정정을 중단했습니다.");
+  }
+  const oldElements = elementRows.filter(row => cleanText(row?.fields?.Title).trim() === oldMeasurementId);
+  if (oldElements.length !== XRF_SOURCE_ELEMENTS.length
+    || XRF_SOURCE_ELEMENTS.some(element => !oldElements.some(row => cleanText(row?.fields?.field_1).trim() === element))) {
+    throw new Error("CB-100 원소 결과가 6개로 완전하지 않아 자동 정정을 중단했습니다.");
+  }
+
+  const oldEventJson = eventRow?.fields?.Before_Target_Snapshot_JSON;
+  const oldEvent = parseJsonObject(oldEventJson);
+  const correctedEvent = {
+    ...oldEvent,
+    eventId,
+    substituteItemId: newItemId,
+    substitutePartNumber: newPartNumber,
+    linkedMeasurementId: newMeasurementId,
+  };
+  const rollback = [];
+  try {
+    await patchListItem(siteId, "XRF_Items", oldItem.id, { Title: newItemId, field_1: newPartNumber }, accessToken);
+    rollback.push(["XRF_Items", oldItem.id, { Title: oldItemId, field_1: oldPartNumber }]);
+
+    await patchListItem(siteId, "XRF_Measurements", oldMeasurement.id, { Title: newMeasurementId, field_1: newItemId }, accessToken);
+    rollback.push(["XRF_Measurements", oldMeasurement.id, { Title: oldMeasurementId, field_1: oldItemId }]);
+
+    for (const row of oldElements) {
+      await patchListItem(siteId, "XRF_ElementResults", row.id, { Title: newMeasurementId }, accessToken);
+      rollback.push(["XRF_ElementResults", row.id, { Title: oldMeasurementId }]);
+    }
+
+    await patchListItem(siteId, "XRF_Requests", eventRow.id, {
+      field_4: newItemId,
+      field_5: newPartNumber,
+      Before_Target_Snapshot_JSON: JSON.stringify(correctedEvent),
+    }, accessToken);
+    rollback.push(["XRF_Requests", eventRow.id, {
+      field_4: eventRow?.fields?.field_4,
+      field_5: eventRow?.fields?.field_5,
+      Before_Target_Snapshot_JSON: oldEventJson,
+    }]);
+
+    const verifiedItems = await readList(siteId, "XRF_Items", accessToken);
+    const verifiedMeasurements = await readList(siteId, "XRF_Measurements", accessToken);
+    const verifiedElements = await readList(siteId, "XRF_ElementResults", accessToken);
+    const verifiedRequests = await readList(siteId, "XRF_Requests", accessToken);
+    const verifiedEventRow = verifiedRequests.find(row => String(row.id) === String(eventRow.id));
+    const verifiedEvent = parseJsonObject(verifiedEventRow?.fields?.Before_Target_Snapshot_JSON);
+    if (!verifiedItems.some(row => String(row.id) === String(oldItem.id)
+      && cleanText(row?.fields?.Title).trim() === newItemId
+      && cleanText(row?.fields?.field_1).trim() === newPartNumber)) throw new Error("CB-100 품번 정정 검증에 실패했습니다.");
+    if (!verifiedMeasurements.some(row => String(row.id) === String(oldMeasurement.id)
+      && cleanText(row?.fields?.Title).trim() === newMeasurementId
+      && cleanText(row?.fields?.field_1).trim() === newItemId)) throw new Error("CB-100 측정 연결 정정 검증에 실패했습니다.");
+    if (verifiedElements.filter(row => cleanText(row?.fields?.Title).trim() === newMeasurementId).length !== XRF_SOURCE_ELEMENTS.length) {
+      throw new Error("CB-100 원소 결과 연결 정정 검증에 실패했습니다.");
+    }
+    if (verifiedEvent?.substituteItemId !== newItemId || verifiedEvent?.substitutePartNumber !== newPartNumber
+      || verifiedEvent?.linkedMeasurementId !== newMeasurementId) throw new Error("CB-100 대체 이력 정정 검증에 실패했습니다.");
+
+    return {
+      alreadyApplied: false,
+      oldPartNumber,
+      newPartNumber,
+      substituteItemSpItemId: oldItem.id,
+      substituteMeasurementSpItemId: oldMeasurement.id,
+      requestSpItemId: eventRow.id,
+      correctedElementCount: oldElements.length,
+    };
+  } catch (error) {
+    for (const [listName, itemSpId, fields] of rollback.reverse()) {
+      try { await patchListItem(siteId, listName, itemSpId, fields, accessToken); } catch {}
+    }
+    throw error;
+  }
+}
+
+async function handleCorrectS01ReplacementLifecycle(siteId, accessToken, payload) {
+  if (!verifyPrecisionHandoffPassword(payload?.adminPassword)) {
+    const error = new Error("관리자 비밀번호가 올바르지 않습니다.");
+    error.status = 403;
+    throw error;
+  }
+
+  const parentItemId = "ITM_S_01";
+  const parentPartNumber = "S-01";
+  const replacementDate = "2026-07-14";
+  const expectedChildren = new Set(["S-01-01", "S-01-02"]);
+  const itemRows = await readList(siteId, "XRF_Items", accessToken);
+  const parent = itemRows.find(row => cleanText(row?.fields?.Title).trim() === parentItemId
+    && cleanText(row?.fields?.field_1).trim() === parentPartNumber) || null;
+  if (!parent) throw new Error("정정할 S-01 원품목 행을 찾지 못했습니다.");
+
+  const children = itemRows.filter(row => cleanText(row?.fields?.Replacement_Of).trim() === parentPartNumber);
+  const childParts = new Set(children.map(row => cleanText(row?.fields?.field_1).trim()));
+  if (children.length !== expectedChildren.size || [...expectedChildren].some(code => !childParts.has(code))) {
+    throw new Error("S-01-01 및 S-01-02 대체 관계가 완전하지 않아 S-01 자동 정정을 중단했습니다.");
+  }
+  if (children.some(row => dateOnly(row?.fields?.Replacement_Date) !== replacementDate)) {
+    throw new Error("S-01 대체품의 대체일이 서로 일치하지 않아 자동 정정을 중단했습니다.");
+  }
+
+  const alreadyApplied = cleanText(parent?.fields?.field_9).trim() === "ReplacedOld"
+    && parent?.fields?.field_10 === false
+    && dateOnly(parent?.fields?.Replacement_Date) === replacementDate
+    && dateOnly(parent?.fields?.Lifecycle_End_Date) === replacementDate;
+  if (alreadyApplied) return { alreadyApplied: true, parentSpItemId: parent.id, replacementDate };
+
+  await patchListItem(siteId, "XRF_Items", parent.id, {
+    field_9: "ReplacedOld",
+    field_10: false,
+    Replacement_Date: replacementDate,
+    Lifecycle_End_Date: replacementDate,
+  }, accessToken);
+
+  const verified = await findListItem(siteId, "XRF_Items", parent.id, accessToken);
+  if (cleanText(verified?.fields?.field_9).trim() !== "ReplacedOld"
+    || verified?.fields?.field_10 !== false
+    || dateOnly(verified?.fields?.Replacement_Date) !== replacementDate
+    || dateOnly(verified?.fields?.Lifecycle_End_Date) !== replacementDate) {
+    throw new Error("S-01 대체 종료 상태 저장 검증에 실패했습니다.");
+  }
+  return {
+    alreadyApplied: false,
+    parentSpItemId: parent.id,
+    lifecycle: "ReplacedOld",
+    isCurrent: false,
+    replacementDate,
+    lifecycleEndDate: replacementDate,
+    childPartNumbers: [...expectedChildren],
+  };
+}
+
+async function handleMigrateM02Cb100Substitution(siteId, accessToken, payload) {
+  if (!verifyPrecisionHandoffPassword(payload?.adminPassword)) {
+    const error = new Error("관리자 비밀번호가 올바르지 않습니다.");
+    error.status = 403;
+    throw error;
+  }
+  const sourceItemId = "ITM_M_02";
+  const sourcePartNumber = "M-02";
+  const sourceMeasurementId = "M-02_20260130_01";
+  const substituteItemId = "ITM_M_02_01";
+  const substitutePartNumber = "M-02-01";
+  const substituteMeasurementId = "M-02-01_20260130_01";
+  const effectiveDate = "2026-01-30";
+  const eventId = "SUB_ITM_M_02_P1_20260130";
+
+  const itemRows = await readList(siteId, "XRF_Items", accessToken);
+  const measurementRows = await readList(siteId, "XRF_Measurements", accessToken);
+  const elementRows = await readList(siteId, "XRF_ElementResults", accessToken);
+  const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
+  const requestRows = await readList(siteId, "XRF_Requests", accessToken);
+  const sourceItem = itemRows.find(row => cleanText(row?.fields?.Title).trim() === sourceItemId
+    && cleanText(row?.fields?.field_1).trim() === sourcePartNumber);
+  if (!sourceItem) throw new Error("M-02 원품목을 찾지 못했습니다.");
+  const sourceMeasurement = measurementRows.find(row => cleanText(row?.fields?.Title).trim() === sourceMeasurementId) || null;
+  const existingSubstituteItem = itemRows.find(row => cleanText(row?.fields?.Title).trim() === substituteItemId
+    || cleanText(row?.fields?.field_1).trim() === substitutePartNumber) || null;
+  const existingSubstituteMeasurement = measurementRows.find(row => cleanText(row?.fields?.Title).trim() === substituteMeasurementId) || null;
+  const existingEventRow = requestRows.find(row => cleanText(row?.fields?.Title).trim() === eventId
+    && cleanText(row?.fields?.field_1).trim().toLowerCase() === "periodsubstitution") || null;
+  const existingEvent = existingEventRow
+    ? { ...parseJsonObject(existingEventRow?.fields?.Before_Target_Snapshot_JSON), eventId }
+    : null;
+
+  if (!sourceMeasurement && existingSubstituteItem && existingSubstituteMeasurement && existingEvent) {
+    return {
+      alreadyApplied: true,
+      substituteItemSpItemId: existingSubstituteItem.id,
+      substituteMeasurementSpItemId: existingSubstituteMeasurement.id,
+      event: existingEvent,
+    };
+  }
+  if (!sourceMeasurement) throw new Error("이관할 M-02 P1 측정 건을 찾지 못했습니다.");
+  if (cleanText(sourceMeasurement?.fields?.field_1).trim() !== sourceItemId
+    || dateOnly(sourceMeasurement?.fields?.Measured_Date) !== effectiveDate) {
+    throw new Error("M-02 P1 원본 측정 건의 Item_ID 또는 측정일이 예상값과 다릅니다.");
+  }
+  if (precisionRows.some(row => cleanText(row?.fields?.field_1).trim() === sourceMeasurementId)) {
+    throw new Error("M-02 P1에 정밀분석 참조가 있어 자동 이관을 중단했습니다.");
+  }
+  const sourceElements = elementRows.filter(row => cleanText(row?.fields?.Title).trim() === sourceMeasurementId);
+  if (sourceElements.length !== XRF_SOURCE_ELEMENTS.length
+    || XRF_SOURCE_ELEMENTS.some(element => !sourceElements.some(row => cleanText(row?.fields?.field_1).trim() === element))) {
+    throw new Error("M-02 P1 원소 결과가 6개로 완전하지 않아 자동 이관을 중단했습니다.");
+  }
+  if (existingSubstituteItem && cleanText(existingSubstituteItem?.fields?.Title).trim() !== substituteItemId) {
+    throw new Error("M-02-01 품번이 다른 Item_ID로 이미 사용 중입니다.");
+  }
+
+  let substituteItem = existingSubstituteItem;
+  let substituteMeasurement = existingSubstituteMeasurement;
+  const created = [];
+  const backup = {
+    sourceMeasurementSpItemId: sourceMeasurement.id,
+    measurementFields: sourceMeasurement.fields,
+    elementRows: sourceElements.map(row => ({ spItemId: row.id, fields: row.fields })),
+  };
+  try {
+    if (!substituteItem) {
+      substituteItem = await createListItem(siteId, "XRF_Items", {
+        Title: substituteItemId,
+        field_1: substitutePartNumber,
+        field_2: "CB-100 초음파세척액",
+        field_3: "CB-100 Ultrasonic cleaning agent",
+        field_4: sourceItem.fields?.field_4 || "Auxiliary Materials",
+        field_5: sourceItem.fields?.field_5 || "Molding",
+        field_6: sourceItem.fields?.field_6 || "Chemical",
+        field_7: sourceItem.fields?.field_7 || "Liquid",
+        field_8: sourceItem.fields?.field_8 || "직접접촉+비잔류",
+        field_9: "Discontinued",
+        field_10: false,
+        field_13: "M-02 P1 기간 임시 대체 사용 이력 · 현재 사용 종료",
+        Lifecycle_End_Date: effectiveDate,
+      }, accessToken);
+      created.push(["XRF_Items", substituteItem.id]);
+    }
+
+    if (!substituteMeasurement) {
+      const elements = Object.fromEntries(sourceElements.map(row => [cleanText(row?.fields?.field_1).trim(), {
+        rawPpm: row?.fields?.field_2,
+        rawSigma: row?.fields?.field_3,
+        rawJudgement: row?.fields?.field_4,
+      }]));
+      const measurement = await createMeasurementRecord(siteId, accessToken, {
+        itemId: substituteItemId,
+        partNumber: substitutePartNumber,
+        measuredDate: effectiveDate,
+        role: "Initial",
+        periodNo: 0,
+        attemptNo: 1,
+        sourceFileName: sourceMeasurement?.fields?.field_6,
+        sourceSheet: sourceMeasurement?.fields?.field_7,
+        requesterName: sourceMeasurement?.fields?.Requester_Name,
+        elements,
+      });
+      if (measurement.measurementId !== substituteMeasurementId) {
+        throw new Error(`CB-100 측정 ID가 예상값과 다릅니다: ${measurement.measurementId}`);
+      }
+      substituteMeasurement = await findListItem(siteId, "XRF_Measurements", measurement.measurementSpItemId, accessToken);
+      created.push(["XRF_Measurements", measurement.measurementSpItemId]);
+      if (sourceMeasurement?.fields?.Source_File_ID || sourceMeasurement?.fields?.Source_File_URL) {
+        await patchListItemExistingFields(siteId, "XRF_Measurements", measurement.measurementSpItemId, {
+          Source_File_ID: sourceMeasurement?.fields?.Source_File_ID,
+          Source_File_URL: sourceMeasurement?.fields?.Source_File_URL,
+        }, accessToken, { allowEmpty: true });
+      }
+    }
+
+    const verifiedElementRows = await readList(siteId, "XRF_ElementResults", accessToken);
+    const verifiedElements = verifiedElementRows.filter(row => cleanText(row?.fields?.Title).trim() === substituteMeasurementId);
+    if (verifiedElements.length !== XRF_SOURCE_ELEMENTS.length) throw new Error("CB-100 R 원소 결과 6건 검증에 실패했습니다.");
+
+    const event = {
+      eventId,
+      eventType: "SUBSTITUTED",
+      status: "ACTIVE",
+      periodNo: 1,
+      effectiveDate,
+      substituteItemId,
+      substitutePartNumber,
+      substituteItemName: "CB-100 초음파세척액",
+      substituteItemNameEn: "CB-100 Ultrasonic cleaning agent",
+      linkedMeasurementId: substituteMeasurementId,
+      reason: "M-02 P1 기간 CB-100 임시 대체 사용",
+      createdAt: new Date().toISOString(),
+      createdBy: nonEmpty(payload?.actor || "admin"),
+      migrationBackup: backup,
+    };
+    const eventFields = {
+      Title: eventId,
+      field_1: "PeriodSubstitution",
+      field_2: "Applied",
+      field_3: sourceItemId,
+      field_4: substituteItemId,
+      field_5: substitutePartNumber,
+      field_6: event.substituteItemName,
+      field_15: event.reason,
+      Effective_Date: effectiveDate,
+      Processed_At: event.createdAt,
+      Processed_By: event.createdBy,
+      Before_Target_Snapshot_JSON: JSON.stringify(event),
+      Is_Migration: false,
+    };
+    if (existingEventRow) {
+      await patchListItem(siteId, "XRF_Requests", existingEventRow.id, eventFields, accessToken);
+    } else {
+      const eventRow = await createListItem(siteId, "XRF_Requests", eventFields, accessToken);
+      created.push(["XRF_Requests", eventRow.id]);
+    }
+
+    for (const row of sourceElements) await deleteListItem(siteId, "XRF_ElementResults", row.id, accessToken);
+    await deleteListItem(siteId, "XRF_Measurements", sourceMeasurement.id, accessToken);
+
+    const finalMeasurements = await readList(siteId, "XRF_Measurements", accessToken);
+    const finalElements = await readList(siteId, "XRF_ElementResults", accessToken);
+    if (finalMeasurements.some(row => cleanText(row?.fields?.Title).trim() === sourceMeasurementId)) {
+      throw new Error("기존 M-02 P1 측정 헤더 제거 검증에 실패했습니다.");
+    }
+    if (finalElements.some(row => cleanText(row?.fields?.Title).trim() === sourceMeasurementId)) {
+      throw new Error("기존 M-02 P1 원소 결과 제거 검증에 실패했습니다.");
+    }
+    return {
+      alreadyApplied: false,
+      substituteItemSpItemId: substituteItem.id,
+      substituteMeasurementSpItemId: substituteMeasurement.id,
+      event,
+      deletedSourceMeasurementId: sourceMeasurementId,
+      migratedElementCount: verifiedElements.length,
+    };
+  } catch (error) {
+    // 원본 M-02 행은 마지막 단계까지 유지합니다. 생성 단계 실패 시 이번 작업에서 만든 행만 되돌립니다.
+    if (sourceMeasurement && (await readList(siteId, "XRF_Measurements", accessToken))
+      .some(row => cleanText(row?.fields?.Title).trim() === sourceMeasurementId)) {
+      for (const [listName, itemSpId] of created.reverse()) {
+        try {
+          if (listName === "XRF_Measurements") {
+            const rows = await readList(siteId, "XRF_ElementResults", accessToken);
+            for (const row of rows.filter(candidate => cleanText(candidate?.fields?.Title).trim() === substituteMeasurementId)) {
+              await deleteListItem(siteId, "XRF_ElementResults", row.id, accessToken);
+            }
+          }
+          await deleteListItem(siteId, listName, itemSpId, accessToken);
+        } catch {}
+      }
+    }
+    throw error;
+  }
+}
+
 async function handleUpdateItem(siteId, accessToken, payload) {
   const itemSpItemId = payload?.itemSpItemId;
   const oldCode = cleanText(payload?.oldCode).trim();
@@ -1157,12 +1616,132 @@ function verifyPrecisionHandoffPassword(value) {
     && timingSafeEqual(actual, PRECISION_HANDOFF_PASSWORD_HASH);
 }
 
+async function handleSetPrecisionHandoffException(siteId, accessToken, payload) {
+  if (!verifyPrecisionHandoffPassword(payload?.precisionHandoffPassword)) {
+    const error = new Error("관리자 비밀번호가 올바르지 않습니다.");
+    error.status = 403;
+    throw error;
+  }
+
+  const triggerMeasurementId = cleanText(payload?.triggerMeasurementId).trim();
+  if (!triggerMeasurementId) throw new Error("예외처리할 XRF Measurement_ID가 없습니다.");
+  const enabled = bool(payload?.enabled);
+  const reasonCode = cleanText(payload?.reasonCode).trim().toUpperCase();
+  const reasonDetail = cleanText(payload?.reasonDetail).trim();
+  const evidence = cleanText(payload?.evidence).trim();
+
+  if (enabled && !PRECISION_EXCEPTION_REASON_CODES.has(reasonCode)) {
+    throw new Error("허용된 정밀분석 미인계 예외 사유를 선택하세요.");
+  }
+  if (enabled && reasonDetail.length < 5) {
+    throw new Error("예외 상세 사유를 5자 이상 입력하세요.");
+  }
+
+  const measurements = await readList(siteId, "XRF_Measurements", accessToken);
+  const measurement = measurements.find(row => cleanText(row?.fields?.Title).trim() === triggerMeasurementId) || null;
+  if (!measurement) {
+    throw new Error("실제 DB에 등록된 XRF 측정 건만 미인계 예외처리할 수 있습니다.");
+  }
+
+  const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
+  const header = precisionRows.find(row => cleanText(row?.fields?.field_1).trim() === triggerMeasurementId) || null;
+  const alreadyRequested = !!cleanText(header?.fields?.Requested_At).trim();
+  const hasPrecisionResult = !!cleanText(header?.fields?.field_5).trim() || header?.fields?.field_6 === true;
+  if (enabled && (alreadyRequested || hasPrecisionResult)) {
+    throw new Error("이미 정밀분석에 인계되었거나 결과가 등록된 건은 미인계 예외처리할 수 없습니다.");
+  }
+
+  const requestRows = await readList(siteId, "XRF_Requests", accessToken);
+  const eventIdRaw = `PREC_EXC_${triggerMeasurementId}`;
+  const eventId = eventIdRaw.length <= 250
+    ? eventIdRaw
+    : `PREC_EXC_${Buffer.from(triggerMeasurementId).toString("base64url").slice(0, 220)}`;
+  let eventRow = requestRows.find(row => cleanText(row?.fields?.Title).trim() === eventId
+    && cleanText(row?.fields?.field_1).trim().toLowerCase() === "precisionhandoffexception") || null;
+  const previousEvent = parseJsonObject(eventRow?.fields?.Before_Target_Snapshot_JSON);
+  const now = new Date().toISOString();
+  const actor = cleanText(payload?.actor || "admin").trim() || "admin";
+  if (!enabled && (!eventRow || String(previousEvent?.status || eventRow?.fields?.field_2 || "").toUpperCase() !== "ACTIVE")) {
+    throw new Error("해제할 정밀분석 미인계 예외 기록이 없습니다.");
+  }
+
+  const event = enabled ? {
+    eventId,
+    eventType: "PRECISION_HANDOFF_EXCEPTION",
+    status: "ACTIVE",
+    triggerMeasurementId,
+    itemId: cleanText(measurement?.fields?.field_1).trim(),
+    reasonCode,
+    reasonDetail,
+    evidence,
+    createdAt: previousEvent?.createdAt || now,
+    createdBy: previousEvent?.createdBy || actor,
+    updatedAt: now,
+    updatedBy: actor,
+    revokedAt: "",
+    revokedBy: "",
+  } : {
+    ...previousEvent,
+    eventId,
+    eventType: "PRECISION_HANDOFF_EXCEPTION",
+    status: "REVERTED",
+    triggerMeasurementId,
+    revokedAt: now,
+    revokedBy: actor,
+  };
+  const fields = {
+    Title: eventId,
+    field_1: "PrecisionHandoffException",
+    field_2: enabled ? "Applied" : "Reverted",
+    field_3: cleanText(measurement?.fields?.field_1).trim(),
+    field_4: triggerMeasurementId,
+    field_5: enabled ? reasonCode : nonEmpty(previousEvent?.reasonCode),
+    field_15: enabled ? reasonDetail : nonEmpty(previousEvent?.reasonDetail),
+    Processed_At: enabled ? now : (eventRow?.fields?.Processed_At || previousEvent?.createdAt || now),
+    Processed_By: enabled ? actor : (eventRow?.fields?.Processed_By || previousEvent?.createdBy || actor),
+    Reverted_At: enabled ? null : now,
+    Reverted_By: enabled ? null : actor,
+    Revert_Reason: enabled ? null : "Precision handoff exception removed",
+    Before_Target_Snapshot_JSON: JSON.stringify(event),
+    Is_Migration: false,
+  };
+
+  if (!eventRow) {
+    eventRow = await createListItem(siteId, "XRF_Requests", fields, accessToken);
+  } else {
+    await patchListItem(siteId, "XRF_Requests", eventRow.id, fields, accessToken);
+  }
+
+  const verified = await findListItem(siteId, "XRF_Requests", eventRow.id, accessToken);
+  const verifiedEvent = parseJsonObject(verified?.fields?.Before_Target_Snapshot_JSON);
+  if ((String(verifiedEvent?.status || "").toUpperCase() === "ACTIVE") !== enabled
+    || cleanText(verifiedEvent?.triggerMeasurementId).trim() !== triggerMeasurementId) {
+    throw new Error("정밀분석 미인계 예외 상태의 DB 저장 검증에 실패했습니다.");
+  }
+  return {
+    eventId,
+    requestSpItemId: eventRow.id,
+    triggerMeasurementId,
+    handoffException: enabled,
+  };
+}
+
 async function handleUpsertPrecision(siteId, accessToken, payload) {
   const triggerMeasurementId = cleanText(payload?.triggerMeasurementId).trim();
   if (!triggerMeasurementId) throw new Error("정밀분석 Trigger_Measurement_ID가 없습니다.");
   const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
   let header = precisionRows.find(r => cleanText(r?.fields?.field_1).trim() === triggerMeasurementId) || null;
-  if (!header && !verifyPrecisionHandoffPassword(payload?.precisionHandoffPassword)) {
+  const alreadyRequested = !!cleanText(header?.fields?.Requested_At).trim();
+  const requestRows = await readList(siteId, "XRF_Requests", accessToken);
+  const activeException = requestRows.some(row => {
+    const fields = row?.fields || {};
+    if (cleanText(fields.field_1).trim().toLowerCase() !== "precisionhandoffexception") return false;
+    const event = parseJsonObject(fields.Before_Target_Snapshot_JSON);
+    return cleanText(event?.triggerMeasurementId || fields.field_4).trim() === triggerMeasurementId
+      && String(event?.status || fields.field_2 || "").toUpperCase() === "ACTIVE";
+  });
+  if (activeException) throw new Error("정밀분석 미인계 예외를 먼저 해제한 뒤 인계하세요.");
+  if (!alreadyRequested && !verifyPrecisionHandoffPassword(payload?.precisionHandoffPassword)) {
     const error = new Error("정밀분석 인계 비밀번호가 올바르지 않습니다.");
     error.status = 403;
     throw error;
@@ -1322,9 +1901,14 @@ export default async function handler(req, res) {
     let result;
     if (action === "createRequest") result = await handleCreateRequest(siteId, accessToken, payload);
     else if (action === "saveMeasurement") result = await handleSaveMeasurement(siteId, accessToken, payload);
+    else if (action === "savePeriodSubstitution") result = await handleSavePeriodSubstitution(siteId, accessToken, payload);
+    else if (action === "correctM02Cb100PartNumber") result = await handleCorrectM02Cb100PartNumber(siteId, accessToken, payload);
+    else if (action === "correctS01ReplacementLifecycle") result = await handleCorrectS01ReplacementLifecycle(siteId, accessToken, payload);
+    else if (action === "migrateM02Cb100Substitution") result = await handleMigrateM02Cb100Substitution(siteId, accessToken, payload);
     else if (action === "updateItem") result = await handleUpdateItem(siteId, accessToken, payload);
     else if (action === "processDiscontinue") result = await handleProcessDiscontinue(siteId, accessToken, payload);
     else if (action === "revertDiscontinue") result = await handleRevertDiscontinue(siteId, accessToken, payload);
+    else if (action === "setPrecisionHandoffException") result = await handleSetPrecisionHandoffException(siteId, accessToken, payload);
     else if (action === "upsertPrecision") result = await handleUpsertPrecision(siteId, accessToken, payload);
     else if (action === "beginPrecisionFileUpload") result = await handleBeginPrecisionFileUpload(siteId, accessToken, payload);
     else if (action === "uploadPrecisionFileChunk") result = await handlePrecisionFileChunk(payload);
