@@ -403,8 +403,11 @@ const FILTER_LABELS = {
   paReport: {"미첨부":"미첨부","첨부 완료":"첨부 완료"},
   paConfirm: {"미확정":"미확정","최종 컨펌":"최종 컨펌"},
   paResult: {OK:"OK",NG:"NG","—":"—"},
+  paExceptionReason: {},
+  paExceptionDetail: {},
+  paExceptionAt: {},
 };
-const COL_NAMES = {category:"분류", code:"품번", name:"품목명", dept:"부서", cycle:"주기", firstDate:"최초 등록", xrf:"XRF 결과", compliance:"현재 상태", precision:"정밀분석", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", nextDue:"다음 마감", dDay:"D-DAY", dueMonth:"도래월", paPeriod:"발생 주기", paCode:"품번", paName:"품목명", paDept:"부서", paMeasuredDate:"측정일", paElements:"대상 원소", paReason:"인계 사유", paHandoff:"인계 상태", paReport:"성적서", paConfirm:"컨펌 상태", paResult:"정밀 결과"};
+const COL_NAMES = {category:"분류", code:"품번", name:"품목명", dept:"부서", cycle:"주기", firstDate:"최초 등록", xrf:"XRF 결과", compliance:"현재 상태", precision:"정밀분석", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", nextDue:"다음 마감", dDay:"D-DAY", dueMonth:"도래월", paPeriod:"발생 주기", paCode:"품번", paName:"품목명", paDept:"부서", paMeasuredDate:"측정일", paElements:"대상 원소", paReason:"인계 사유", paHandoff:"인계 상태", paReport:"성적서", paConfirm:"컨펌 상태", paResult:"정밀 결과", paExceptionReason:"제외 사유", paExceptionDetail:"상세 사유", paExceptionAt:"처리일"};
 const UNIQUE_VALS = {
   category: ["existing","new","changed"],
   dept: ["Assembly","Common","Molding","Plating","Stamping"],
@@ -3962,18 +3965,24 @@ function precisionCaseFilterValues(row,column,lang="ko"){
   const isException=row?.precision?.requestStatus==="EXEMPTED" || row?.precision?.handoffException===true;
   const hasReport=!!(row?.precision?.resultFileId||row?.precision?.reportNo);
   const isConfirmed=row?.finalConfirm==="확인";
+  const targetElements=(row?.targets||[]).map(value=>String(value)).filter(Boolean);
+  const exceptionDetail=String(row?.precision?.exceptionReasonDetail||"").trim()||"—";
+  const exceptionEvidence=String(row?.precision?.exceptionEvidence||"").trim();
   const values={
     paPeriod:[precisionCasePeriodLabel(row)],
     paCode:[String(row?.item?.code||"—")],
     paName:[String(displayItemName(row?.item,lang)||"—")],
     paDept:[String(row?.item?.dept||"—")],
     paMeasuredDate:[dateOnly(row?.measurement?.date||row?.measurement?.measuredDate)||"—"],
-    paElements:(row?.targets||[]).map(value=>String(value)),
+    paElements:targetElements.length?targetElements:["—"],
     paReason:[String(row?.triggerLabel||"—")],
     paHandoff:[isException?"해당 없음":(isRequested?"인계 완료":"인계 필요")],
     paReport:[hasReport?"첨부 완료":"미첨부"],
     paConfirm:[isConfirmed?"최종 컨펌":"미확정"],
     paResult:[String(row?.precision?.result||"—")],
+    paExceptionReason:[precisionExceptionReasonLabel(row?.precision?.exceptionReasonCode,lang)],
+    paExceptionDetail:[exceptionDetail,...(exceptionEvidence?[`${lang==="en"?"Evidence":"근거"}: ${exceptionEvidence}`]:[])],
+    paExceptionAt:[dateOnly(row?.precision?.exceptionAt)||"—"],
   };
   return values[column]||[];
 }
@@ -7087,9 +7096,12 @@ function CycleManagementChart({cycleRows,statusRows,lang="ko",onStatusPick}){
 }
 
 function AnalysisFlowChart({steps,lang="ko",onPick}){
-  const columns=Array.from({length:Math.max(1,steps.length*2-1)},(_,index)=>index%2?"14px":"minmax(0,1fr)").join(" ");
+  const processSteps=steps.slice(0,3);
+  const resultSteps=steps.slice(3);
+  const processColumns=processSteps.flatMap((_,index)=>index<processSteps.length-1?["minmax(0,1fr)","14px"]:["minmax(0,1fr)"]);
+  const columns=[...processColumns,"18px","minmax(260px,1.55fr)"].join(" ");
   return <div className="analysis-flow-chart" style={{display:"grid",gridTemplateColumns:columns,gap:0,alignItems:"stretch",minWidth:0,width:"100%"}}>
-    {steps.map((step,index)=>{
+    {processSteps.map((step,index)=>{
       const clickable=step.value>0&&!!onPick;
       return <div key={step.key} style={{display:"contents"}}>
         <div onClick={()=>clickable&&onPick(step)} title={`${step.label} ${step.value}${lang==="en"?" items":"건"}`}
@@ -7100,9 +7112,23 @@ function AnalysisFlowChart({steps,lang="ko",onPick}){
           </div>
           <div data-i18n-skip="true" style={{minWidth:0,fontSize:10.5,fontWeight:700,color:step.value?C.text1:C.text4,lineHeight:1.35,marginTop:14,wordBreak:"keep-all"}}>{step.label}</div>
         </div>
-        {index<steps.length-1&&<span className="analysis-flow-arrow" aria-hidden="true" style={{width:14,minWidth:14,display:"flex",alignItems:"center",justifyContent:"center",alignSelf:"center",fontSize:15,lineHeight:1,fontWeight:500,color:C.text4}}>›</span>}
+        {index<processSteps.length-1&&<span className="analysis-flow-arrow" aria-hidden="true" style={{width:14,minWidth:14,display:"flex",alignItems:"center",justifyContent:"center",alignSelf:"center",fontSize:15,lineHeight:1,fontWeight:500,color:C.text4}}>›</span>}
       </div>;
     })}
+    <span className="analysis-flow-arrow" aria-hidden="true" style={{width:18,minWidth:18,display:"flex",alignItems:"center",justifyContent:"center",alignSelf:"center",fontSize:15,lineHeight:1,fontWeight:500,color:C.text4}}>›</span>
+    <div className="analysis-flow-results" style={{minWidth:0,padding:8,border:`1px solid ${A.purple.ln}`,borderRadius:10,background:A.purple.bg,boxSizing:"border-box"}}>
+      <div data-i18n-skip="true" style={{padding:"1px 3px 7px",fontSize:10,fontWeight:750,color:A.purple.tx}}>{lang==="en"?"Case Outcome":"처리 결과"}</div>
+      <div className="analysis-flow-result-grid" style={{display:"grid",gridTemplateColumns:`repeat(${Math.max(1,resultSteps.length)},minmax(0,1fr))`,gap:7,minWidth:0}}>
+        {resultSteps.map(step=>{
+          const clickable=step.value>0&&!!onPick;
+          return <div key={step.key} onClick={()=>clickable&&onPick(step)} title={`${step.label} ${step.value}${lang==="en"?" items":"건"}`}
+            style={{display:"flex",flexDirection:"column",justifyContent:"space-between",minWidth:0,minHeight:78,padding:"10px",border:`1px solid ${step.value?step.border:C.bd}`,borderRadius:8,background:step.value?step.background:C.card,cursor:clickable?"pointer":"default",opacity:step.value?1:.62,boxSizing:"border-box"}}>
+            <strong style={{fontSize:19,lineHeight:1,color:step.value?step.color:C.text4,whiteSpace:"nowrap"}}>{step.value}<small style={{fontSize:9.5,fontWeight:650,marginLeft:2}}>{lang==="en"?"":"건"}</small></strong>
+            <div data-i18n-skip="true" style={{minWidth:0,fontSize:10.5,fontWeight:700,color:step.value?C.text1:C.text4,lineHeight:1.3,marginTop:10,wordBreak:"keep-all"}}>{step.label}</div>
+          </div>;
+        })}
+      </div>
+    </div>
   </div>;
 }
 
@@ -7475,7 +7501,7 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
 
 const MATERIAL_LIST_PAGE_SIZE=100;
 const MATERIAL_LIST_FILTER_KEYS=["category","photo","code","name","dept","cycle","firstDate","xrf","compliance","precision","crLevel","risk","retest","approval","lifecycle","nextDue","dDay","dueMonth"];
-const PRECISION_FILTER_KEYS=["paPeriod","paCode","paName","paDept","paMeasuredDate","paElements","paReason","paHandoff","paReport","paConfirm","paResult"];
+const PRECISION_FILTER_KEYS=["paPeriod","paCode","paName","paDept","paMeasuredDate","paElements","paReason","paHandoff","paReport","paConfirm","paResult","paExceptionReason","paExceptionDetail","paExceptionAt"];
 
 function createEmptyMaterialListFilters(){
   return Object.fromEntries(MATERIAL_LIST_FILTER_KEYS.map(key=>[key,[]]));
@@ -9059,17 +9085,31 @@ export default function App(){
   const listFilterValues=useMemo(()=>{
     const uniqueSorted=values=>[...new Set(values.map(value=>String(value||"—")).filter(Boolean))]
       .sort((a,b)=>a.localeCompare(b,"ko",{numeric:true,sensitivity:"base"}));
+    const columnValues=column=>uniqueSorted(listItems.map(item=>listColumnValue(item,column,approvalStatusOf(item))));
     return {
-      ...UNIQUE_VALS,
-      photo:uniqueSorted(listItems.map(item=>listColumnValue(item,"photo",approvalStatusOf(item)))),
-      code:uniqueSorted(listItems.map(item=>listColumnValue(item,"code",approvalStatusOf(item)))),
-      name:uniqueSorted(listItems.map(item=>listColumnValue(item,"name",approvalStatusOf(item)))),
-      dept:uniqueSorted(listItems.map(item=>listColumnValue(item,"dept",approvalStatusOf(item)))),
-      cycle:uniqueSorted(listItems.map(item=>listColumnValue(item,"cycle",approvalStatusOf(item)))),
-      firstDate:uniqueSorted(listItems.map(item=>listColumnValue(item,"firstDate",approvalStatusOf(item)))),
-      precision:uniqueSorted(listItems.map(item=>listColumnValue(item,"precision",approvalStatusOf(item)))),
-      nextDue:uniqueSorted(listItems.map(item=>listColumnValue(item,"nextDue",approvalStatusOf(item)))),
-      dDay:uniqueSorted(listItems.map(item=>listColumnValue(item,"dDay",approvalStatusOf(item)))),
+      category:columnValues("category"),
+      photo:columnValues("photo"),
+      code:columnValues("code"),
+      name:columnValues("name"),
+      dept:columnValues("dept"),
+      cycle:columnValues("cycle"),
+      firstDate:columnValues("firstDate"),
+      xrf:uniqueSorted(listItems.flatMap(item=>[
+        listColumnValue(item,"xrf",approvalStatusOf(item)),
+        riskBasisXrfLevelOf(item)||itemLatestXrfLevel(item),
+      ].filter(Boolean))),
+      compliance:columnValues("compliance"),
+      precision:columnValues("precision"),
+      crLevel:uniqueSorted(listItems.map(item=>item.crLevel||"—")),
+      risk:uniqueSorted(listItems.map(item=>itemFinalRisk(item)||"—")),
+      retest:uniqueSorted(listItems.map(item=>itemRetestRequired(item)?"review":"trusted")),
+      approval:columnValues("approval"),
+      lifecycle:uniqueSorted(listItems.map(item=>item.lifecycle||"—")),
+      nextDue:columnValues("nextDue"),
+      dDay:columnValues("dDay"),
+      dueMonth:uniqueSorted(listItems.flatMap(item=>isComplianceTarget(item)
+        ? itemStatusPeriods(item).filter(period=>!period?.measured&&period?.due).map(period=>String(period.due).slice(0,7))
+        : [])),
     };
   },[listItems,approvalStatusOf]);
 
@@ -9079,10 +9119,10 @@ export default function App(){
     for(const column of ["category","photo","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"]){
       if(!itemMatchesListColumnFilter(item,column,fs[column],approvalStatus)) return false;
     }
-    if(fs.crLevel.length>0&&!fs.crLevel.includes(item.crLevel)) return false;
-    if(fs.risk.length>0&&!fs.risk.includes(itemFinalRisk(item))) return false;
+    if(fs.crLevel.length>0&&!fs.crLevel.includes(item.crLevel||"—")) return false;
+    if(fs.risk.length>0&&!fs.risk.includes(itemFinalRisk(item)||"—")) return false;
     if(fs.retest.length>0&&!fs.retest.includes(itemRetestRequired(item)?"review":"trusted")) return false;
-    if(fs.lifecycle.length>0&&!fs.lifecycle.includes(item.lifecycle)) return false;
+    if(fs.lifecycle.length>0&&!fs.lifecycle.includes(item.lifecycle||"—")) return false;
     if((fs.dueMonth||[]).length>0
       && !fs.dueMonth.some(monthKey=>openDuePeriodsInMonth(item,monthKey).length>0)) return false;
     if(!itemMatchesListSearch(item,search,approvalStatus)) return false;
@@ -10280,6 +10320,17 @@ export default function App(){
     {key:"exception",el:<PlainH label="대상 제외" lang={lang}/>,w:precisionColumnWidths.exception},
     {key:"detail",el:null,w:precisionColumnWidths.detail},
   ];
+  const precisionExceptionColumns=[
+    {key:"period",el:<FH label="발생 주기" col="paPeriod" {...precisionFhp}/>,w:7},
+    {key:"code",el:<FH label="품번" col="paCode" {...precisionFhp}/>,w:9},
+    {key:"name",el:<FH label="품목명" col="paName" {...precisionFhp}/>,w:16},
+    {key:"date",el:<FH label="측정일" col="paMeasuredDate" {...precisionFhp}/>,w:9},
+    {key:"elements",el:<FH label="대상 원소" col="paElements" {...precisionFhp}/>,w:9},
+    {key:"reason",el:<FH label="제외 사유" col="paExceptionReason" {...precisionFhp}/>,w:16},
+    {key:"detail",el:<FH label="상세 사유" col="paExceptionDetail" {...precisionFhp}/>,w:18},
+    {key:"applied",el:<FH label="처리일" col="paExceptionAt" {...precisionFhp}/>,w:9},
+    {key:"manage",el:<PlainH label="관리" lang={lang}/>,w:7},
+  ];
   const precisionTableWeight=precisionColumns.reduce((sum,column)=>sum+column.w,0);
   // 한국어와 영문은 단어 길이가 크게 달라 별도 열 폭을 사용합니다.
   // 영문 레이아웃은 충분한 최소 폭을 확보하고 표 컨테이너에서 가로 스크롤합니다.
@@ -10626,8 +10677,10 @@ export default function App(){
           .xrf-element-row{grid-template-columns:1fr !important;}
           .xrf-element-row > div{border-left:0 !important;padding-left:0 !important;}
           .cycle-management-chart{grid-template-columns:1fr !important;}
-          .analysis-flow-chart{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+          .analysis-flow-chart{grid-template-columns:1fr !important;gap:8px !important;}
           .analysis-flow-arrow{display:none !important;}
+          .analysis-flow-results{grid-column:auto !important;}
+          .analysis-flow-result-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;}
           .precision-flow-summary{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
           .replacement-history-row{grid-template-columns:1fr !important;}
           .replacement-history-relation{grid-template-columns:1fr !important;}
@@ -10660,6 +10713,9 @@ export default function App(){
         @media (max-width: 640px){
           .stat-grid{grid-template-columns:repeat(2,1fr) !important;}
           .precision-flow-summary{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+        }
+        @media (max-width: 480px){
+          .analysis-flow-result-grid{grid-template-columns:1fr !important;}
         }
         @media (max-width: 980px){
           .xrf-hero{
@@ -11418,7 +11474,7 @@ export default function App(){
                   {key:"exceptions",ko:"대상 제외 목록",en:"Excluded Items",count:precisionRowsForListMode(precisionRows,"exceptions").length},
                 ].map(option=>{
                   const active=precisionListMode===option.key;
-                  return <button key={option.key} type="button" role="tab" aria-selected={active} onClick={()=>{setPrecisionListMode(option.key);setPrecisionSelCaseId(null);setPrecisionSearch("");setPrecisionFilters(createEmptyPrecisionFilters());}} style={{minHeight:32,padding:"0 13px",border:`1px solid ${active?C.charcoalDk:"transparent"}`,borderRadius:7,background:active?C.charcoalDk:"transparent",color:active?"#fff":C.text2,fontSize:11,fontWeight:700,cursor:"pointer"}}>{lang==="en"?option.en:option.ko} <span style={{marginLeft:5,opacity:.78}}>{option.count}</span></button>;
+                  return <button key={option.key} type="button" role="tab" aria-selected={active} onClick={()=>{setPrecisionListMode(option.key);setPrecisionSelCaseId(null);setPrecisionSearch("");setPrecisionFilters(createEmptyPrecisionFilters());setPrecisionOpenFilter(null);}} style={{minHeight:32,padding:"0 13px",border:`1px solid ${active?C.charcoalDk:"transparent"}`,borderRadius:7,background:active?C.charcoalDk:"transparent",color:active?"#fff":C.text2,fontSize:11,fontWeight:700,cursor:"pointer"}}>{lang==="en"?option.en:option.ko} <span style={{marginLeft:5,opacity:.78}}>{option.count}</span></button>;
                 })}
               </div>
             </div>
@@ -11434,18 +11490,14 @@ export default function App(){
                     aria-label={lang==="en"?"Search precision analysis cases":"정밀분석 항목 검색"}
                     style={{height:34,width:220,boxSizing:"border-box",padding:"0 12px 0 32px",border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:12,outline:"none",background:C.card,color:C.text1}}/>
                 </div>
-                <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>건 · 전체 {precisionListRows.length}건</span>
-                <span style={{fontSize:10.5,color:C.text4}}>{lang==="en"?"Grouped by item · Newest measurement first":"품목별 구분 · 측정일 최신순"}</span>
+                <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>건</span>
                 {precisionHasFilters&&<button type="button" onClick={handlePrecisionFiltersClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
               </div>
               <FilterChips filterState={precisionFilters} onClear={handlePrecisionFilterClear} onClearAll={handlePrecisionFiltersClearAll}/>
               {precisionListMode==="exceptions"?<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label={lang==="en"?"Items excluded from precision analysis":"정밀분석 대상 제외 목록"} tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
                 <table style={{width:"100%",minWidth:980,borderCollapse:"collapse",tableLayout:"fixed"}}>
-                  <colgroup><col style={{width:"7%"}}/><col style={{width:"9%"}}/><col style={{width:"16%"}}/><col style={{width:"9%"}}/><col style={{width:"9%"}}/><col style={{width:"16%"}}/><col style={{width:"18%"}}/><col style={{width:"9%"}}/><col style={{width:"7%"}}/></colgroup>
-                  <thead><tr>{[
-                    lang==="en"?"Period":"발생 주기",lang==="en"?"Part No.":"품번",lang==="en"?"Item Name":"품목명",lang==="en"?"Measured":"측정일",lang==="en"?"Elements":"대상 원소",
-                    lang==="en"?"Exclusion Reason":"제외 사유",lang==="en"?"Details":"상세 사유",lang==="en"?"Applied":"처리일",lang==="en"?"Manage":"관리"
-                  ].map(label=><th key={label} style={{height:42,padding:"4px 6px",borderBottom:`1px solid ${C.bd}`,background:C.card,textAlign:"center",fontSize:10.5,fontWeight:700,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.2}}>{label}</th>)}</tr></thead>
+                  <colgroup>{precisionExceptionColumns.map(column=><col key={column.key} style={{width:`${column.w}%`}}/>)}</colgroup>
+                  <thead><tr style={{height:lang==="en"?62:42}}>{precisionExceptionColumns.map(column=><th key={column.key} style={{height:lang==="en"?62:42,padding:lang==="en"?"4px 2px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",wordBreak:"keep-all",lineHeight:1.15}}>{column.el}</th>)}</tr></thead>
                   <tbody>{precisionListRows.length===0?<tr><td colSpan={9} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No excluded items.":"정밀분석 대상에서 제외된 항목이 없습니다."}</td></tr>:filteredPrecisionRows.length===0?<tr><td colSpan={9} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No excluded items match the current search or filters.":"검색 또는 필터 조건에 맞는 제외 항목이 없습니다."}</td></tr>:filteredPrecisionRows.map(r=>{
                     const cell={padding:"5px 6px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",fontSize:10.5,color:C.text2,lineHeight:1.25,wordBreak:"keep-all"};
                     return <tr key={r.key} style={{background:C.card}}>
@@ -11455,9 +11507,9 @@ export default function App(){
                       <td style={{...cell,whiteSpace:"nowrap"}}>{dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—"}</td>
                       <td style={cell}>{(r.targets||[]).join(", ")||"—"}</td>
                       <td style={{...cell,fontWeight:650}}>{precisionExceptionReasonLabel(r.precision?.exceptionReasonCode,lang)}</td>
-                      <td style={{...cell,textAlign:"left"}}><div>{r.precision?.exceptionReasonDetail||"—"}</div>{r.precision?.exceptionEvidence&&<div style={{marginTop:4,fontSize:10,color:C.text4}}>{lang==="en"?"Evidence":"근거"}: {r.precision.exceptionEvidence}</div>}</td>
-                      <td style={cell}><div style={{whiteSpace:"nowrap"}}>{dateOnly(r.precision?.exceptionAt)||"—"}</div><div style={{marginTop:3,fontSize:10,color:C.text4}}>{r.precision?.exceptionBy||"—"}</div></td>
-                      <td style={cell}><button type="button" onClick={()=>setPrecisionQuickException({row:r,mode:"edit"})} title={lang==="en"?"Edit or remove this exception":"예외 사유·문서 수정 또는 예외 해제"} style={{minWidth:48,height:26,padding:"0 10px",border:`1px solid ${C.charcoalDk}`,borderRadius:7,background:C.charcoalDk,color:"#fff",fontSize:10.5,fontWeight:700,cursor:"pointer"}}>{lang==="en"?"Edit":"편집"}</button></td>
+                      <td style={{...cell,textAlign:"center"}}><div>{r.precision?.exceptionReasonDetail||"—"}</div>{r.precision?.exceptionEvidence&&<div style={{marginTop:4,fontSize:10,color:C.text4}}>{lang==="en"?"Evidence":"근거"}: {r.precision.exceptionEvidence}</div>}</td>
+                      <td style={cell}><div style={{whiteSpace:"nowrap"}}>{dateOnly(r.precision?.exceptionAt)||"—"}</div></td>
+                      <td style={cell}><button type="button" onClick={()=>setPrecisionQuickException({row:r,mode:"edit"})} aria-label={lang==="en"?"Edit excluded item":"대상 제외 항목 편집"} title={lang==="en"?"Edit the exclusion reason or related document, or remove the exclusion":"제외 사유·문서 수정 또는 대상 제외 해제"} style={{width:28,height:26,padding:0,display:"inline-flex",alignItems:"center",justifyContent:"center",border:`1px solid ${C.charcoalDk}`,borderRadius:7,background:C.charcoalDk,color:"#fff",cursor:"pointer"}}><svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20h4l10.4-10.4a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m14.5 7.5 3 3"/></svg></button></td>
                     </tr>;
                   })}</tbody>
                 </table>
