@@ -74,7 +74,7 @@ assert(originalSource.includes('lang==="en"?"XRF Trend by Element":"원소별 XR
 assert(originalSource.includes("XRF_TREND_EL_NAMES[el]?.[lang]"),"trend element names must react to the selected language");
 assert(originalSource.includes("displayItemName(sel,lang)"),"trend detail must use the localized item name");
 assert(originalSource.includes('No XRF measurement is linked to the selected period.'),"empty selected period must have an English message");
-assert(/\{currentMeasurement\r?\n\s+\? <XrfTrendChart/.test(originalSource),"trend chart must be hidden when the selected period has no measurement");
+assert(/\{currentMeasurement(?:&&!currentSubstitutionEvent)?\r?\n\s+\? <XrfTrendChart/.test(originalSource),"trend chart must be hidden when the selected period has no original-item measurement");
 assert(originalSource.includes('["itemNameEn","Item_Name_EN"'),"new-item forms must accept an English item name");
 assert(originalSource.includes('nameEn:String(reqForm.itemNameEn||"").trim()'),"new-item creation must preserve the English item name");
 assert(originalSource.includes('window.alert("Item_Name_EN을 입력하세요.")'),"new-item submission must reject a missing English item name");
@@ -151,6 +151,37 @@ const periodNoRuntimeItem=periodNoRuntime.items.find(item=>item.code==="DB-PERIO
 assert(periodNoRuntimeItem?.__measurementMap?.["DB-PERIOD_20260101_01"]?.periodNo===2,"SharePoint Period_No must be restored on the measurement record");
 assert(periodNoRuntimeItem?.history?.find(row=>row.id==="DB-PERIOD_20260101_01")?.periodNo===2,"SharePoint Period_No must survive in item history");
 assert(periodNoRuntimeItem?.__measurementMap?.["DB-PERIOD_20260101_01"]?.sourceSheet==="RawData","Period_No metadata must not leak into the displayed source sheet name");
+
+const substitutionElements=(measurementId,startId)=>["Pb","Hg","Cr","Cd","Cl","Br"].map((element,index)=>({
+  id:String(startId+index),fields:{Title:measurementId,field_1:element,field_2:element==="Br"?"1.3":"ND",field_3:"1",field_4:element==="Br"?"Less than":"N.D."}
+}));
+const substitutionEvent={eventId:"SUB_ITM_M_02_P1_20260130",eventType:"SUBSTITUTED",status:"ACTIVE",periodNo:1,effectiveDate:"2026-01-30",substituteItemId:"ITM_M_07_01",substitutePartNumber:"M-07-01",substituteItemName:"CB-100 초음파세척액",substituteItemNameEn:"CB-100 Ultrasonic cleaning agent",linkedMeasurementId:"M-07-01_20260130_01"};
+const substitutionRuntime=app.buildRuntimeFromSharePoint({lists:{
+  XRF_Items:[
+    {id:"34",fields:{Title:"ITM_M_02",field_1:"M-02",field_2:"Met Power 초음파세척액",field_4:"Auxiliary Materials",field_5:"Molding",field_8:"직접접촉+비잔류",field_9:"ExistingActive",field_10:true}},
+    {id:"132",fields:{Title:"ITM_M_07_01",field_1:"M-07-01",field_2:"CB-100 초음파세척액",field_3:"CB-100 Ultrasonic cleaning agent",field_4:"Auxiliary Materials",field_5:"Molding",field_8:"직접접촉+비잔류",field_9:"Discontinued",field_10:false}},
+  ],
+  XRF_Measurements:[
+    {id:"88",fields:{Title:"M-02_20250519_01",field_1:"ITM_M_02",Measured_Date:"2025-05-19",field_3:"Initial",field_4:1,field_7:"[[MXKPCS:Period_No=0]]"}},
+    {id:"90",fields:{Title:"M-02_20260710_01",field_1:"ITM_M_02",Measured_Date:"2026-07-10",field_3:"Periodic",field_4:1,field_7:"[[MXKPCS:Period_No=2]]"}},
+    {id:"243",fields:{Title:"M-07-01_20260130_01",field_1:"ITM_M_07_01",Measured_Date:"2026-01-30",field_3:"Initial",field_4:1,field_7:"[[MXKPCS:Period_No=0]]"}},
+  ],
+  XRF_ElementResults:[
+    ...substitutionElements("M-02_20250519_01",1000),
+    ...substitutionElements("M-02_20260710_01",1010),
+    ...substitutionElements("M-07-01_20260130_01",1020),
+  ],
+  XRF_Requests:[{id:"79",fields:{Title:substitutionEvent.eventId,field_1:"PeriodSubstitution",field_2:"Applied",field_3:"ITM_M_02",field_4:"ITM_M_07_01",field_5:"M-07-01",field_6:"CB-100 초음파세척액",Effective_Date:"2026-01-30",Before_Target_Snapshot_JSON:JSON.stringify(substitutionEvent)}}],
+  XRF_PrecisionAnalyses:[],XRF_PrecisionElementResults:[],
+}});
+const substitutionM02=substitutionRuntime.items.find(item=>item.code==="M-02");
+const substitutionP1=app.buildRollingPeriods(substitutionM02).find(period=>period.num===1);
+assert(substitutionRuntime.requestItems.length===0,"PeriodSubstitution events must not create duplicate material request rows");
+assert(substitutionM02?.periodEvents?.length===1,"M-02 must receive exactly one linked substitution event");
+assert(substitutionP1?.status==="substituted","M-02 P1 must close as substituted rather than overdue");
+assert(substitutionP1?.measured==="2026-01-30","the substitute effective date must close the original P1 period");
+assert(substitutionP1?.substitutionEvent?.linkedMeasurement?.id==="M-07-01_20260130_01","M-02 P1 must expose the CB-100 R measurement");
+assert(app.xrfTrendMeasurement(substitutionM02,substitutionP1)===null,"CB-100 values must not enter the Met Power trend");
 
 const testLegalLimits={Pb:1000,Hg:1000,Cr:1000,Cd:100,Cl:900,Br:900,"Cl+Br":1500};
 const completeElements=pbPpm=>Object.fromEntries(Object.entries(testLegalLimits).map(([element,legalLimit])=>[

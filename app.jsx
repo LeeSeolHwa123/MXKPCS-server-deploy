@@ -16,7 +16,7 @@ const VISUAL_UAT_MODE =
 const VISUAL_UAT_READ_ONLY_MESSAGE = "Visual UAT 테스트 데이터는 읽기 전용입니다.";
 const VISUAL_UAT_MUTATION_ACTIONS = new Set([
   "createRequest","saveMeasurement","updateItem","processDiscontinue",
-  "revertDiscontinue","upsertPrecision","deleteRecord",
+  "revertDiscontinue","upsertPrecision","setPrecisionHandoffException","deleteRecord","savePeriodSubstitution",
   "beginPrecisionFileUpload","uploadPrecisionFileChunk","finishPrecisionFileUpload",
   "beginItemPhotoUpload","finishItemPhotoUpload"
 ]);
@@ -371,6 +371,7 @@ const ST = {
   due_soon: {fill:C.card, border:C.red, label:"측정권장"},
   upcoming: {fill:C.card, border:C.bd2, label:"예정"},
   reference:{fill:C.charcoal, border:C.charcoal, label:"기준"},
+  substituted:{fill:A.slate.bg, border:A.slate.tx, label:"대체품 사용"},
 };
 
 const FILTER_LABELS = {
@@ -386,7 +387,7 @@ const FILTER_LABELS = {
   crLevel: {H:"H · 직접접촉+잔류", M:"M · 직접접촉+비잔류", L:"L · 비접촉"},
   risk: {"Not Allowed":"사용불허", H:"H", M:"M", L:"L", "—":"—"},
   retest: {review:"재측정", trusted:"재측정 불필요"},
-  approval: {approved:"사용/단종 승인", measuring:"측정 진행중", request:"의뢰 필요", rejected:"사용/단종 반려", hold:"보류/검토중", cancelled:"처리 취소"},
+  approval: {approved:"사용/단종 승인", measuring:"측정 진행중", request:"의뢰 필요", exception:"미인계 예외", rejected:"사용/단종 반려", hold:"보류/검토중", cancelled:"처리 취소"},
   lifecycle: {ExistingActive:"기존 운영", NewReplacement:"신규 대체", ReplacedOld:"대체됨", Discontinued:"단종", NewItem:"신규 도입", Cancelled:"처리 취소"},
   nextDue: {},
   dDay: {},
@@ -398,7 +399,7 @@ const FILTER_LABELS = {
   paMeasuredDate: {},
   paElements: {},
   paReason: {},
-  paHandoff: {"인계 필요":"인계 필요","인계 완료":"인계 완료"},
+  paHandoff: {"인계 필요":"인계 필요","인계 완료":"인계 완료","미인계 예외":"미인계 예외"},
   paReport: {"미첨부":"미첨부","첨부 완료":"첨부 완료"},
   paConfirm: {"미확정":"미확정","최종 컨펌":"최종 컨펌"},
   paResult: {OK:"OK",NG:"NG","—":"—"},
@@ -791,6 +792,7 @@ function buildSharePointRequestItems(requestRows,masterItems,measurementMap){
 
     const requestType=String(f.field_1||"New").trim();
     const requestTypeKey=requestType.toLowerCase();
+    if(requestTypeKey==="periodsubstitution" || requestTypeKey==="precisionhandoffexception") continue;
     const status=String(f.field_2||"Pending").trim();
     const target=masterByItemId.get(String(f.field_3||"").trim())||null;
     const targetCode=target?.code||"";
@@ -896,7 +898,7 @@ function buildSharePointRequestItems(requestRows,masterItems,measurementMap){
   return rows;
 }
 
-function mergeSharePointRequestMetadata(masterItems,requestRows){
+function mergeSharePointRequestMetadata(masterItems,requestRows,measurementMap={}){
   const byCode=new Map((masterItems||[]).map(item=>[String(item?.code||""),item]));
   const byItemId=new Map((masterItems||[]).map(item=>[String(item?.itemId||""),item]));
   const patches=new Map();
@@ -911,6 +913,7 @@ function mergeSharePointRequestMetadata(masterItems,requestRows){
     const requestId=String(f.Title||"").trim();
     if(!requestId || f.Is_Migration===true || /^REQ_MIG_/i.test(requestId)) continue;
     const requestType=String(f.field_1||"").trim().toLowerCase();
+    if(requestType==="precisionhandoffexception") continue;
     const status=String(f.field_2||"Pending").trim();
     const requestCommon={
       _spRequestItemId:row?.id||null,
@@ -927,6 +930,36 @@ function mergeSharePointRequestMetadata(masterItems,requestRows){
       beforeTargetSnapshot:parseSharePointJson(f.Before_Target_Snapshot_JSON),
       restoredTargetSnapshot:parseSharePointJson(f.Restored_Target_Snapshot_JSON),
     };
+
+    if(requestType==="periodsubstitution"){
+      const target=byItemId.get(String(f.field_3||"").trim())||null;
+      const saved=parseSharePointJson(f.Before_Target_Snapshot_JSON)||{};
+      const {migrationBackup:unusedMigrationBackup,...savedEvent}=saved;
+      const linkedMeasurementId=String(savedEvent.linkedMeasurementId||"").trim();
+      const event={
+        ...savedEvent,
+        eventId:savedEvent.eventId||requestId,
+        eventType:"SUBSTITUTED",
+        status:String(savedEvent.status||status||"ACTIVE").toUpperCase()==="APPLIED"?"ACTIVE":String(savedEvent.status||"ACTIVE").toUpperCase(),
+        periodNo:Number(savedEvent.periodNo),
+        effectiveDate:dateOnly(savedEvent.effectiveDate||f.Effective_Date),
+        substituteItemId:savedEvent.substituteItemId||String(f.field_4||"").trim(),
+        substitutePartNumber:savedEvent.substitutePartNumber||String(f.field_5||"").trim(),
+        substituteItemName:savedEvent.substituteItemName||String(f.field_6||"").trim(),
+        linkedMeasurementId,
+        linkedMeasurement:measurementMap?.[linkedMeasurementId]||null,
+      };
+      if(target && Number.isInteger(event.periodNo) && event.periodNo>0 && linkedMeasurementId){
+        const key=String(target?.itemId||target?.code||"");
+        const currentEvents=patches.get(key)?.periodEvents||target.periodEvents||[];
+        mergePatch(target,{periodEvents:[
+          ...currentEvents.filter(existing=>String(existing?.eventId||"")!==String(event.eventId)
+            && !(String(existing?.eventType||"").toUpperCase()==="SUBSTITUTED" && Number(existing?.periodNo)===event.periodNo)),
+          event,
+        ]});
+      }
+      continue;
+    }
 
     if(requestType==="new" || requestType==="replacement"){
       const proposedCode=String(f.field_5||"").trim();
@@ -1010,11 +1043,13 @@ function buildSharePointPrecisionOverrides(precisionRows,precisionElementRows){
     const triggerMeasurementId=String(f.field_1||"").trim();
     if(!precisionId || !triggerMeasurementId) continue;
     const resultFile=String(f.field_5||"").trim();
+    const handoffException=f.Handoff_Exception===true;
+    const requestedAt=dateOnly(f.Requested_At||"");
     output[triggerMeasurementId]={
       precisionId,
       _spItemId:row?.id||null,
-      requestStatus:"REQUESTED",
-      requestedAt:dateOnly(f.Requested_At||row?.createdDateTime),
+      requestStatus:handoffException?"EXEMPTED":(requestedAt?"REQUESTED":"NOT_REQUESTED"),
+      requestedAt,
       requestedBy:sharePointPlainText(f.Requested_By||row?.createdBy?.user?.displayName||""),
       resultFileId:resultFile,
       reportFileId:f.Report_File_ID||"",
@@ -1022,7 +1057,39 @@ function buildSharePointPrecisionOverrides(precisionRows,precisionElementRows){
       uploadStatus:resultFile?"UPLOADED":"WAITING",
       finalConfirm:f.field_6===true?"확인":"",
       confirmedAt:f.field_6===true ? dateOnly(f.Confirmed_At||row?.lastModifiedDateTime||f.Modified) : "",
+      handoffException,
+      exceptionReasonCode:String(f.Exception_Reason_Code||"").trim(),
+      exceptionReasonDetail:sharePointPlainText(f.Exception_Reason_Detail||""),
+      exceptionAt:f.Exception_At||"",
+      exceptionBy:sharePointPlainText(f.Exception_By||""),
+      exceptionEvidence:sharePointPlainText(f.Exception_Evidence||""),
       elementResults:elementsByPrecision[precisionId]||{}
+    };
+  }
+  return output;
+}
+
+function buildSharePointPrecisionExceptionOverrides(requestRows,precisionOverrides={}){
+  const output={};
+  for(const row of requestRows||[]){
+    const f=sharePointFields(row);
+    if(String(f.field_1||"").trim().toLowerCase()!=="precisionhandoffexception") continue;
+    const event=parseSharePointJson(f.Before_Target_Snapshot_JSON)||{};
+    const triggerMeasurementId=String(event.triggerMeasurementId||f.field_4||"").trim();
+    const status=String(event.status||f.field_2||"").trim().toUpperCase();
+    if(!triggerMeasurementId || status!=="ACTIVE") continue;
+    // 실제 정밀분석 인계 Header가 이미 있으면 그 상태를 우선해 예외가 결과를 가리지 않도록 합니다.
+    if(precisionOverrides?.[triggerMeasurementId]?.requestStatus==="REQUESTED") continue;
+    output[triggerMeasurementId]={
+      ...(precisionOverrides?.[triggerMeasurementId]||{}),
+      requestStatus:"EXEMPTED",
+      handoffException:true,
+      exceptionRequestSpItemId:row?.id||null,
+      exceptionReasonCode:String(event.reasonCode||f.field_5||"").trim(),
+      exceptionReasonDetail:sharePointPlainText(event.reasonDetail||f.field_15||""),
+      exceptionAt:event.createdAt||f.Processed_At||row?.createdDateTime||"",
+      exceptionBy:sharePointPlainText(event.createdBy||f.Processed_By||""),
+      exceptionEvidence:sharePointPlainText(event.evidence||""),
     };
   }
   return output;
@@ -1039,14 +1106,20 @@ function buildRuntimeFromSharePoint(payload){
 
   const measurementMap=buildSharePointMeasurementMap(measurementRows,elementRows);
   const baseMasterItems=deriveReplacementRelations(buildSharePointMasterItems(itemRows,measurementMap,payload?.itemPhotos||{}));
-  const masterItems=mergeSharePointRequestMetadata(baseMasterItems,requestRows);
+  const masterItems=mergeSharePointRequestMetadata(baseMasterItems,requestRows,measurementMap);
   const requestItems=buildSharePointRequestItems(requestRows,masterItems,measurementMap);
-  const precisionOverrides=buildSharePointPrecisionOverrides(precisionRows,precisionElementRows);
+  const precisionHeaderOverrides=buildSharePointPrecisionOverrides(precisionRows,precisionElementRows);
+  const precisionOverrides={
+    ...precisionHeaderOverrides,
+    ...buildSharePointPrecisionExceptionOverrides(requestRows,precisionHeaderOverrides),
+  };
+  const replacementHistory=buildSharePointReplacementHistory(requestRows,masterItems);
 
   return {
     items:masterItems,
     requestItems,
     precisionOverrides,
+    replacementHistory,
     measurementMap,
     counts:{
       items:itemRows.length,
@@ -1421,6 +1494,75 @@ function buildReplacementRelationGroups(items){
   }).filter(Boolean).sort((a,b)=>String(a.old.replacementDate||a.old.finalUseDate||"").localeCompare(String(b.old.replacementDate||b.old.finalUseDate||"")));
 }
 
+function buildSharePointReplacementHistory(requestRows,items){
+  const rows=Array.isArray(items)?items:[];
+  const byItemId=new Map(rows.filter(item=>item?.itemId).map(item=>[String(item.itemId),item]));
+  const byCode=new Map(rows.filter(item=>item?.code).map(item=>[String(item.code),item]));
+  const resolveItem=(itemId,partNumber)=>byItemId.get(String(itemId||"").trim())
+    || byCode.get(String(partNumber||"").trim())
+    || null;
+  const normalizedType=value=>String(value||"").trim().toLowerCase().replace(/[\s_.-]/g,"");
+
+  return (requestRows||[]).map((row,index)=>{
+    const f=row?.fields||row||{};
+    const requestType=String(f.field_1||f.Request_Type||f.requestType||"").trim();
+    const typeKey=normalizedType(requestType);
+    const saved=parseSharePointJson(f.Before_Target_Snapshot_JSON)||{};
+    const savedTypeKey=normalizedType(saved.eventType||saved.type||"");
+    const isPeriodSubstitution=typeKey==="periodsubstitution" || savedTypeKey==="substituted";
+    const isReactivation=[typeKey,savedTypeKey].some(key=>
+      key.includes("reactivat") || key.includes("revert") || key.includes("reversion") || key.includes("restore") || key.includes("return")
+    );
+    const isReplacement=!isPeriodSubstitution && !isReactivation
+      && [typeKey,savedTypeKey].some(key=>key==="replacement" || key.includes("replacementchange"));
+    const isChange=!isPeriodSubstitution && !isReactivation && !isReplacement
+      && [typeKey,savedTypeKey].some(key=>key==="change" || key.includes("usageswitch") || key.includes("itemchange"));
+    if(!isPeriodSubstitution && !isReactivation && !isReplacement && !isChange) return null;
+
+    const kind=isPeriodSubstitution?"periodSubstitution":isReactivation?"reactivation":isReplacement?"replacement":"change";
+    const fromItemId=String(
+      saved.fromItemId||saved.sourceItemId||saved.previousItemId||saved.managedItemId||f.field_3||""
+    ).trim();
+    const toItemId=String(
+      saved.toItemId||saved.reactivatedItemId||saved.restoredItemId||saved.substituteItemId||saved.replacementItemId||f.field_4||""
+    ).trim();
+    const fromPartNumber=String(
+      saved.fromPartNumber||saved.sourcePartNumber||saved.previousPartNumber||saved.managedPartNumber||f.Target_Part_Number||""
+    ).trim();
+    const toPartNumber=String(
+      saved.toPartNumber||saved.reactivatedPartNumber||saved.restoredPartNumber||saved.substitutePartNumber||saved.replacementPartNumber||f.field_5||""
+    ).trim();
+    const fromItem=resolveItem(fromItemId,fromPartNumber);
+    const toItem=resolveItem(toItemId,toPartNumber);
+    const effectiveDate=dateOnly(
+      saved.effectiveDate||saved.reactivationDate||saved.reversionDate||f.Replacement_Date||f.Effective_Date||f.Processed_At||row?.lastModifiedDateTime||f.Modified
+    );
+    const periodNo=Number(saved.periodNo||saved.managedPeriodNo||0)||null;
+    return {
+      eventId:String(saved.eventId||f.Title||row?.id||`replacement-history-${index}`),
+      kind,
+      requestType,
+      status:String(saved.status||f.field_2||"Applied").trim(),
+      effectiveDate,
+      fromItemId:fromItem?.itemId||fromItemId||null,
+      fromPartNumber:fromItem?.code||fromPartNumber||null,
+      fromItemName:fromItem?.name||String(saved.fromItemName||saved.sourceItemName||""),
+      fromItemNameEn:fromItem?.nameEn||String(saved.fromItemNameEn||saved.sourceItemNameEn||""),
+      toItemId:toItem?.itemId||toItemId||null,
+      toPartNumber:toItem?.code||toPartNumber||null,
+      toItemName:toItem?.name||String(saved.toItemName||saved.substituteItemName||f.field_6||""),
+      toItemNameEn:toItem?.nameEn||String(saved.toItemNameEn||saved.substituteItemNameEn||""),
+      periodNo,
+      linkedMeasurementId:String(saved.linkedMeasurementId||"").trim()||null,
+      reason:sharePointPlainText(saved.reason||f.Replacement_Reason||f.Request_Reason||f.field_15||""),
+      source:"request",
+    };
+  }).filter(Boolean).sort((a,b)=>
+    String(b.effectiveDate||"").localeCompare(String(a.effectiveDate||""))
+      || String(b.eventId).localeCompare(String(a.eventId),"ko",{numeric:true})
+  );
+}
+
 // 부자재 리스트의 신규/기존 분류는 "최초 2025년 조사 리스트"와의 차이가 아니라
 // 현재 관리 주기(Pn)를 기준으로 다시 산정합니다.
 //
@@ -1544,6 +1686,7 @@ const UI_EN_MAP = {
 
   // ── 공통 라벨 ──
   "분류":"Category","품번":"Part No.","품목명":"Item Name","부서":"Department","주기":"Cycle",
+  "대체품 사용":"Substitute Used","대체품 결과 보기":"View Substitute Result",
   "최초 등록":"First Registered","이행 현황":"Compliance","현재 상태":"Current Status",
   "발생 주기":"Occurrence Period","대상 원소":"Target Elements","인계 사유":"Transfer Reason",
   "인계 상태":"Transfer Status","컨펌 상태":"Confirmation Status","정밀 결과":"Precision Result",
@@ -1569,6 +1712,7 @@ const UI_EN_MAP = {
   "등록완료":"Registered","처리 완료":"Complete","처리 취소":"Cancelled","진행 중":"In Progress",
   "진행중":"In Progress","완료":"Complete","승인":"Approved","반려":"Rejected","보류":"On Hold",
   "측정 진행중":"Measuring","측정중":"Measuring","의뢰 필요":"Request Required",
+  "미인계 예외":"Handoff Exception","예외 처리":"Exception Applied",
   "확인 필요":"Review Required","재측정 필요":"Remeasurement Required","재측정":"Remeasure",
   "재측정 불필요":"No Remeasurement","필요":"Required","불필요":"Not Required","필요 없음":"Not Required",
   "사용 가능":"Allowed","사용불허":"Not Allowed","사용 불허":"Not Allowed","사용불가":"Not Allowed",
@@ -1606,12 +1750,13 @@ const UI_EN_MAP = {
   "XRF 재측정 필요":"XRF Remeasurement Required",
   "정밀분석 필요":"Precision Analysis Required","정밀분석 및 XRF 재측정 필요":"Precision Analysis and XRF Remeasurement Required","정밀분석 인계":"Transfer to Precision Analysis",
   "정밀분석 인계 필요":"Transfer Required","정밀분석 인계 완료":"Transfer Complete",
+  "정밀분석 미인계 예외":"Precision Handoff Exception","정밀분석 미인계 예외처리":"Apply Handoff Exception","미인계 예외 해제":"Remove Handoff Exception",
   "정밀분석 의뢰 필요":"Precision Request Required","정밀분석 결과":"Precision Result",
   "정밀 결과":"Precision Result","정밀분석 결과 대기":"Awaiting Precision Result",
   "정밀분석 결과 없음":"No Precision Result","정밀분석 결과 확인":"Review Precision Result",
   "정밀분석 결과 확인 완료":"Precision Result Confirmed","정밀분석 대상":"Precision Analysis Target",
   "정밀분석 상세":"Precision Analysis Details","정밀분석 상세 열기":"Open Precision Details",
-  "정밀분석 NG · 반려":"Precision NG · Rejected","정밀분석 후속조치 필요":"Precision Follow-up Required",
+  "정밀분석 NG":"Precision NG","정밀분석 후속조치 필요":"Precision Follow-up Required",
   "정밀분석 성적서 PDF":"Precision Report PDF","정밀분석 관리":"Precision Analysis Management",
   "정밀분석 인계 관리":"Transfer Management","인계 상태":"Transfer Status","인계 사유":"Transfer Reason",
   "인계일":"Transfer Date","인계 완료":"Transfer Complete","인계 필요":"Transfer Required",
@@ -2178,7 +2323,7 @@ function workflowPrecisionTransfer(caseData){ return caseData?.precisionTransfer
 function workflowFollowUp(caseData){ return caseData?.followUpId ? MOCK_WORKFLOW_DB.followUps[caseData.followUpId]||null : null; }
 function workflowApproval(caseData){ return caseData?.approvalId ? MOCK_WORKFLOW_DB.approvals[caseData.approvalId]||null : null; }
 function workflowStageLabel(stage){
-  const map={XRF_REQUIRED:"확인 필요",XRF_REMEASURE_REQUIRED:"XRF 재측정",PRECISION_TRANSFER_REQUEST_REQUIRED:"정밀분석 인계 필요",PRECISION_TRANSFER_RESULT_WAITING:"정밀분석 결과 대기",PRECISION_FOLLOWUP_REQUIRED:"후속조치 필요",PRECISION_REQUEST_REQUIRED:"정밀분석 의뢰 필요",PRECISION_RESULT_WAITING:"정밀분석 결과 대기",APPROVED:"처리 완료",PRECISION_NG_REVIEW:"정밀분석 NG · 반려",RISK_NOT_ALLOWED:"사용불허"};
+  const map={XRF_REQUIRED:"확인 필요",XRF_REMEASURE_REQUIRED:"XRF 재측정",PRECISION_TRANSFER_REQUEST_REQUIRED:"정밀분석 인계 필요",PRECISION_TRANSFER_RESULT_WAITING:"정밀분석 결과 대기",PRECISION_FOLLOWUP_REQUIRED:"후속조치 필요",PRECISION_REQUEST_REQUIRED:"정밀분석 의뢰 필요",PRECISION_HANDOFF_EXEMPTED:"정밀분석 미인계 예외",PRECISION_RESULT_WAITING:"정밀분석 결과 대기",APPROVED:"처리 완료",PRECISION_NG_REVIEW:"정밀분석 NG",RISK_NOT_ALLOWED:"사용불허"};
   return map[stage]||stage||"—";
 }
 function baseWorkflowForItem(item){
@@ -2319,6 +2464,9 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
           stage="APPROVED";
           approval={status:"승인",basis:"PRECISION_OK",basisRecordId:latestCase.key};
         }
+      }else if(p?.requestStatus==="EXEMPTED" || p?.handoffException===true){
+        stage="PRECISION_HANDOFF_EXEMPTED";
+        approval={status:"미인계 예외",basis:"PRECISION_HANDOFF_EXEMPTED",basisRecordId:latestCase.key};
       }else if(p?.requestStatus==="REQUESTED"){
         stage="PRECISION_RESULT_WAITING";
         approval={status:"측정 진행중",basis:"PRECISION_REQUESTED",basisRecordId:latestCase.key};
@@ -2403,6 +2551,9 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
     }else if(precision?.result==="NG"){
       stage="PRECISION_NG_REVIEW";
       approval={...(approval||{}),status:"반려",basis:"PRECISION_NG_REJECTED",basisRecordId:precision.id||key};
+    }else if(precision?.requestStatus==="EXEMPTED" || precision?.handoffException===true){
+      stage="PRECISION_HANDOFF_EXEMPTED";
+      approval={...(approval||{}),status:"미인계 예외",basis:"PRECISION_HANDOFF_EXEMPTED",basisRecordId:precision?.id||key};
     }else if(precisionRequested){
       stage="PRECISION_RESULT_WAITING";
       approval={...(approval||{}),status:"측정 진행중",basis:"PRECISION_REQUESTED",basisRecordId:precision?.id||key};
@@ -2452,7 +2603,8 @@ function normStatus(s){
     early:"early", "조기측정":"early",
     compliant:"compliant", measured:"measured", "이행":"compliant", "측정완료":"measured",
     upcoming:"upcoming", open:"upcoming", "예정":"upcoming",
-    reference:"reference", registered:"reference", "기준":"reference"
+    reference:"reference", registered:"reference", "기준":"reference",
+    substituted:"substituted", substitution:"substituted", "대체품사용":"substituted", "대체품 사용":"substituted"
   };
   return map[raw] || map[key] || raw || "upcoming";
 }
@@ -2652,6 +2804,12 @@ function runtimePrecisionCasesForItem(item,precisionOverrides){
       requestedAt:ov.requestedAt||"",
       requestedBy:ov.requestedBy||"",
       confirmedAt:ov.confirmedAt||"",
+      handoffException:ov.handoffException===true || ov.requestStatus==="EXEMPTED",
+      exceptionReasonCode:ov.exceptionReasonCode||"",
+      exceptionReasonDetail:ov.exceptionReasonDetail||"",
+      exceptionAt:ov.exceptionAt||"",
+      exceptionBy:ov.exceptionBy||"",
+      exceptionEvidence:ov.exceptionEvidence||"",
       elementResults,
       finalConfirm:ov.finalConfirm || (persistedResult?"확인":"")
     };
@@ -2992,6 +3150,7 @@ function approvalFilterKey(status){
   if(s==="승인" || s==="사용 승인" || s==="단종 승인" || s==="Approved") return "approved";
   if(s==="측정 진행중" || s==="측정중" || s==="Measuring") return "measuring";
   if(s==="의뢰 필요" || s==="정밀분석 의뢰 필요" || s==="Request Required") return "request";
+  if(s==="미인계 예외" || s==="Handoff Exception") return "exception";
   if(s==="반려" || s==="사용 반려" || s==="단종 반려" || s==="Rejected") return "rejected";
   if(s==="보류" || s==="단종 검토중" || s==="Hold") return "hold";
   if(s==="처리 취소" || s==="취소" || s==="Cancelled" || s==="Reverted") return "cancelled";
@@ -3332,6 +3491,36 @@ function periodLabel(p){
   if(p.isReference || Number(p.num)===0) return "R";
   return `P${Number(p.num||1)}`;
 }
+function activePeriodSubstitution(item,periodNo){
+  const target=Number(periodNo);
+  if(!Number.isInteger(target) || target<1) return null;
+  return (item?.periodEvents||[]).find(event=>
+    String(event?.eventType||"").trim().toUpperCase()==="SUBSTITUTED"
+    && String(event?.status||"ACTIVE").trim().toUpperCase()==="ACTIVE"
+    && Number(event?.periodNo)===target
+  )||null;
+}
+function periodSubstitutionMeasurement(period){
+  return period?.substitutionEvent?.linkedMeasurement||null;
+}
+function periodSubstitutionNotice(period,event,currentItem,lang="ko"){
+  if(!event) return "";
+  const partNumber=String(event?.substitutePartNumber||"").trim() || (lang==="en"?"Substitute":"대체품");
+  const itemName=String(lang==="en"
+    ? (event?.substituteItemNameEn||event?.substituteItemName||"")
+    : (event?.substituteItemName||event?.substituteItemNameEn||"")).trim();
+  const substituteLabel=itemName?`${partNumber}(${itemName})`:partNumber;
+  const currentPartNumber=String(currentItem?.code||"").trim() || (lang==="en"?"the current item":"현재 제품");
+  return lang==="en"
+    ? `${periodLabel(period)} used substitute ${substituteLabel} / This result is excluded from ${currentPartNumber} elemental trends and risk calculations.`
+    : `${periodLabel(period)}은 대체품 ${substituteLabel} 사용 / 이 결과는 ${currentPartNumber} 원소 추이 및 위험도에서 제외됩니다.`;
+}
+function scrollToXrfMeasurementDetail(){
+  if(typeof window==="undefined" || typeof document==="undefined") return;
+  window.requestAnimationFrame(()=>window.requestAnimationFrame(()=>{
+    document.getElementById("xrf-selected-measurement-detail")?.scrollIntoView({behavior:"smooth",block:"start"});
+  }));
+}
 function periodPointDate(p){
   if(!p) return null;
   return p.isReference ? (p.referenceDate || p.date || null) : (p.due || p.targetDate || null);
@@ -3517,10 +3706,15 @@ function buildRollingPeriods(item){
     const nextDue=addMonthsISO(baseDate,months*(n+1));
     const windowStart=addDaysISO(due,-windowDays);
 
-    const explicitHits=[...(explicitMeasurementsByPeriod.get(n)||[])];
+    const substitutionEvent=activePeriodSubstitution(item,n);
+    // 대체품 사용 주기는 원품목의 XRF 측정으로 소비하지 않습니다.
+    // 실제 원소값은 substitutionEvent.linkedMeasurement에 남기고 원품목 추이에서는 제외합니다.
+    const explicitHits=substitutionEvent?[]:[...(explicitMeasurementsByPeriod.get(n)||[])];
     let hits=[];
     let hitLate=false;
-    if(isAnnual){
+    if(substitutionEvent){
+      hits=[];
+    }else if(isAnnual){
       // 연 1회: Pn의 도래연도와 실제 측정연도가 같으면 모두 동일 Pn에 귀속합니다.
       hits=[...explicitHits,...(annualMeasurementsByYear.get(String(due).slice(0,4))||[])];
       hits=Array.from(new Map(hits.map(hit=>[hit.id||`${hit.date}|${hit.attemptNo||1}`,hit])).values())
@@ -3552,10 +3746,19 @@ function buildRollingPeriods(item){
     let measurementId=null;
     let measurementRole=null;
     let daysOver=0;
-    const measuredDates=hits.map(hit=>hit.date).filter(Boolean).sort();
-    const measurementIds=hits.map(hit=>hit.id).filter(Boolean);
+    let measuredDates=hits.map(hit=>hit.date).filter(Boolean).sort();
+    let measurementIds=hits.map(hit=>hit.id).filter(Boolean);
 
-    if(hits.length){
+    if(substitutionEvent){
+      measured=dateOnly(substitutionEvent.effectiveDate || substitutionEvent.linkedMeasurement?.date);
+      measuredDates=measured?[measured]:[];
+      measurementIds=[];
+      measurementId=null;
+      measurementRole=null;
+      status="substituted";
+      statusLabel="대체품 사용";
+      closeType="substituted";
+    }else if(hits.length){
       const latestHit=hits[hits.length-1];
       measured=latestHit.date;
       measurementId=latestHit.id;
@@ -3586,6 +3789,9 @@ function buildRollingPeriods(item){
       referenceDate:null,date:null,start:prevDue,due,targetDate:due,prevDue,nextDue,windowStart,
       measured,measuredDates,measurementId,measurementIds,
       status,statusLabel,daysOver:Math.max(0,daysOver),closeType,
+      substitutionEvent:substitutionEvent||null,
+      substituteItemId:substitutionEvent?.substituteItemId||null,
+      substitutePartNumber:substitutionEvent?.substitutePartNumber||null,
       finalRisk:itemFinalRisk(item),isDisplayTarget:true,isCurrentCycle:true,measurementRole,
       cycle:riskCycle,cycleMonths:months,windowDays,cycleVersion:1,
       groupingBasis:isAnnual?"CALENDAR_YEAR":"DUE_INTERVAL",
@@ -3750,6 +3956,7 @@ function precisionCasePeriodLabel(row){
 }
 function precisionCaseFilterValues(row,column,lang="ko"){
   const isRequested=row?.precision?.requestStatus==="REQUESTED";
+  const isException=row?.precision?.requestStatus==="EXEMPTED" || row?.precision?.handoffException===true;
   const hasReport=!!(row?.precision?.resultFileId||row?.precision?.reportNo);
   const isConfirmed=row?.finalConfirm==="확인";
   const values={
@@ -3760,12 +3967,38 @@ function precisionCaseFilterValues(row,column,lang="ko"){
     paMeasuredDate:[dateOnly(row?.measurement?.date||row?.measurement?.measuredDate)||"—"],
     paElements:(row?.targets||[]).map(value=>String(value)),
     paReason:[String(row?.triggerLabel||"—")],
-    paHandoff:[isRequested?"인계 완료":"인계 필요"],
+    paHandoff:[isException?"미인계 예외":(isRequested?"인계 완료":"인계 필요")],
     paReport:[hasReport?"첨부 완료":"미첨부"],
     paConfirm:[isConfirmed?"최종 컨펌":"미확정"],
     paResult:[String(row?.precision?.result||"—")],
   };
   return values[column]||[];
+}
+
+// 위험도 현황의 분석 Flow와 정밀분석 탭은 동일한 측정 Case를 동일한 단계로 집계합니다.
+// 각 Case는 아래 여섯 상태 중 정확히 하나에만 포함되므로 상태 합계는 정밀분석 전체 건수와 일치합니다.
+// 미인계 예외는 이력에는 남지만 진행중 건수에서는 제외됩니다.
+function precisionCaseFlowKey(row){
+  const isRequested=row?.precision?.requestStatus==="REQUESTED";
+  const isException=row?.precision?.requestStatus==="EXEMPTED" || row?.precision?.handoffException===true;
+  const hasReport=!!(row?.precision?.resultFileId||row?.precision?.reportNo);
+  const isConfirmed=row?.finalConfirm==="확인";
+  const result=String(row?.precision?.result||"").trim().toUpperCase();
+  if(isException) return "exception";
+  if(!isRequested) return "handoff";
+  if(!hasReport) return "waiting";
+  if(!isConfirmed) return "confirmation";
+  return result==="NG" ? "ng" : "ok";
+}
+function summarizePrecisionCases(rows=[]){
+  const summary={handoff:0,waiting:0,confirmation:0,ok:0,ng:0,exception:0,total:0,inProgress:0};
+  (rows||[]).forEach(row=>{
+    const key=precisionCaseFlowKey(row);
+    summary[key]++;
+    summary.total++;
+  });
+  summary.inProgress=summary.handoff+summary.waiting+summary.confirmation+summary.ng;
+  return summary;
 }
 
 // XRF 분석 탭은 "정기 관리주기"와 "실제 XRF 측정 이력"을 같은 데이터 원본에서 보여 줍니다.
@@ -4791,8 +5024,8 @@ function DotFull({periods, windowDays, selectedPeriodNum, onSelectPeriod, pageMe
     </div>
   );
 }
-function PeriodTable({item, periods, selectedPeriodNum, onSelectPeriod, uploadTargetNum=null, uploadAllowed=false, uploadState=null, onUpload=null, uploadKey=""}){
-  const SR={reference:{c:C.charcoal,bg:C.charcoalBg,l:"기준"},compliant:{c:C.charcoal,bg:C.charcoalBg,l:"이행"},measured:{c:C.charcoal,bg:C.charcoalBg,l:"측정 완료"},early:{c:C.charcoalMd,bg:C.charcoalBg,l:"조기측정"},late:{c:C.redDk,bg:C.redBg,l:"지연측정"},overdue:{c:C.red,bg:C.redBg,l:"미이행"},due_soon:{c:C.red,bg:C.redBg,l:"측정권장"},upcoming:{c:C.text4,bg:C.alt,l:"예정"}};
+function PeriodTable({item, periods, selectedPeriodNum, onSelectPeriod, onOpenSubstituteResult=null, uploadTargetNum=null, uploadAllowed=false, uploadState=null, onUpload=null, uploadKey="", lang="ko"}){
+  const SR={reference:{c:C.charcoal,bg:C.charcoalBg,l:"기준"},compliant:{c:C.charcoal,bg:C.charcoalBg,l:"이행"},measured:{c:C.charcoal,bg:C.charcoalBg,l:"측정 완료"},early:{c:C.charcoalMd,bg:C.charcoalBg,l:"조기측정"},late:{c:C.redDk,bg:C.redBg,l:"지연측정"},overdue:{c:C.red,bg:C.redBg,l:"미이행"},due_soon:{c:C.red,bg:C.redBg,l:"측정권장"},upcoming:{c:C.text4,bg:C.alt,l:"예정"},substituted:{c:A.slate.tx,bg:A.slate.bg,l:"대체품 사용"}};
   const th={padding:"6px 9px",background:C.bg,border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,fontSize:10,letterSpacing:.2,textAlign:"center"};
   const td={padding:"7px 9px",borderBottom:`1px solid ${C.bd}`,fontSize:11,verticalAlign:"middle",textAlign:"center"};
   const inputOverlay={position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%"};
@@ -4815,7 +5048,8 @@ function PeriodTable({item, periods, selectedPeriodNum, onSelectPeriod, uploadTa
             const uploadTitle=stateMatches
               ? (uploadState.error || (uploadState.saved?`${uploadState.fileName} · 저장 완료`:uploadState.fileName))
               : "선택 주기의 XRF 결과 파일 업로드";
-            const linkedMeasurements=item?periodMeasurementsOf(item,p):[];
+            const substitutionMeasurement=periodSubstitutionMeasurement(p);
+            const linkedMeasurements=substitutionMeasurement?[substitutionMeasurement]:(item?periodMeasurementsOf(item,p):[]);
             const latestMeasurement=linkedMeasurements[linkedMeasurements.length-1]||null;
             const xrfResult=latestMeasurement?measurementXrfResult(latestMeasurement):"";
             const sourceFileName=String(latestMeasurement?.sourceFileName||"").trim();
@@ -4829,13 +5063,34 @@ function PeriodTable({item, periods, selectedPeriodNum, onSelectPeriod, uploadTa
                   <AutoFitText value={`${periodMeasuredText(p)}${p.daysOver>0?` (+${p.daysOver}일)`:""}`} baseFontSize={11} minFontSize={7} align="center" style={{color:p.measured?C.text1:C.text3,fontWeight:p.measured?550:450}}/>
                 </td>
                 <td style={td}><span style={{fontSize:10,fontWeight:600,color:meta.c,background:meta.bg,padding:"3px 7px",borderRadius:6,border:`1px solid ${C.bd}`,whiteSpace:"nowrap"}}>{meta.l}</span></td>
-                <td style={td}>{xrfResult?<Chip v={displayXrfText(xrfResult)} small result/>:<span style={{fontSize:11,color:C.text4}}>—</span>}</td>
+                <td style={td}>{xrfResult?(
+                  <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,minWidth:0}}>
+                    {p.substitutionEvent&&<span data-i18n-skip="true" title={p.substitutionEvent.substituteItemName||p.substitutionEvent.substitutePartNumber} style={{fontSize:9,color:C.text3,fontWeight:650,whiteSpace:"nowrap"}}>{p.substitutionEvent.substitutePartNumber||"대체품"}</span>}
+                    <Chip v={displayXrfText(xrfResult)} small result/>
+                  </div>
+                ):<span style={{fontSize:11,color:C.text4}}>—</span>}</td>
                 <td style={td} onClick={e=>e.stopPropagation()}>
                   {isUploadTarget && uploadAllowed && onUpload ? (
                     <label title={uploadTitle} style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center",minHeight:28,padding:"0 12px",border:`1px solid ${C.bd2}`,borderRadius:UI.rs,background:C.bg,color:C.text1,fontSize:11,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",overflow:"hidden"}}>
                       {stateMatches ? (uploadState.saved?"저장 완료":uploadState.error?"오류 확인":"읽는 중") : (st==="overdue"?"미이행 보고서 첨부":"XRF 보고서 첨부")}
                       <input type="file" accept=".xlsx,.xlsm,.xls,.csv,.json" onChange={onUpload} style={inputOverlay}/>
                     </label>
+                  ) : p.substitutionEvent ? (
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,minWidth:0}}>
+                      {sourceFileName&&(sourceFileUrl
+                        ? <a href={sourceFileUrl} target="_blank" rel="noopener noreferrer" title={sourceFileName} style={{display:"block",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:9.5,color:C.blue}}>{sourceFileName}</a>
+                        : <span title={sourceFileName} style={{display:"block",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:9.5,color:C.text2}}>{sourceFileName}</span>)}
+                      <button type="button" data-i18n-skip="true"
+                        onClick={()=>{
+                          const measurementId=latestMeasurement?.id||latestMeasurement?.measurementId||p.substitutionEvent?.linkedMeasurementId||null;
+                          if(measurementId && onOpenSubstituteResult) onOpenSubstituteResult(p,p.substitutionEvent,measurementId);
+                          else if(onSelectPeriod) onSelectPeriod(p.num);
+                        }}
+                        title={periodSubstitutionNotice(p,p.substitutionEvent,item,lang)||p.substitutionEvent.substituteItemName||"대체품 측정 상세"}
+                        style={{padding:0,border:0,background:"transparent",fontFamily:FONT_SANS,fontSize:10.5,color:C.blue,fontWeight:650,cursor:"pointer",textDecoration:"underline",textUnderlineOffset:2}}>
+                        {p.substitutionEvent.substitutePartNumber||"대체품"} {lang==="en"?"View Result":"결과 보기"}
+                      </button>
+                    </div>
                   ) : sourceFileName ? (
                     sourceFileUrl
                       ? <a href={sourceFileUrl} target="_blank" rel="noopener noreferrer" title={sourceFileName} style={{display:"block",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:10.5,color:C.blue}}>{sourceFileName}</a>
@@ -5068,11 +5323,12 @@ function XrfResultSummary({measurement, item}){
   </>);
 }
 
-function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeriodNum, selectedMeasurementId=null, onSelectPeriod, onSelectMeasurement=null}){
+function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeriodNum, selectedMeasurementId=null, onSelectPeriod, onSelectMeasurement=null, lang="ko"}){
   const currentNum=selectedPeriodNum ?? currentPeriodNum;
   const visiblePeriods=periods||[];
   const entries=visiblePeriods.flatMap(p=>{
-    const measurements=periodMeasurementsOf(item,p);
+    const substitutionMeasurement=periodSubstitutionMeasurement(p);
+    const measurements=substitutionMeasurement?[substitutionMeasurement]:periodMeasurementsOf(item,p);
     if(!measurements.length) return [{p,m:null,index:0,total:1}];
     return measurements.map((m,index)=>({p,m,index,total:measurements.length}));
   });
@@ -5098,6 +5354,7 @@ function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeri
           const followup=m ? followupInfo.label : "측정 없음";
           const followupDetail=m ? measurementFollowupVisibleDetail(followupInfo) : "";
           const st=ST[normStatus(p.status)]||ST.upcoming;
+          const substitution=p.substitutionEvent||null;
           const handleClick=()=>{
             if(m?.id && onSelectMeasurement) onSelectMeasurement(p.num,m.id);
             else if(onSelectPeriod) onSelectPeriod(p.num);
@@ -5109,6 +5366,7 @@ function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeri
                 transform:isSel?"translateY(-2px)":"none",transition:"all .16s ease",minWidth:0}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
                 <span style={{fontSize:13,fontWeight:700,color:C.text1}}>{periodLabel(p)}</span>
+                {substitution&&<span data-i18n-skip="true" style={{fontSize:9,color:A.slate.tx,fontWeight:700}}>{substitution.substitutePartNumber||"대체품"}</span>}
                 {total>1&&<span style={{fontSize:9,color:C.text3,fontWeight:600}}>측정 {index+1}/{total}</span>}
                 <span style={{fontSize:10,fontWeight:600,color:st.c,background:st.bg,padding:"2px 7px",borderRadius:999,border:`1px solid ${C.bd}`}}>{st.l}</span>
                 <span style={{marginLeft:"auto",fontSize:10,color:C.text3,fontWeight:400}}>{m?.date||"미측정"}</span>
@@ -5128,7 +5386,9 @@ function PeriodMeasurementSummary({item, periods, selectedPeriodNum, currentPeri
                 ))}
               </div>
               <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",fontSize:10,color:C.text3,lineHeight:1.45}}>
-                <span>Risk 기준 <b style={{color:C.text2,fontWeight:600}}>R</b></span>
+                {substitution
+                  ? <span data-i18n-skip="true">{periodSubstitutionNotice(p,substitution,item,lang)}</span>
+                  : <span>Risk 기준 <b style={{color:C.text2,fontWeight:600}}>R</b></span>}
               </div>
               {m?.id&&<div style={{width:"100%",minWidth:0,marginTop:6}}><AutoFitText value={m.id} title={m.id} baseFontSize={9} minFontSize={6.5} align="left" style={{color:C.text4,fontWeight:400}}/></div>}
             </button>
@@ -5242,6 +5502,60 @@ function materialListSelectionKey(item){
   if(item?._spRequestItemId) return `request:${item._spRequestItemId}`;
   if(item?.itemId) return `itemId:${item.itemId}`;
   return `code:${itemStateKey(item)}|${item?.requestType||""}|${item?.firstDate||""}`;
+}
+
+function orderMaterialListItemsByParent(items){
+  const rows=[...(items||[])];
+  const byCode=new Map(rows.filter(item=>item?.code).map(item=>[String(item.code),item]));
+  const byItemId=new Map(rows.filter(item=>item?.itemId).map(item=>[String(item.itemId),item]));
+  const parentByChildCode=new Map();
+
+  // 정식 품목 대체 관계는 XRF_Items.Replacement_Of를 기준으로 묶습니다.
+  rows.forEach(item=>{
+    const parentCode=String(item?.replacementOf||"").trim();
+    if(parentCode && byCode.has(parentCode) && parentCode!==String(item?.code||"")) {
+      parentByChildCode.set(String(item.code),parentCode);
+    }
+  });
+
+  // 특정 Pn에만 사용한 임시 대체품은 원품목을 종료시키는 Replacement_Of를 저장하지 않습니다.
+  // PeriodSubstitution 이력으로만 부모를 찾아 부자재 리스트의 행 배치에 사용합니다.
+  rows.forEach(parent=>{
+    (parent?.periodEvents||[]).forEach(event=>{
+      if(String(event?.eventType||"").toUpperCase()!=="SUBSTITUTED") return;
+      const child=byItemId.get(String(event?.substituteItemId||""))
+        || byCode.get(String(event?.substitutePartNumber||""));
+      const parentCode=String(parent?.code||"");
+      const childCode=String(child?.code||"");
+      if(parentCode && childCode && parentCode!==childCode && !parentByChildCode.has(childCode)) {
+        parentByChildCode.set(childCode,parentCode);
+      }
+    });
+  });
+
+  const childrenByParent=new Map();
+  rows.forEach((item,index)=>{
+    const childCode=String(item?.code||"");
+    const parentCode=parentByChildCode.get(childCode);
+    if(!parentCode || !byCode.has(parentCode)) return;
+    if(!childrenByParent.has(parentCode)) childrenByParent.set(parentCode,[]);
+    childrenByParent.get(parentCode).push({item,index});
+  });
+  childrenByParent.forEach(children=>children.sort((a,b)=>a.index-b.index));
+
+  const ordered=[];
+  const visited=new Set();
+  const visit=item=>{
+    if(!item || visited.has(item)) return;
+    visited.add(item);
+    ordered.push(item);
+    for(const child of childrenByParent.get(String(item?.code||""))||[]) visit(child.item);
+  };
+  rows.forEach(item=>{
+    if(!parentByChildCode.has(String(item?.code||""))) visit(item);
+  });
+  rows.forEach(visit);
+  return ordered;
 }
 
 function isCancelledListItem(item,approvalStatus=""){
@@ -5495,6 +5809,7 @@ function ApprovalBadge({status, context, detail=""}) {
     approved:{t:A.green,  label:"승인"},
     measuring:{t:A.blue,  label:"측정 진행중"},
     request:{t:A.amber,   label:"의뢰 필요"},
+    exception:{t:A.slate, label:"미인계 예외"},
     rejected:{t:A.rose,   label:"반려"},
     hold:{t:A.amber,      label:"보류"},
     cancelled:{t:A.slate, label:"처리 취소"},
@@ -5523,8 +5838,113 @@ function DetailArrowButton({title="상세 보기"}){
     onPointerLeave={()=>{setHovered(false);setPressed(false);}}
     style={{width:26,height:26,background:highlighted?C.charcoalDk:C.card,border:`1px solid ${highlighted?C.charcoalDk:C.bd2}`,borderRadius:UI.rs,fontSize:12,cursor:"pointer",color:highlighted?"#fff":C.text3,fontWeight:500,boxShadow:"none",transform:pressed?"scale(.94)":"none",transition:"background .16s ease, border-color .16s ease, color .16s ease, transform .12s ease"}}>→</button>;
 }
+const PRECISION_EXCEPTION_REASONS=Object.freeze([
+  {code:"HAZARDOUS_SUBSTANCE_SCREENING",ko:"유해물질 확인 목적의 조사성 측정",en:"Investigative hazardous-substance screening"},
+  {code:"CALIBRATION_VALIDATION",ko:"표준시료·교정·장비 검증 측정",en:"Reference sample, calibration, or equipment validation"},
+  {code:"DUPLICATE_WITH_AUTHORITATIVE_CASE",ko:"대표 측정 건이 연결된 중복·상관성 측정",en:"Duplicate or correlation measurement linked to an authoritative case"},
+  {code:"RND_NON_PRODUCTION",ko:"개발·연구용 비양산 시료",en:"Development or R&D non-production sample"},
+  {code:"DISCONTINUED_HISTORY_CHECK",ko:"미사용·단종 자재의 과거 이력 확인",en:"Historical check of unused or discontinued material"},
+  {code:"EXISTING_PRECISION_EVIDENCE",ko:"동일 시료의 유효한 기존 정밀분석 근거 보유",en:"Valid existing precision evidence for the same sample"},
+]);
+function precisionExceptionReasonLabel(code,lang="ko"){
+  const reason=PRECISION_EXCEPTION_REASONS.find(row=>row.code===code);
+  return reason ? (lang==="en"?reason.en:reason.ko) : (code||"—");
+}
+function isPrecisionHandoffExceptionCase(row){
+  return row?.precision?.requestStatus==="EXEMPTED" || row?.precision?.handoffException===true;
+}
+function precisionRowsForListMode(rows,mode="targets"){
+  return (rows||[]).filter(row=>mode==="exceptions"
+    ? isPrecisionHandoffExceptionCase(row)
+    : !isPrecisionHandoffExceptionCase(row));
+}
+function PrecisionExceptionSwitch({checked=false,disabled=false,onChange,lang="ko"}){
+  return <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={()=>{if(!disabled)onChange?.(!checked);}}
+    title={checked?(lang==="en"?"Turn off exception":"예외처리 해제"):(lang==="en"?"Turn on exception":"예외처리 적용")}
+    style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:checked?"flex-end":"flex-start",width:62,height:28,padding:2,border:`1px solid ${disabled?C.bd2:C.charcoalDk}`,borderRadius:14,background:checked?C.charcoalDk:C.card,boxSizing:"border-box",cursor:disabled?"not-allowed":"pointer",opacity:disabled?.42:1,transition:"background .16s ease,border-color .16s ease",verticalAlign:"middle"}}>
+    <span aria-hidden="true" style={{position:"absolute",left:checked?7:29,right:"auto",fontSize:8.5,fontWeight:800,color:checked?"#fff":C.text3,lineHeight:1}}>{checked?"ON":"OFF"}</span>
+    <span aria-hidden="true" style={{width:22,height:22,borderRadius:"50%",background:checked?"#fff":C.charcoalDk,boxShadow:"0 1px 3px rgba(0,0,0,.22)",transition:"transform .16s ease"}}/>
+  </button>;
+}
+function PrecisionExceptionQuickDialog({row,mode="apply",lang="ko",inp,onSave,onClose}){
+  const applying=mode==="apply";
+  const [reasonCode,setReasonCode]=useState("");
+  const [reasonDetail,setReasonDetail]=useState("");
+  const [evidence,setEvidence]=useState("");
+  const [password,setPassword]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState("");
+  useEffect(()=>{
+    setReasonCode(applying?"":(row?.precision?.exceptionReasonCode||""));
+    setReasonDetail(applying?"":(row?.precision?.exceptionReasonDetail||""));
+    setEvidence(applying?"":(row?.precision?.exceptionEvidence||""));
+    setPassword("");
+    setBusy(false);
+    setError("");
+  },[row?.key,applying]);
+  if(!row) return null;
+  const submit=async event=>{
+    event.preventDefault();
+    if(busy||!password) return;
+    if(applying&&(!reasonCode||reasonDetail.trim().length<5)){
+      setError(lang==="en"?"Select a reason and enter at least 5 characters of detail.":"예외 사유를 선택하고 상세 사유를 5자 이상 입력하세요.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const completed=await onSave?.(row.key,{
+      enabled:applying,
+      reasonCode,
+      reasonDetail:reasonDetail.trim(),
+      evidence:evidence.trim(),
+      password
+    });
+    setBusy(false);
+    setPassword("");
+    if(completed){ onClose?.(); return; }
+    setError(lang==="en"?"The exception could not be saved. Check the password and case status.":"예외 상태를 저장하지 못했습니다. 비밀번호와 현재 인계 상태를 확인하세요.");
+  };
+  const itemName=displayItemName(row.item,lang)||"—";
+  const period=precisionCasePeriodLabel(row);
+  const measuredDate=dateOnly(row.measurement?.date||row.measurement?.measuredDate)||"—";
+  return <div role="presentation" onMouseDown={()=>{if(!busy)onClose?.();}} style={{position:"fixed",inset:0,zIndex:1300,display:"flex",alignItems:"center",justifyContent:"center",padding:20,background:"rgba(15,23,32,.58)",backdropFilter:"blur(2px)"}}>
+    <form role="dialog" aria-modal="true" aria-labelledby="precision-quick-exception-title" onSubmit={submit} onMouseDown={event=>event.stopPropagation()} style={{width:"min(540px,100%)",maxHeight:"calc(100vh - 40px)",overflowY:"auto",padding:22,background:C.card,border:`1px solid ${C.bd}`,borderRadius:12,boxShadow:"0 18px 48px rgba(0,0,0,.28)"}}>
+      <div id="precision-quick-exception-title" style={{fontSize:16,fontWeight:750,color:C.text1}}>{applying?(lang==="en"?"Apply Precision Handoff Exception":"정밀분석 미인계 예외처리"):(lang==="en"?"Remove Handoff Exception":"미인계 예외 해제")}</div>
+      <div style={{marginTop:10,padding:"10px 12px",border:`1px solid ${C.bd}`,borderRadius:8,background:C.bg,fontSize:11,lineHeight:1.65,color:C.text2}}>
+        <strong style={{color:C.text1}}>{row.item?.code||"—"} · {itemName}</strong><br/>
+        {period} · {measuredDate} · {row.key}
+      </div>
+      <div style={{marginTop:9,fontSize:11,color:C.text3,lineHeight:1.6}}>{applying
+        ? (lang==="en"?"The case will leave the active precision-analysis list and appear in the exception list. Its XRF NG result, risk, and cycle history remain unchanged.":"이 건은 정밀분석 대상 목록에서 빠지고 예외처리 목록으로 이동합니다. XRF NG 결과, 위험도와 주기 이력은 그대로 유지됩니다.")
+        : (lang==="en"?"Removing the exception returns this case to the active precision-analysis list.":"예외를 해제하면 이 건은 정밀분석 대상 목록으로 다시 돌아옵니다.")}</div>
+      {applying&&<>
+        <label style={{display:"block",marginTop:14,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Exception reason":"예외 사유"}
+          <select autoFocus value={reasonCode} disabled={busy} onChange={event=>{setReasonCode(event.target.value);setError("");}} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}>
+            <option value="">{lang==="en"?"Select a reason":"예외 사유를 선택하세요"}</option>
+            {PRECISION_EXCEPTION_REASONS.map(reason=><option key={reason.code} value={reason.code}>{lang==="en"?reason.en:reason.ko}</option>)}
+          </select>
+        </label>
+        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Detailed reason":"상세 사유"}
+          <textarea value={reasonDetail} disabled={busy} onChange={event=>{setReasonDetail(event.target.value);setError("");}} placeholder={lang==="en"?"Enter the internal decision basis (minimum 5 characters).":"내부 확인 내용과 판단 근거를 5자 이상 입력하세요."} style={{...inp,width:"100%",minHeight:82,resize:"vertical",marginTop:6,boxSizing:"border-box"}}/>
+        </label>
+        <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Evidence / reference (optional)":"근거자료·관련 문서 (선택)"}
+          <input value={evidence} disabled={busy} onChange={event=>setEvidence(event.target.value)} placeholder={lang==="en"?"Document URL, approval number, or authoritative Measurement ID":"문서 URL, 승인번호 또는 대표 Measurement_ID"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
+        </label>
+      </>}
+      <label style={{display:"block",marginTop:12,fontSize:11,fontWeight:650,color:C.text2}}>{lang==="en"?"Administrator password":"관리자 비밀번호"}
+        <input type="password" autoFocus={!applying} autoComplete="off" value={password} disabled={busy} onChange={event=>{setPassword(event.target.value);setError("");}} placeholder={lang==="en"?"Password":"비밀번호"} style={{...inp,width:"100%",marginTop:6,boxSizing:"border-box"}}/>
+      </label>
+      {error&&<div role="alert" style={{marginTop:8,fontSize:11,color:C.redDk}}>{error}</div>}
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+        <button type="button" disabled={busy} onClick={()=>onClose?.()} style={{padding:"8px 14px",border:`1px solid ${C.bd2}`,borderRadius:UI.rs,background:C.card,color:C.text2,fontWeight:650,cursor:busy?"wait":"pointer"}}>{lang==="en"?"Cancel":"취소"}</button>
+        <button type="submit" disabled={!password||busy||(applying&&(!reasonCode||reasonDetail.trim().length<5))} style={{padding:"8px 15px",border:`1px solid ${C.charcoalDk}`,borderRadius:UI.rs,background:C.charcoalDk,color:"#fff",fontWeight:650,opacity:(!password||busy||(applying&&(!reasonCode||reasonDetail.trim().length<5)))?.58:1,cursor:busy?"wait":"pointer"}}>{busy?(lang==="en"?"Saving...":"저장 중..."):(applying?(lang==="en"?"Apply Exception":"예외처리"):(lang==="en"?"Remove Exception":"예외 해제"))}</button>
+      </div>
+    </form>
+  </div>;
+}
 function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverride, markPrecisionRequested, reloadSharePointDb, onPhotoPreview}){
   const isRequested=selected.precision.requestStatus==="REQUESTED";
+  const isException=selected.precision.requestStatus==="EXEMPTED" || selected.precision.handoffException===true;
   const isConfirmed=selected.finalConfirm==="확인";
   const targets=selected.targets||[];
   const elementResults=selected.elementResults||selected.precision?.elementResults||{};
@@ -5563,14 +5983,22 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
   const canUploadPrecisionPdf=isRequested && hasSourceFile && !fileBusy;
   const canEditPrecisionResult=isRequested && hasPrecisionReportPdf && !fileBusy;
   const derivedResult=derivePrecisionResult(targets,selected.precision,elementResults);
+  const handoffStatusLabel=isException?(lang==="en"?"Handoff Exception":"미인계 예외"):(isRequested?(lang==="en"?"Transfer Complete":"인계 완료"):(lang==="en"?"Transfer Required":"인계 필요"));
   const infoRows=[
     ["XRF 원본 파일",sourceFileName||"—"],
     ["XRF 측정 ID",selected.measurement?.id||"—"],
     ["XRF Judgment",measurementJudgementSummary(selected.measurement)],
     ["대상 원소",targets.join(", ")||"—"],
-    ["인계 상태",isRequested?"인계 완료":"인계 필요"],
+    ["인계 상태",handoffStatusLabel],
     ["인계일",selected.precision.requestedAt||"—"],
-    ["담당자",selected.precision.requestedBy||"—"]
+    ["담당자",selected.precision.requestedBy||"—"],
+    ...(isException?[
+      ["예외 사유",precisionExceptionReasonLabel(selected.precision.exceptionReasonCode,lang)],
+      ["예외 상세",selected.precision.exceptionReasonDetail||"—"],
+      ["예외 처리일",selected.precision.exceptionAt||"—"],
+      ["예외 처리자",selected.precision.exceptionBy||"—"],
+      ["근거",selected.precision.exceptionEvidence||"—"],
+    ]:[])
   ];
   const filePickStyle=(enabled=true)=>({marginTop:5,display:"grid",gridTemplateColumns:"24px minmax(0,1fr) 24px",alignItems:"center",width:"100%",maxWidth:"100%",minWidth:0,minHeight:36,padding:"0 8px",border:`1px solid ${enabled?A.blue.solid:C.bd2}`,background:enabled?A.blue.solid:C.alt,color:enabled?"#fff":C.text4,fontSize:11,fontWeight:650,cursor:enabled?"pointer":"not-allowed",boxSizing:"border-box",borderRadius:UI.rs,opacity:enabled?1:.62,overflow:"hidden",transition:"background .15s ease,border-color .15s ease,opacity .15s ease"});
   const UploadArrow=()=> <svg data-upload-arrow="true" aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" style={{display:"block",justifySelf:"center"}}><path d="M12 19V5M7.5 9.5 12 5l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round"/></svg>;
@@ -5634,7 +6062,9 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
     }
     setHandoffError(lang==="en"?"Check the password and try again.":"비밀번호를 확인한 뒤 다시 시도하세요.");
   };
-  const resultExplain=!isRequested
+  const resultExplain=isException
+    ? "이 측정 건은 정밀분석 미인계 예외로 기록되었습니다. XRF NG 결과와 위험도는 유지되며 정밀분석 진행 건수에서만 제외됩니다."
+    : !isRequested
     ? "정밀분석 인계 버튼을 먼저 클릭해야 합니다. 인계 후 성적서 PDF를 업로드하면 결과 입력이 활성화됩니다."
     : !hasPrecisionReportPdf
       ? "정밀분석 성적서 PDF를 업로드해야 원소별 결과를 입력할 수 있습니다."
@@ -5657,7 +6087,7 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         {[
           ["인계 사유", selected.triggerLabel||"—"],
           ["대상 원소", targets.join(", ")||"—"],
-          ["인계 상태", isRequested?"인계 완료":"인계 필요"],
+          ["인계 상태", handoffStatusLabel],
           ["성적서", hasPrecisionReportPdf?"PDF 등록":"미등록"],
           ["정밀 결과", derivedResult?<AnalysisResultBadge value={derivedResult}/>:"—"]
         ].map(([k,v],i,arr)=>(
@@ -5680,8 +6110,8 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         {infoRows.map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.bd}`,fontSize:11,gap:12}}>
           <span style={{color:C.text3,flex:"0 0 auto"}}>{k}</span><span style={{fontWeight:600,color:C.text1,textAlign:"right",minWidth:0,flex:"1 1 auto"}}><AutoFitText value={v} title={String(v)} baseFontSize={11} minFontSize={7} align="right" style={{fontWeight:600,color:C.text1}}/></span>
         </div>)}
-        <button disabled={isRequested} onClick={()=>{if(!isRequested){setHandoffPassword("");setHandoffError("");setHandoffAuthOpen(true);}}} className="pill-btn" style={{marginTop:12,width:"100%",padding:"10px",border:`1px solid ${isRequested?A.green.ln:A.blue.solid}`,background:isRequested?A.green.bg:A.blue.solid,color:isRequested?A.green.tx:"#fff",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:isRequested?"default":"pointer"}}>
-          {isRequested?"정밀분석 인계 완료":"정밀분석 인계"}
+        <button disabled={isRequested||isException} onClick={()=>{if(!isRequested&&!isException){setHandoffPassword("");setHandoffError("");setHandoffAuthOpen(true);}}} className="pill-btn" style={{marginTop:12,width:"100%",padding:"10px",border:`1px solid ${isRequested?A.green.ln:(isException?A.slate.ln:A.blue.solid)}`,background:isRequested?A.green.bg:(isException?A.slate.bg:A.blue.solid),color:isRequested?A.green.tx:(isException?A.slate.tx:"#fff"),borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:isRequested||isException?"default":"pointer"}}>
+          {isException?"정밀분석 미인계 예외":(isRequested?"정밀분석 인계 완료":"정밀분석 인계")}
         </button>
       </div>
       <div style={{padding:"16px 20px"}}>
@@ -5693,7 +6123,9 @@ function PrecisionDetailPanel({selected, lang, card, inp, updatePrecisionOverrid
         </div>
 
         <div style={{marginBottom:12,padding:"10px 12px",border:`1px solid ${canEditPrecisionResult?A.green.ln:C.bd}`,background:canEditPrecisionResult?A.green.bg:C.alt,borderRadius:8,fontSize:11,color:canEditPrecisionResult?A.green.tx:C.text3,lineHeight:1.55}}>
-          {!isRequested
+          {isException
+            ? "미인계 예외 처리된 측정 건입니다. XRF NG 이력은 유지되고 정밀분석 인계·성적서 입력은 잠깁니다. 예외 해제 후 다시 인계할 수 있습니다."
+            : !isRequested
             ? "1. 정밀분석 인계 버튼을 클릭하세요.  2. 성적서 PDF를 업로드하세요.  3. 원소별 결과를 입력하세요."
             : !hasPrecisionReportPdf
               ? "인계가 완료되었습니다. 정밀분석 성적서 PDF를 업로드하면 원소별 결과 입력이 가능합니다."
@@ -6563,6 +6995,48 @@ function DeptRiskChart({rows, riskMeta}){
   );
 }
 
+function CycleManagementChart({cycleRows,statusRows,lang="ko",onStatusPick}){
+  const renderGroup=(title,rows)=>{
+    const max=Math.max(1,...rows.map(row=>row.value));
+    return <div style={{display:"flex",flexDirection:"column",gap:8,minWidth:0}}>
+      <div data-i18n-skip="true" style={{fontSize:10,fontWeight:700,color:C.text4,letterSpacing:.25}}>{title}</div>
+      {rows.map(row=>{
+        const clickable=!!row.filter && row.value>0 && !!onStatusPick;
+        const width=row.value>0?Math.max(5,(row.value/max)*100):0;
+        return <div key={row.key} onClick={()=>clickable&&onStatusPick(row)} title={`${row.label} ${row.value}${lang==="en"?" items":"건"}`}
+          style={{display:"grid",gridTemplateColumns:"minmax(58px,78px) minmax(36px,1fr) 28px",alignItems:"center",gap:6,minWidth:0,cursor:clickable?"pointer":"default",opacity:row.value?1:.48}}>
+          <span data-i18n-skip="true" style={{minWidth:0,fontSize:10,color:C.text2,lineHeight:1.25,whiteSpace:"normal",wordBreak:"keep-all"}}>{row.label}</span>
+          <div style={{minWidth:0,height:12,borderRadius:7,overflow:"hidden",background:C.bg,border:`1px solid ${C.bd}`,boxSizing:"border-box"}}>
+            <div style={{width:`${width}%`,height:"100%",minWidth:row.value?5:0,background:row.color,borderRadius:7,transition:"width .18s ease"}}/>
+          </div>
+          <strong style={{fontSize:11,color:row.value?C.text1:C.text4,textAlign:"right",whiteSpace:"nowrap"}}>{row.value}</strong>
+        </div>;
+      })}
+    </div>;
+  };
+  return <div className="cycle-management-chart" style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:16,alignItems:"start",minWidth:0,width:"100%"}}>
+    {renderGroup(lang==="en"?"Cycle distribution":"관리 주기 구성",cycleRows)}
+    {renderGroup(lang==="en"?"Current cycle status":"현재 주기 상태",statusRows)}
+  </div>;
+}
+
+function AnalysisFlowChart({steps,lang="ko",onPick}){
+  return <div className="analysis-flow-chart" style={{display:"grid",gridTemplateColumns:`repeat(${Math.max(1,steps.length)},minmax(0,1fr))`,gap:12,alignItems:"stretch",minWidth:0,width:"100%"}}>
+    {steps.map((step,index)=>{
+      const clickable=step.value>0&&!!onPick;
+      return <div key={step.key} onClick={()=>clickable&&onPick(step)} title={`${step.label} ${step.value}${lang==="en"?" items":"건"}`}
+        style={{position:"relative",display:"flex",flexDirection:"column",justifyContent:"space-between",minWidth:0,minHeight:104,padding:"12px",border:`1px solid ${step.value?step.border:C.bd}`,borderRadius:9,background:step.value?step.background:C.card,cursor:clickable?"pointer":"default",opacity:step.value?1:.62,boxSizing:"border-box"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,minWidth:0}}>
+          <span data-i18n-skip="true" style={{fontSize:9.5,fontWeight:750,color:step.value?step.color:C.text4,whiteSpace:"nowrap"}}>{lang==="en"?`Step ${index+1}`:`${index+1}단계`}</span>
+          <strong style={{fontSize:20,lineHeight:1,color:step.value?step.color:C.text4,whiteSpace:"nowrap"}}>{step.value}<small style={{fontSize:9.5,fontWeight:650,marginLeft:2}}>{lang==="en"?"":"건"}</small></strong>
+        </div>
+        <div data-i18n-skip="true" style={{minWidth:0,fontSize:10.5,fontWeight:700,color:step.value?C.text1:C.text4,lineHeight:1.35,marginTop:14,wordBreak:"keep-all"}}>{step.label}</div>
+        {index<steps.length-1&&<span className="analysis-flow-arrow" aria-hidden="true" style={{position:"absolute",right:-12,top:"50%",transform:"translate(50%,-50%)",zIndex:2,width:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:500,color:C.text4}}>›</span>}
+      </div>;
+    })}
+  </div>;
+}
+
 // 첨부 시안에서 추출한 실제 배경색입니다. 위 #1F272F → 아래 #191F26 의 세로 그라데이션이며,
 // C.charcoalDk(#1A2020)보다 약간 푸른 기가 도는 차콜입니다.
 const SPLASH_BG_TOP = "#1F272F";
@@ -7014,6 +7488,8 @@ export default function App(){
   const [selPeriodPage,setSelPeriodPage]=useState(null);
   const [precisionSelCaseId,setPrecisionSelCaseId]=useState(null);
   const [precisionDetailCaseId,setPrecisionDetailCaseId]=useState(null);
+  const [precisionListMode,setPrecisionListMode]=useState("targets");
+  const [precisionQuickException,setPrecisionQuickException]=useState(null);
   const [collapsedPrecisionGroupKeys,setCollapsedPrecisionGroupKeys]=useState({});
   const [precisionFilters,setPrecisionFilters]=useState(()=>createEmptyPrecisionFilters());
   const [precisionOpenFilter,setPrecisionOpenFilter]=useState(null);
@@ -7022,10 +7498,12 @@ export default function App(){
   const [precisionOverrides,setPrecisionOverrides]=useState({});
   const precisionSaveTimerRef=useRef(new Map());
   const [sharePointItems,setSharePointItems]=useState([]);
+  const [sharePointReplacementHistory,setSharePointReplacementHistory]=useState([]);
   const [dbLoading,setDbLoading]=useState(true);
   const [dbError,setDbError]=useState("");
   const [dbCounts,setDbCounts]=useState(null);
   const [selMeasurementId,setSelMeasurementId]=useState(null);
+  const pendingXrfNavigationRef=useRef(null);
   const [xrfDetailView,setXrfDetailView]=useState("analysis");
   const [regType,setRegType]=useState(null);
   const [regStep,setRegStep]=useState(1);
@@ -7082,6 +7560,7 @@ export default function App(){
       setSharePointItems(runtime.items);
       setRequestItems(runtime.requestItems);
       setPrecisionOverrides(runtime.precisionOverrides);
+      setSharePointReplacementHistory(runtime.replacementHistory||[]);
       setApprovalOverrides({});
       setItemOverrides({});
       setDbCounts(runtime.counts);
@@ -7164,14 +7643,20 @@ export default function App(){
 
   // 품목이 바뀌면 이전 품목에서 수동으로 선택했던 주기 페이지를 이어받지 않습니다.
   useEffect(()=>{
+    const pending=pendingXrfNavigationRef.current;
+    const pendingMatches=!!pending && String(pending.code||"")===String(selKey||"");
     setSelPeriodPage(null);
-    setSelPeriodNum(null);
-    setSelMeasurementId(null);
+    setSelPeriodNum(pendingMatches ? pending.periodNo : null);
+    setSelMeasurementId(pendingMatches ? pending.measurementId : null);
     setXrfDetailView("analysis");
     setItemEditOpen(false);
     setItemEditForm(null);
     setItemEditAuth({open:false,item:null,password:"",error:""});
     setDiscontinueDecisionAuth({open:false,item:null,password:"",error:"",verified:false,pending:false});
+    if(pendingMatches){
+      pendingXrfNavigationRef.current=null;
+      scrollToXrfMeasurementDetail();
+    }
   },[selKey]);
   // 탭별로 따로 계산하지 않고, 모든 탭이 같은 runtime workflow를 읽도록 단일 연결 구조를 구성합니다.
   // XRF 업로드(itemOverrides) → 정밀분석 입력(precisionOverrides) → Workflow/Approval 파생 → 목록/XRF/정밀분석/Risk 탭이 일괄 갱신됩니다.
@@ -7200,6 +7685,107 @@ export default function App(){
   const materialScopes=useMemo(()=>alignedMaterialScopes(realItems),[realItems]);
   const currentPortfolioPeriodNo=useMemo(()=>derivePortfolioCurrentPeriodNo(realBaseItems),[realBaseItems]);
   const replacementChains=useMemo(()=>buildReplacementRelationGroups(allItems),[allItems]);
+  const replacementHistoryEntries=useMemo(()=>{
+    const byItemId=new Map(allItems.filter(item=>item?.itemId).map(item=>[String(item.itemId),item]));
+    const byCode=new Map(allItems.filter(item=>item?.code).map(item=>[String(item.code),item]));
+    const enrich=entry=>{
+      const from=byItemId.get(String(entry?.fromItemId||""))||byCode.get(String(entry?.fromPartNumber||""))||null;
+      const to=byItemId.get(String(entry?.toItemId||""))||byCode.get(String(entry?.toPartNumber||""))||null;
+      return {
+        ...entry,
+        fromItem:from,
+        toItem:to,
+        fromPartNumber:from?.code||entry?.fromPartNumber||null,
+        fromItemName:from?.name||entry?.fromItemName||"",
+        fromItemNameEn:from?.nameEn||entry?.fromItemNameEn||"",
+        toPartNumber:to?.code||entry?.toPartNumber||null,
+        toItemName:to?.name||entry?.toItemName||"",
+        toItemNameEn:to?.nameEn||entry?.toItemNameEn||"",
+      };
+    };
+    const entries=(sharePointReplacementHistory||[]).map(enrich);
+    const eventIds=new Set(entries.map(entry=>String(entry.eventId||"")).filter(Boolean));
+    const permanentPairs=new Set(entries
+      .filter(entry=>entry.kind==="replacement" || entry.kind==="change")
+      .map(entry=>`${entry.fromPartNumber||""}|${entry.toPartNumber||""}`));
+    const periodLinks=new Set(entries
+      .filter(entry=>entry.kind==="periodSubstitution")
+      .map(entry=>`${entry.fromPartNumber||""}|${entry.periodNo||0}|${entry.linkedMeasurementId||""}`));
+
+    replacementChains.forEach(chain=>chain.successors.forEach(successor=>{
+      const pair=`${chain.old.code}|${successor.code}`;
+      if(permanentPairs.has(pair)) return;
+      entries.push(enrich({
+        eventId:`REL_${chain.old.code}_${successor.code}`,
+        kind:"replacement",
+        status:"Applied",
+        effectiveDate:successor.replacementDate||successor.firstDate||chain.old.replacementDate||null,
+        fromItemId:chain.old.itemId||null,
+        fromPartNumber:chain.old.code,
+        toItemId:successor.itemId||null,
+        toPartNumber:successor.code,
+        reason:successor.replacementReason||"",
+        source:"master",
+      }));
+      permanentPairs.add(pair);
+    }));
+
+    allItems.forEach(parent=>(parent?.periodEvents||[]).forEach(event=>{
+      if(String(event?.eventType||"").toUpperCase()!=="SUBSTITUTED") return;
+      const logicalKey=`${parent.code||""}|${Number(event?.periodNo)||0}|${event?.linkedMeasurementId||""}`;
+      if(eventIds.has(String(event?.eventId||"")) || periodLinks.has(logicalKey)) return;
+      entries.push(enrich({
+        eventId:event?.eventId||`SUB_${logicalKey}`,
+        kind:"periodSubstitution",
+        status:event?.status||"ACTIVE",
+        effectiveDate:dateOnly(event?.effectiveDate||event?.linkedMeasurement?.date),
+        fromItemId:parent.itemId||null,
+        fromPartNumber:parent.code,
+        toItemId:event?.substituteItemId||null,
+        toPartNumber:event?.substitutePartNumber||null,
+        toItemName:event?.substituteItemName||"",
+        toItemNameEn:event?.substituteItemNameEn||"",
+        periodNo:Number(event?.periodNo)||null,
+        linkedMeasurementId:event?.linkedMeasurementId||null,
+        reason:event?.reason||"",
+        source:"runtime",
+      }));
+      periodLinks.add(logicalKey);
+    }));
+
+    return entries.sort((a,b)=>
+      String(b.effectiveDate||"").localeCompare(String(a.effectiveDate||""))
+        || String(b.eventId||"").localeCompare(String(a.eventId||""),"ko",{numeric:true})
+    );
+  },[allItems,replacementChains,sharePointReplacementHistory]);
+  const replacementHistoryGroups=useMemo(()=>{
+    const groups=new Map();
+    (replacementHistoryEntries||[]).forEach((entry,index)=>{
+      // 영구 대체/품목 변경은 변경 전 품목을 부모로 묶어 파생 품목을 한 행에 표시합니다.
+      // Pn 대체와 사용 복귀는 발생 주기·방향이 중요하므로 개별 이벤트 행을 유지합니다.
+      const groupable=["replacement","change"].includes(entry?.kind) && !!entry?.fromPartNumber;
+      const key=groupable?`derived:${entry.fromPartNumber}`:`event:${entry?.eventId||index}`;
+      if(!groups.has(key)) groups.set(key,{key,entries:[]});
+      groups.get(key).entries.push(entry);
+    });
+    return [...groups.values()].map(group=>{
+      const newestFirst=group.entries.slice().sort((a,b)=>
+        String(b.effectiveDate||"").localeCompare(String(a.effectiveDate||""))
+          || String(b.eventId||"").localeCompare(String(a.eventId||""),"ko",{numeric:true})
+      );
+      const isDerivedGroup=String(group.key).startsWith("derived:");
+      const entries=isDerivedGroup
+        ? group.entries.slice().sort((a,b)=>
+            String(a.toPartNumber||"").localeCompare(String(b.toPartNumber||""),"ko",{numeric:true,sensitivity:"base"})
+              || String(a.effectiveDate||"").localeCompare(String(b.effectiveDate||""))
+          )
+        : newestFirst;
+      return {...group,entries,primary:newestFirst[0],latestDate:newestFirst[0]?.effectiveDate||null};
+    }).sort((a,b)=>
+      String(b.latestDate||"").localeCompare(String(a.latestDate||""))
+        || String(b.key).localeCompare(String(a.key),"ko",{numeric:true})
+    );
+  },[replacementHistoryEntries]);
   const approvalStatusOf=useCallback((item)=>{
     const workflowStatus=workflowForItem(item)?.approval?.status;
     if(workflowStatus) return workflowStatus;
@@ -7319,17 +7905,28 @@ export default function App(){
       }];
     }).sort((a,b)=>String(b.measurement?.date||b.measurement?.measuredDate||b.precision?.requestedAt||"").localeCompare(String(a.measurement?.date||a.measurement?.measuredDate||a.precision?.requestedAt||"")));
   },[allItems,runtimePrecisionOverrides]);
+  useEffect(()=>{
+    if(tab!=="precision-detail") return;
+    const selected=precisionRows.find(row=>row.key===precisionDetailCaseId) || precisionRows.find(row=>row.key===precisionSelCaseId) || null;
+    if(!isPrecisionHandoffExceptionCase(selected)) return;
+    setPrecisionListMode("exceptions");
+    setPrecisionSelCaseId(null);
+    setPrecisionDetailCaseId(null);
+    setTab("precision");
+  },[tab,precisionRows,precisionDetailCaseId,precisionSelCaseId]);
+  const precisionFlowSummary=useMemo(()=>summarizePrecisionCases(precisionRows),[precisionRows]);
+  const precisionListRows=useMemo(()=>precisionRowsForListMode(precisionRows,precisionListMode),[precisionRows,precisionListMode]);
   const precisionFilterValues=useMemo(()=>{
     const output={};
     PRECISION_FILTER_KEYS.forEach(column=>{
-      output[column]=[...new Set(precisionRows.flatMap(row=>precisionCaseFilterValues(row,column,lang)).filter(Boolean))]
+      output[column]=[...new Set(precisionListRows.flatMap(row=>precisionCaseFilterValues(row,column,lang)).filter(Boolean))]
         .sort((a,b)=>String(a).localeCompare(String(b),"ko",{numeric:true,sensitivity:"base"}));
     });
     return output;
-  },[precisionRows,lang]);
+  },[precisionListRows,lang]);
   const filteredPrecisionRows=useMemo(()=>{
     const query=String(precisionSearch||"").trim().toLocaleLowerCase();
-    return precisionRows.filter(row=>{
+    return precisionListRows.filter(row=>{
       for(const column of PRECISION_FILTER_KEYS){
         const selectedValues=precisionFilters[column]||[];
         if(!selectedValues.length) continue;
@@ -7340,11 +7937,13 @@ export default function App(){
       const searchable=[
         precisionCasePeriodLabel(row),row?.item?.code,row?.item?.name,row?.item?.nameEn,row?.item?.dept,
         row?.measurement?.date,row?.measurement?.measuredDate,row?.triggerLabel,...(row?.targets||[]),
+        precisionExceptionReasonLabel(row?.precision?.exceptionReasonCode,lang),row?.precision?.exceptionReasonDetail,
+        row?.precision?.exceptionEvidence,row?.precision?.exceptionBy,
         ...PRECISION_FILTER_KEYS.flatMap(column=>precisionCaseFilterValues(row,column,lang))
       ].filter(Boolean).join(" ").toLocaleLowerCase();
       return searchable.includes(query);
     });
-  },[precisionRows,precisionFilters,precisionSearch,lang]);
+  },[precisionListRows,precisionFilters,precisionSearch,lang]);
   const precisionGroups=useMemo(()=>{
     const groups=new Map();
     filteredPrecisionRows.forEach(row=>{
@@ -7455,6 +8054,23 @@ export default function App(){
     });
     return !!result;
   },[allItems,persistSharePointAction,runtimePrecisionOverrides]);
+  const setPrecisionHandoffException=useCallback(async(key,form)=>{
+    const fixtureOwner=allItems.find(item=>item.__visualUat && !!measurementById(item,key));
+    if(fixtureOwner){
+      if(typeof window!=="undefined") window.alert(VISUAL_UAT_READ_ONLY_MESSAGE);
+      return false;
+    }
+    const result=await persistSharePointAction("setPrecisionHandoffException",{
+      triggerMeasurementId:key,
+      enabled:form?.enabled===true,
+      reasonCode:form?.reasonCode||"",
+      reasonDetail:form?.reasonDetail||"",
+      evidence:form?.evidence||"",
+      actor:"admin",
+      precisionHandoffPassword:form?.password||""
+    });
+    return !!result;
+  },[allItems,persistSharePointAction]);
   useEffect(()=>()=>{
     precisionSaveTimerRef.current.forEach(timer=>clearTimeout(timer));
     precisionSaveTimerRef.current.clear();
@@ -8367,7 +8983,7 @@ export default function App(){
   },[materialScopes]);
 
   const listItems=useMemo(
-    ()=>allItems.filter(item=>!isCancelledListItem(item,approvalStatusOf(item))),
+    ()=>orderMaterialListItemsByParent(allItems.filter(item=>!isCancelledListItem(item,approvalStatusOf(item)))),
     [allItems,approvalStatusOf]
   );
 
@@ -8615,9 +9231,15 @@ export default function App(){
     if(selMeasurementId){
       const byId=measurementById(sel,selMeasurementId);
       if(byId) return byId;
+      const linked=(selAllPeriods||[])
+        .map(period=>periodSubstitutionMeasurement(period))
+        .find(measurement=>String(measurement?.id||measurement?.measurementId||"")===String(selMeasurementId));
+      if(linked) return linked;
     }
     if(selPeriodNum !== null && selPeriodNum !== undefined){
       const p=selAllPeriods.find(pp=>Number(pp.num)===Number(selPeriodNum));
+      const substituted=periodSubstitutionMeasurement(p);
+      if(substituted) return substituted;
       return xrfTrendMeasurement(sel,p);
     }
     return latestMeasurementOf(sel) || null;
@@ -8635,6 +9257,14 @@ export default function App(){
     }
     return selAllPeriods.find(p=>Number(p.num)===Number(selPeriodNum));
   },[sel,selPeriodNum,selAllPeriods]);
+  const currentSubstitutionEvent=currentPeriodMeta?.substitutionEvent||null;
+  const currentAnalysisItem=useMemo(()=>{
+    if(!currentSubstitutionEvent) return sel;
+    return allItems.find(item=>
+      String(item?.itemId||"")===String(currentSubstitutionEvent.substituteItemId||"")
+      || String(item?.code||"")===String(currentSubstitutionEvent.substitutePartNumber||"")
+    )||sel;
+  },[allItems,currentSubstitutionEvent,sel]);
   const selectedTrendPeriods=useMemo(()=>{
     if(!currentMeasurement) return [];
     return xrfTrendPeriodsThroughSelection(selAllPeriods,currentPeriodMeta);
@@ -8684,6 +9314,7 @@ export default function App(){
     const selectedNeedsRemeasure=pendingXrfRemeasureElements(selectedLatestMeasurement).length>0;
     const selectedIsOpen=!!selected
       && !selected?.isSupplementalMeasurement
+      && !selected?.substitutionEvent
       && !(selected?.isReference || Number(selected?.num)===0)
       && selectedAttempts.length===0;
     // 사용자가 미측정 Pn(미이행 포함)을 직접 선택하면 다른 주기의 재측정 대기보다
@@ -8723,7 +9354,41 @@ export default function App(){
     && (selectedPendingRemeasure.length>0
       || (!uploadTargetIsReference && (selectedIsAnnual || selectedPeriodAttempts.length===0)));
   const handleSelectPeriod=useCallback((num)=>{ setSelPeriodNum(num); setSelMeasurementId(null); },[]);
-  const handleSelectPeriodMeasurement=useCallback((num,measurementId)=>{ setSelPeriodNum(num); setSelMeasurementId(measurementId||null); },[]);
+  const handleSelectPeriodMeasurement=useCallback((num,measurementId)=>{
+    setSelPeriodNum(num);
+    setSelMeasurementId(measurementId||null);
+    setXrfDetailView("analysis");
+    scrollToXrfMeasurementDetail();
+  },[]);
+  const handleOpenSubstituteResult=useCallback((period,event,measurementId)=>{
+    const substitute=allItems.find(item=>
+      String(item?.itemId||"")===String(event?.substituteItemId||"")
+      || String(item?.code||"")===String(event?.substitutePartNumber||"")
+    )||null;
+    if(!substitute){
+      handleSelectPeriodMeasurement(period?.num,measurementId);
+      return;
+    }
+    const linkedPeriod=itemXrfDisplayPeriods(substitute).find(candidate=>
+      periodMeasurementIds(candidate).some(id=>String(id)===String(measurementId))
+      || measurementAttemptsForPeriod(substitute,candidate).some(row=>String(row?.id||row?.measurementId||"")===String(measurementId))
+    )||null;
+    const linkedMeasurement=measurementById(substitute,measurementId);
+    const targetPeriodNo=linkedPeriod?.num
+      ?? (normalizeMeasurementRole(linkedMeasurement?.role||linkedMeasurement?.measurementRole)==="Initial" ? 0 : null);
+    if(String(selKey||"")===String(substitute.code||"")){
+      setSelPeriodPage(null);
+      setSelPeriodNum(targetPeriodNo);
+      setSelMeasurementId(measurementId||null);
+      setXrfDetailView("analysis");
+      setTab("xrf");
+      scrollToXrfMeasurementDetail();
+      return;
+    }
+    pendingXrfNavigationRef.current={code:substitute.code,periodNo:targetPeriodNo,measurementId:measurementId||null};
+    setSelKey(substitute.code);
+    setTab("xrf");
+  },[allItems,handleSelectPeriodMeasurement,selKey]);
 
   const selectedApprovalKey = sel ? approvalFilterKey(approvalStatusOf(sel)) : "";
   const selectedIsDiscontinue = sel ? isDiscontinueRequestItem(sel) : false;
@@ -9477,10 +10142,29 @@ export default function App(){
       gotoXrf(item.code);
       return;
     }
+    const selectedCase=wf.precisionCases?.find(caseRow=>caseRow.key===key) || (wf.precision?{precision:wf.precision}:null);
+    if(isPrecisionHandoffExceptionCase(selectedCase)){
+      setPrecisionListMode("exceptions");
+      setPrecisionSearch("");
+      setPrecisionFilters(createEmptyPrecisionFilters());
+      setPrecisionSelCaseId(null);
+      setPrecisionDetailCaseId(null);
+      setTab("precision");
+      return;
+    }
     setSelKey(item.code);
     setPrecisionSelCaseId(key);
     setPrecisionDetailCaseId(key);
     setTab("precision-detail");
+  };
+  const gotoPrecisionWithFlowFilter=(filter)=>{
+    const exceptionFilter=(filter?.paHandoff||[]).includes("미인계 예외");
+    setPrecisionListMode(exceptionFilter?"exceptions":"targets");
+    setPrecisionSearch("");
+    setPrecisionFilters({...createEmptyPrecisionFilters(),...(filter||{})});
+    setPrecisionSelCaseId(null);
+    setPrecisionDetailCaseId(null);
+    setTab("precision");
   };
   const gotoItemDetail=(item)=>{
     if(itemHasPrecisionTrigger(item) || workflowForItem(item).precision || workflowForItem(item).precisionCases?.length) gotoPrecisionDetail(item);
@@ -9505,8 +10189,8 @@ export default function App(){
   const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang,balancedHeader:true,breakTwoWordEnglish:true};
   const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
   const precisionColumnWidths=lang==="en"
-    ? {period:108,code:84,name:150,dept:88,date:92,elements:94,reason:118,handoff:92,report:72,confirm:100,result:88,detail:34}
-    : {period:72,code:90,name:170,dept:84,date:92,elements:94,reason:126,handoff:84,report:74,confirm:84,result:78,detail:34};
+    ? {period:108,code:84,name:150,dept:88,date:92,elements:94,reason:118,handoff:92,report:72,confirm:100,result:88,exception:86,detail:34}
+    : {period:72,code:90,name:170,dept:84,date:92,elements:94,reason:126,handoff:84,report:74,confirm:84,result:78,exception:76,detail:34};
   const precisionColumns=[
     {key:"period",el:<FH label="발생 주기" col="paPeriod" {...precisionFhp}/>,w:precisionColumnWidths.period},
     {key:"code",el:<FH label="품번" col="paCode" {...precisionFhp}/>,w:precisionColumnWidths.code},
@@ -9519,6 +10203,7 @@ export default function App(){
     {key:"report",el:<FH label="성적서" col="paReport" {...precisionFhp}/>,w:precisionColumnWidths.report},
     {key:"confirm",el:<FH label="컨펌 상태" col="paConfirm" {...precisionFhp}/>,w:precisionColumnWidths.confirm},
     {key:"result",el:<FH label="정밀 결과" col="paResult" {...precisionFhp}/>,w:precisionColumnWidths.result},
+    {key:"exception",el:<PlainH label="예외 처리" lang={lang}/>,w:precisionColumnWidths.exception},
     {key:"detail",el:null,w:precisionColumnWidths.detail},
   ];
   const precisionTableWeight=precisionColumns.reduce((sum,column)=>sum+column.w,0);
@@ -9866,6 +10551,13 @@ export default function App(){
         @media (max-width: 760px){
           .xrf-element-row{grid-template-columns:1fr !important;}
           .xrf-element-row > div{border-left:0 !important;padding-left:0 !important;}
+          .cycle-management-chart{grid-template-columns:1fr !important;}
+          .analysis-flow-chart{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+          .analysis-flow-arrow{display:none !important;}
+          .precision-flow-summary{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+          .replacement-history-row{grid-template-columns:1fr !important;}
+          .replacement-history-relation{grid-template-columns:1fr !important;}
+          .replacement-history-arrow{transform:rotate(90deg);min-height:18px;}
           .responsive-table-scroll > table{
             width:100% !important;
             min-width:720px !important;
@@ -9888,9 +10580,11 @@ export default function App(){
         @media (max-width: 1180px){
           .stat-grid{grid-template-columns:repeat(3,1fr) !important;}
           .chart-grid{grid-template-columns:1fr !important;}
+          .precision-flow-summary{grid-template-columns:repeat(3,minmax(0,1fr)) !important;}
         }
         @media (max-width: 640px){
           .stat-grid{grid-template-columns:repeat(2,1fr) !important;}
+          .precision-flow-summary{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
         }
         @media (max-width: 980px){
           .xrf-hero{
@@ -9938,6 +10632,7 @@ export default function App(){
       `}</style>
       {openFilter&&<FilterPanel column={openFilter} pos={fPos} selected={fs[openFilter]||[]} values={listFilterValues[openFilter]||[]} onToggle={handleToggle} onClear={handleClear} onClose={()=>setOpenFilter(null)}/>}
       {precisionOpenFilter&&<FilterPanel column={precisionOpenFilter} pos={precisionFilterPos} selected={precisionFilters[precisionOpenFilter]||[]} values={precisionFilterValues[precisionOpenFilter]||[]} onToggle={handlePrecisionFilterToggle} onClear={handlePrecisionFilterClear} onClose={()=>setPrecisionOpenFilter(null)}/>}
+      {precisionQuickException?.row&&<PrecisionExceptionQuickDialog row={precisionQuickException.row} mode={precisionQuickException.mode} lang={lang} inp={inp} onSave={setPrecisionHandoffException} onClose={()=>setPrecisionQuickException(null)}/>}
       {photoPreview&&(
         <div role="presentation" onMouseDown={()=>setPhotoPreview(null)} onKeyDown={event=>{if(event.key==="Escape")setPhotoPreview(null);}} style={{position:"fixed",inset:0,zIndex:10020,display:"flex",alignItems:"center",justifyContent:"center",padding:"clamp(14px,3vw,34px)",background:"rgba(8,12,14,.82)",boxSizing:"border-box"}}>
           <div role="dialog" aria-modal="true" aria-label={lang==="en"?"Item photo preview":"품목 사진 크게 보기"} onMouseDown={event=>event.stopPropagation()} style={{position:"relative",width:photoPreview.displayWidth?`${photoPreview.displayWidth}px`:"min(720px,calc(100vw - 28px))",maxWidth:"calc(100vw - 28px)",maxHeight:"calc(100dvh - 28px)",display:"flex",flexDirection:"column",background:C.card,border:`1px solid ${C.bd2}`,borderRadius:14,overflow:"hidden",boxShadow:"0 24px 70px rgba(0,0,0,.42)"}}>
@@ -10310,7 +11005,7 @@ export default function App(){
                     {(selectedIsDiscontinue
                       ? [["요청일",sel.firstDate],["최종 사용 예정일",sel.finalUseDate||"—"]]
                       : [
-                          [`${selectedPeriodLabel} XRF 결과`, <Chip v={displayXrfText(selectedMetrics.xrf)} small result/>],
+                          [currentSubstitutionEvent?`${selectedPeriodLabel} 대체품 XRF`:`${selectedPeriodLabel} XRF 결과`, <Chip v={displayXrfText(selectedMetrics.xrf)} small result/>],
                           ["현재 단계", workflowStageLabel(workflowForItem(sel).stage)],
                           ["최초 등록", sel.firstDate],
                           ["R Final Risk", itemFinalRisk(sel)||"—"],
@@ -10419,6 +11114,9 @@ export default function App(){
                       </div>}
                     </div>
                     <DotFull periods={selTimelinePeriods} windowDays={30} selectedPeriodNum={selPeriodNum} onSelectPeriod={handleSelectPeriod} pageMeta={selPeriodPageMeta} onPageChange={setSelPeriodPage}/>
+                    {currentSubstitutionEvent&&<div data-i18n-skip="true" style={{marginTop:10,padding:"10px 12px",border:`1px solid ${A.slate.ln}`,borderRadius:8,background:A.slate.bg,color:C.text2,fontSize:11,lineHeight:1.55,textAlign:"center"}}>
+                      <span style={{color:C.text1,fontWeight:650}}>{periodSubstitutionNotice(currentPeriodMeta,currentSubstitutionEvent,sel,lang)}</span>
+                    </div>}
                     <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${C.bd}`}}>
                       <div style={{...T.section,marginBottom:10}}>이행 상세</div>
                       <PeriodTable
@@ -10426,11 +11124,13 @@ export default function App(){
                         periods={selPeriods}
                         selectedPeriodNum={selPeriodNum}
                         onSelectPeriod={handleSelectPeriod}
+                        onOpenSubstituteResult={handleOpenSubstituteResult}
                         uploadTargetNum={isAdminUser?periodUploadTarget?.num:null}
                         uploadAllowed={isAdminUser&&periodUploadAllowed&&!measurementSavePending}
                         uploadState={periodUploadState}
                         onUpload={handlePeriodXrfUpload}
                         uploadKey={periodUploadTarget?`${sel.code}|${periodUploadTarget.num}`:""}
+                        lang={lang}
                       />
                     </div>
                   </div>
@@ -10478,7 +11178,7 @@ export default function App(){
                         <span style={{padding:"5px 9px",background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.22)",borderRadius:UI.rs}}>Meas.Date {currentMeasurement?.date||"—"}</span>
                       </div>
                     </div>
-                    {currentMeasurement
+                    {currentMeasurement&&!currentSubstitutionEvent
                       ? <XrfTrendChart
                           item={sel}
                           periods={selectedTrendPeriods}
@@ -10488,15 +11188,15 @@ export default function App(){
                         />
                       : <div style={{background:C.card,border:`1px dashed ${C.bd2}`,borderRadius:14,
                           padding:"38px 18px",textAlign:"center",fontSize:12,color:C.text3,marginTop:12}}>
-                          {lang==="en"
-                            ? "No XRF measurement is linked to the selected period."
-                            : "선택한 주기에 연결된 XRF 측정 이력이 없습니다."}
+                          {currentSubstitutionEvent
+                            ? periodSubstitutionNotice(currentPeriodMeta,currentSubstitutionEvent,sel,lang)
+                            : (lang==="en"?"No XRF measurement is linked to the selected period.":"선택한 주기에 연결된 XRF 측정 이력이 없습니다.")}
                         </div>}
                   </div>
                 ):(
-                  <div className="xrf-detail-grid">
+                  <div id="xrf-selected-measurement-detail" className="xrf-detail-grid" style={{scrollMarginTop:88}}>
                   <div style={{borderRight:`1px solid ${C.bd}`,display:"flex",flexDirection:"column"}}>
-                    <PeriodMeasurementSummary item={sel} periods={selPeriods} selectedPeriodNum={selPeriodNum} currentPeriodNum={currentPeriodMeta?.num} selectedMeasurementId={selMeasurementId} onSelectPeriod={handleSelectPeriod} onSelectMeasurement={handleSelectPeriodMeasurement}/>
+                    <PeriodMeasurementSummary item={sel} periods={selPeriods} selectedPeriodNum={selPeriodNum} currentPeriodNum={currentPeriodMeta?.num} selectedMeasurementId={selMeasurementId} onSelectPeriod={handleSelectPeriod} onSelectMeasurement={handleSelectPeriodMeasurement} lang={lang}/>
                   </div>
                   <div style={{padding:"16px clamp(14px, 2vw, 24px)"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12,gap:16,flexWrap:"wrap"}}>
@@ -10514,8 +11214,8 @@ export default function App(){
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(118px,1fr))",gap:8,marginBottom:12}}>
                       {[
                         ["Meas.Date",    currentMeasurement?.date||"—"],
-                        ["Sample Name",  sel.code],
-                        ["Measurement Type", measurementTypeDisplay(currentMeasurement,currentPeriodMeta)],
+                        ["Sample Name",  currentSubstitutionEvent?.substitutePartNumber||sel.code],
+                        ["Measurement Type", currentSubstitutionEvent?"Substitute R":measurementTypeDisplay(currentMeasurement,currentPeriodMeta)],
                         ["측정 방법",    "by ED-XRF"],
                       ].map(([k,v])=>(
                         <div key={k} style={{padding:"10px 10px",background:C.alt,border:`1px solid ${C.bd}`,borderRadius:8,minWidth:0,textAlign:"center",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
@@ -10525,7 +11225,7 @@ export default function App(){
                       ))}
                     </div>
 
-                    <XrfResultSummary measurement={currentMeasurement} item={sel}/>
+                    <XrfResultSummary measurement={currentMeasurement} item={currentAnalysisItem}/>
 
                     <details style={{padding:"10px 12px",background:C.bg,
                       border:`1px solid ${C.bd}`,borderRadius:UI.rs,marginBottom:12,color:C.text3}}>
@@ -10584,15 +11284,22 @@ export default function App(){
 
         {tab==="precision"&&(()=>{
           const selected=precisionRows.find(r=>r.key===precisionSelCaseId) || null;
-          const requestNeed=precisionRows.filter(r=>r.precision.requestStatus!=="REQUESTED").length;
-          const completed=precisionRows.filter(r=>r.finalConfirm==="확인").length;
-          const sent=precisionRows.filter(r=>r.precision.requestStatus==="REQUESTED").length;
+          const precisionStageCards=[
+            {key:"handoff",label:lang==="en"?"Transfer required":"인계 필요",value:precisionFlowSummary.handoff,color:A.purple.tx},
+            {key:"waiting",label:lang==="en"?"Result pending":"결과 대기",value:precisionFlowSummary.waiting,color:A.amber.tx},
+            {key:"confirmation",label:lang==="en"?"Confirmation required":"최종 확인 필요",value:precisionFlowSummary.confirmation,color:A.blue.tx},
+            {key:"ok",label:lang==="en"?"Precision OK":"정밀분석 OK",value:precisionFlowSummary.ok,color:A.green.tx},
+            {key:"ng",label:lang==="en"?"Precision NG":"정밀분석 NG",value:precisionFlowSummary.ng,color:A.rose.tx},
+            {key:"exception",label:lang==="en"?"Handoff Exception":"미인계 예외",value:precisionFlowSummary.exception,color:A.slate.tx},
+          ];
           const renderPrecisionRow=r=>{
             const active=selected?.key===r.key;
             const isRequested=r.precision.requestStatus==="REQUESTED";
+            const isException=r.precision.requestStatus==="EXEMPTED" || r.precision.handoffException===true;
             const hasReport=!!(r.precision.resultFileId||r.precision.reportNo);
             const isConfirmed=r.finalConfirm==="확인";
             const result=r.precision.result;
+            const canApplyException=!isRequested&&!isException&&!hasReport&&!result;
             const casePeriodLabel=precisionCasePeriodLabel(r);
             const measuredDate=dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—";
             const department=lang==="en"?translateUiTextKoToEn(r.item.dept||"—"):(r.item.dept||"—");
@@ -10616,15 +11323,29 @@ export default function App(){
               <td style={{...tdStyle,whiteSpace:"nowrap"}}>{measuredDate}</td>
               <td style={tdStyle}><div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:27,height:20,padding:"0 5px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10.5,fontWeight:650}}>{element}</span>):"—"}</div></td>
               <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{r.triggerLabel||"—"}</td>
-              <td style={tdStyle}>{statusBadge(isRequested?"인계 완료":"인계 필요",isRequested)}</td>
+              <td style={tdStyle}>{statusBadge(isException?"미인계 예외":(isRequested?"인계 완료":"인계 필요"),isRequested||isException)}</td>
               <td style={tdStyle}>{statusBadge(hasReport?"첨부 완료":"미첨부",hasReport)}</td>
               <td style={tdStyle}>{statusBadge(isConfirmed?"최종 컨펌":"미확정",isConfirmed)}</td>
               <td style={tdStyle}>{result?<AnalysisResultBadge value={result}/>:<span style={{color:C.text4,fontWeight:500}}>—</span>}</td>
+              <td style={{...tdStyle,padding:"4px"}} onClick={event=>event.stopPropagation()}>{canApplyException
+                ? <PrecisionExceptionSwitch checked={false} lang={lang} onChange={enabled=>{if(enabled)setPrecisionQuickException({row:r,mode:"apply"});}}/>
+                : <span style={{color:C.text4}}>—</span>}</td>
               <td style={{...tdStyle,padding:0}} onClick={event=>event.stopPropagation()}><span onClick={()=>{setPrecisionSelCaseId(r.key);setPrecisionDetailCaseId(r.key);setSelKey(r.item.code);setTab("precision-detail");}}><DetailArrowButton active={precisionDetailCaseId===r.key}/></span></td>
             </tr>;
           };
           return <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["정밀분석 대상",precisionRows.length],["인계 필요",requestNeed],["인계 완료",sent],["최종 컨펌",completed]].map(([l,n])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{...T.label,marginBottom:8}}>{l}</div><div style={{fontSize:24,fontWeight:700,color:C.text1,lineHeight:1,letterSpacing:"-.5px"}}>{n}</div></div>)}</div>
+            <div className="precision-flow-summary" style={{display:"grid",gridTemplateColumns:`repeat(${precisionStageCards.length},minmax(0,1fr))`,gap:10}}>{precisionStageCards.map(stage=><div key={stage.key} style={{...card,minWidth:0,padding:"14px 16px"}}><div data-i18n-skip="true" style={{...T.label,marginBottom:8,whiteSpace:"normal",wordBreak:"keep-all"}}>{stage.label}</div><div style={{fontSize:24,fontWeight:700,color:stage.color,lineHeight:1,letterSpacing:"-.5px"}}>{stage.value}</div></div>)}</div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+              <div role="tablist" aria-label={lang==="en"?"Precision analysis list type":"정밀분석 목록 구분"} style={{display:"inline-flex",alignItems:"center",gap:4,padding:4,background:C.charcoalBg,border:`1px solid ${C.bd2}`,borderRadius:9}}>
+                {[
+                  {key:"targets",ko:"정밀분석 대상",en:"Analysis Targets",count:precisionRowsForListMode(precisionRows,"targets").length},
+                  {key:"exceptions",ko:"예외처리 목록",en:"Exception List",count:precisionRowsForListMode(precisionRows,"exceptions").length},
+                ].map(option=>{
+                  const active=precisionListMode===option.key;
+                  return <button key={option.key} type="button" role="tab" aria-selected={active} onClick={()=>{setPrecisionListMode(option.key);setPrecisionSelCaseId(null);setPrecisionSearch("");setPrecisionFilters(createEmptyPrecisionFilters());}} style={{minHeight:32,padding:"0 13px",border:`1px solid ${active?C.charcoalDk:"transparent"}`,borderRadius:7,background:active?C.charcoalDk:"transparent",color:active?"#fff":C.text2,fontSize:11,fontWeight:700,cursor:"pointer"}}>{lang==="en"?option.en:option.ko} <span style={{marginLeft:5,opacity:.78}}>{option.count}</span></button>;
+                })}
+              </div>
+            </div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                 <div style={{...T.cardTitle}}>정밀분석 관리</div>
@@ -10637,17 +11358,39 @@ export default function App(){
                     aria-label={lang==="en"?"Search precision analysis cases":"정밀분석 항목 검색"}
                     style={{height:34,width:220,boxSizing:"border-box",padding:"0 12px 0 32px",border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:12,outline:"none",background:C.card,color:C.text1}}/>
                 </div>
-                <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>건 · 전체 {precisionRows.length}건</span>
+                <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>건 · 전체 {precisionListRows.length}건</span>
                 <span style={{fontSize:10.5,color:C.text4}}>{lang==="en"?"Grouped by item · Newest measurement first":"품목별 구분 · 측정일 최신순"}</span>
                 {precisionHasFilters&&<button type="button" onClick={handlePrecisionFiltersClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
               </div>
               <FilterChips filterState={precisionFilters} onClear={handlePrecisionFilterClear} onClearAll={handlePrecisionFiltersClearAll}/>
-              <div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label="품목별 정밀분석 발생 이력 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
+              {precisionListMode==="exceptions"?<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label={lang==="en"?"Precision handoff exception list":"정밀분석 미인계 예외처리 목록"} tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
+                <table style={{width:"100%",minWidth:980,borderCollapse:"collapse",tableLayout:"fixed"}}>
+                  <colgroup><col style={{width:"7%"}}/><col style={{width:"9%"}}/><col style={{width:"16%"}}/><col style={{width:"9%"}}/><col style={{width:"9%"}}/><col style={{width:"16%"}}/><col style={{width:"18%"}}/><col style={{width:"9%"}}/><col style={{width:"7%"}}/></colgroup>
+                  <thead><tr>{[
+                    lang==="en"?"Period":"발생 주기",lang==="en"?"Part No.":"품번",lang==="en"?"Item Name":"품목명",lang==="en"?"Measured":"측정일",lang==="en"?"Elements":"대상 원소",
+                    lang==="en"?"Exception Reason":"예외 사유",lang==="en"?"Details":"상세 사유",lang==="en"?"Applied":"처리일",lang==="en"?"Manage":"관리"
+                  ].map(label=><th key={label} style={{height:48,padding:"6px 7px",borderBottom:`1px solid ${C.bd}`,background:C.card,textAlign:"center",fontSize:10.5,fontWeight:700,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.25}}>{label}</th>)}</tr></thead>
+                  <tbody>{precisionListRows.length===0?<tr><td colSpan={9} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No active exception cases.":"예외처리된 항목이 없습니다."}</td></tr>:filteredPrecisionRows.length===0?<tr><td colSpan={9} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No exception cases match the current search or filters.":"검색 또는 필터 조건에 맞는 예외 항목이 없습니다."}</td></tr>:filteredPrecisionRows.map(r=>{
+                    const cell={padding:"9px 7px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",fontSize:11,color:C.text2,lineHeight:1.4,wordBreak:"keep-all"};
+                    return <tr key={r.key} style={{background:C.card}}>
+                      <td style={cell}><span style={{display:"inline-flex",minWidth:36,height:24,alignItems:"center",justifyContent:"center",borderRadius:UI.pill,background:C.charcoalBg,border:`1px solid ${C.bd2}`,fontWeight:750,color:C.text1}}>{precisionCasePeriodLabel(r)}</span></td>
+                      <td style={{...cell,fontWeight:750,color:C.text1,overflowWrap:"anywhere"}}>{r.item?.code||"—"}</td>
+                      <td style={{...cell,fontWeight:650,color:C.text1}}>{displayItemName(r.item,lang)||"—"}</td>
+                      <td style={{...cell,whiteSpace:"nowrap"}}>{dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—"}</td>
+                      <td style={cell}>{(r.targets||[]).join(", ")||"—"}</td>
+                      <td style={{...cell,fontWeight:650}}>{precisionExceptionReasonLabel(r.precision?.exceptionReasonCode,lang)}</td>
+                      <td style={{...cell,textAlign:"left"}}><div>{r.precision?.exceptionReasonDetail||"—"}</div>{r.precision?.exceptionEvidence&&<div style={{marginTop:4,fontSize:10,color:C.text4}}>{lang==="en"?"Evidence":"근거"}: {r.precision.exceptionEvidence}</div>}</td>
+                      <td style={cell}><div style={{whiteSpace:"nowrap"}}>{dateOnly(r.precision?.exceptionAt)||"—"}</div><div style={{marginTop:3,fontSize:10,color:C.text4}}>{r.precision?.exceptionBy||"—"}</div></td>
+                      <td style={cell}><PrecisionExceptionSwitch checked lang={lang} onChange={enabled=>{if(!enabled)setPrecisionQuickException({row:r,mode:"remove"});}}/></td>
+                    </tr>;
+                  })}</tbody>
+                </table>
+              </div>:<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label="품목별 정밀분석 발생 이력 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
                 <table style={{width:"100%",minWidth:lang==="en"?0:precisionTableWeight,maxWidth:lang==="en"?"100%":"none",borderCollapse:"collapse",tableLayout:"fixed"}}>
                   <colgroup>{precisionColumns.map(column=><col key={column.key} style={{width:`${(column.w/precisionTableWeight)*100}%`}}/>)}</colgroup>
                   <thead><tr style={{height:lang==="en"?62:42}}>{precisionColumns.map(column=><th key={column.key} style={{height:lang==="en"?62:42,padding:lang==="en"?"4px 2px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",wordBreak:"keep-all",lineHeight:1.15}}>{column.el}</th>)}</tr></thead>
-                  {precisionRows.length===0?(
-                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>정밀분석 대상이 없습니다.</td></tr></tbody>
+                  {precisionListRows.length===0?(
+                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{precisionListMode==="exceptions"?(lang==="en"?"No active exception cases.":"예외처리된 항목이 없습니다."):(lang==="en"?"No precision-analysis targets.":"정밀분석 대상이 없습니다.")}</td></tr></tbody>
                   ):filteredPrecisionRows.length===0?(
                     <tbody><tr><td colSpan={precisionColumns.length} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>조건에 맞는 정밀분석 항목이 없습니다.<button type="button" onClick={handlePrecisionFiltersClearAll} style={{marginLeft:10,padding:"4px 10px",background:"none",border:`1px solid ${C.bd}`,fontSize:11,cursor:"pointer",color:C.text3}}>초기화</button></td></tr></tbody>
                   ):precisionGroups.map(group=>{
@@ -10672,7 +11415,7 @@ export default function App(){
                   </tbody>;
                   })}
                 </table>
-              </div>
+              </div>}
             </div>
           </div>;
         })()}
@@ -10699,8 +11442,28 @@ export default function App(){
           const crCounts={H:active.filter(i=>riskBasisCrLevelOf(i)==="H").length,M:active.filter(i=>riskBasisCrLevelOf(i)==="M").length,L:active.filter(i=>riskBasisCrLevelOf(i)==="L").length};
           const cellColors={H:{bg:C.redBg,c:C.red,l:"사용 불허 Risk"},M:{H:{bg:C.xWarnBg,c:C.xWarn,l:"월 1회"},M:{bg:C.xWarnBg,c:C.xWarn,l:"반기"},L:{bg:C.xWarnBg,c:C.xWarn,l:"반기"}},L:{H:{bg:C.xOkBg,c:C.xOk,l:"반기"},M:{bg:C.xOkBg,c:C.xOk,l:"반기"},L:{bg:C.xOkBg,c:C.xOk,l:"연 1회"}}};
           const highRisk=active.filter(i=>["H","Not Allowed"].includes(itemFinalRisk(i)));
-          const workflowCounts=analysisWorkflowSummary(active);
-          const cycleCounts={Monthly:active.filter(i=>itemCycleFromRisk(i)==="Monthly").length,Semiannual:active.filter(i=>itemCycleFromRisk(i)==="Semiannual").length,Annual:active.filter(i=>itemCycleFromRisk(i)==="Annual").length};
+          const cycleCounts={Monthly:active.filter(i=>itemCycleFromRisk(i)==="Monthly").length,Semiannual:active.filter(i=>itemCycleFromRisk(i)==="Semiannual").length,Annual:active.filter(i=>itemCycleFromRisk(i)==="Annual").length,NotAvailable:active.filter(i=>itemCycleFromRisk(i)==="Not Available").length};
+          const cycleChartRows=[
+            {key:"monthly",label:lang==="en"?"Monthly":"월 1회",value:cycleCounts.Monthly,color:A.rose.solid},
+            {key:"semiannual",label:lang==="en"?"Semiannual":"반기 1회",value:cycleCounts.Semiannual,color:A.amber.solid},
+            {key:"annual",label:lang==="en"?"Annual":"연 1회",value:cycleCounts.Annual,color:A.green.solid},
+            {key:"notAvailable",label:lang==="en"?"Not applicable":"대상 아님",value:cycleCounts.NotAvailable,color:A.slate.solid||A.slate.ln},
+          ];
+          const cycleStatusRows=[
+            {key:"overdue",label:lang==="en"?"Overdue":"미이행",value:stats.overdue,color:A.rose.solid,filter:{compliance:["overdue"]}},
+            {key:"dueSoon",label:lang==="en"?"Measurement due":"측정권장",value:stats.dueSoon,color:A.amber.solid,filter:{compliance:["dueSoon"]}},
+            {key:"ok",label:lang==="en"?"Compliant":"현재 이행",value:active.filter(i=>getCS(i)==="ok").length,color:A.green.solid,filter:{compliance:["ok"]}},
+            {key:"upcoming",label:lang==="en"?"Upcoming":"예정",value:active.filter(i=>getCS(i)==="upcoming").length,color:A.blue.solid||A.blue.ln,filter:{compliance:["upcoming"]}},
+            {key:"notAvailable",label:lang==="en"?"Not applicable":"대상 아님",value:active.filter(i=>getCS(i)==="notAvailable").length,color:A.slate.solid||A.slate.ln,filter:{compliance:["notAvailable"]}},
+          ];
+          const analysisFlowSteps=[
+            {key:"handoff",label:lang==="en"?"Transfer required":"정밀분석 인계 필요",value:precisionFlowSummary.handoff,filter:{paHandoff:["인계 필요"]},color:A.purple.tx,border:A.purple.ln,background:A.purple.bg},
+            {key:"waiting",label:lang==="en"?"Result pending":"정밀분석 결과 대기",value:precisionFlowSummary.waiting,filter:{paHandoff:["인계 완료"],paReport:["미첨부"]},color:A.amber.tx,border:A.amber.ln,background:A.amber.bg},
+            {key:"confirmation",label:lang==="en"?"Confirmation required":"최종 확인 필요",value:precisionFlowSummary.confirmation,filter:{paReport:["첨부 완료"],paConfirm:["미확정"]},color:A.blue.tx,border:A.blue.ln,background:A.blue.bg},
+            {key:"ok",label:lang==="en"?"Precision OK":"정밀분석 OK",value:precisionFlowSummary.ok,filter:{paConfirm:["최종 컨펌"],paResult:["OK"]},color:A.green.tx,border:A.green.ln,background:A.green.bg},
+            {key:"ng",label:lang==="en"?"Precision NG":"정밀분석 NG",value:precisionFlowSummary.ng,filter:{paConfirm:["최종 컨펌"],paResult:["NG"]},color:A.rose.tx,border:A.rose.ln,background:A.rose.bg},
+            {key:"exception",label:lang==="en"?"Handoff Exception":"미인계 예외",value:precisionFlowSummary.exception,filter:{paHandoff:["미인계 예외"]},color:A.slate.tx,border:A.slate.ln,background:A.slate.bg},
+          ];
           const precisionActionStages=new Set([
             "PRECISION_TRANSFER_REQUEST_REQUIRED",
             "PRECISION_TRANSFER_RESULT_WAITING",
@@ -10721,24 +11484,16 @@ export default function App(){
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
               <div style={{...T.cardTitle}}>위험도 현황</div>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["활성 품목",active.length,C.charcoal],["High Risk",highRisk.length,C.red],["주기 미이행",stats.overdue,C.redDk],["후속분석 진행중",workflowCounts.total,C.orange]].map(([l,n,c])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{fontSize:25,fontWeight:700,color:c,lineHeight:1}}>{n}</div><div style={{fontSize:11,fontWeight:700,color:C.text1,marginTop:5}}>{l}</div></div>)}</div>
-            <div className="chart-grid" style={{display:"grid",gridTemplateColumns:"1.15fr 1fr 1fr",gap:14}}>
-              <ChartCard title="측정 도래 예정" hint={`${TODAY_STR} 기준 향후 6개월`}>
-                <DueLoadChart buckets={dash.buckets} onPick={b=>b.total>0&&gotoDueMonthList(b.key)}/>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>{[["활성 품목",active.length,C.charcoal],["High Risk",highRisk.length,C.red],["주기 미이행",stats.overdue,C.redDk],["정밀분석 진행중",precisionFlowSummary.inProgress,C.orange]].map(([l,n,c])=><div key={l} style={{...card,padding:"14px 16px"}}><div style={{fontSize:25,fontWeight:700,color:c,lineHeight:1}}>{n}</div><div style={{fontSize:11,fontWeight:700,color:C.text1,marginTop:5}}>{l}</div></div>)}</div>
+            <div className="chart-grid" style={{display:"grid",gridTemplateColumns:"minmax(360px,.9fr) minmax(0,1.55fr)",gap:14}}>
+              <ChartCard title={lang==="en"?"Cycle Management Status":"주기 관리 현황"} hint={lang==="en"?`Active managed items ${active.length}`:`운영 관리 대상 ${active.length}건`}>
+                <CycleManagementChart cycleRows={cycleChartRows} statusRows={cycleStatusRows} lang={lang} onStatusPick={row=>row.filter&&gotoListWithFilter(row.filter)}/>
               </ChartCard>
-              <ChartCard title="이행 상태 구성" hint={`운영 관리 대상 ${dash.csTotal}건`}>
-                <ComplianceBar segments={dash.segments} total={dash.csTotal}
-                  onPick={s=>s.key!=="notAvailable"&&gotoListWithFilter({compliance:[s.key]})}/>
-              </ChartCard>
-              <ChartCard title="부서별 위험도 구성" hint="R 단계에서 확정된 Final Risk 기준">
-                <DeptRiskChart rows={dash.deptRows} riskMeta={dash.riskMeta}/>
+              <ChartCard title={lang==="en"?"Analysis Flow Status":"분석 Flow 현황"} hint={lang==="en"?`${precisionFlowSummary.total} measurement cases · same as Precision Analysis`:`측정 Case ${precisionFlowSummary.total}건 · 정밀분석 탭과 동일`}>
+                <AnalysisFlowChart steps={analysisFlowSteps} lang={lang} onPick={step=>gotoPrecisionWithFlowFilter(step.filter)}/>
               </ChartCard>
             </div>
             <div className="responsive-table-scroll table-scroll-compact" role="region" aria-label="위험성 평가 현황표" tabIndex={0} style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:5}}>위험성 평가 매트릭스 · R 기준</div><div style={{fontSize:11,color:C.text3,marginBottom:14}}>최초 등록 시 R XRF Level과 C&R 등급으로 산정한 위험성 평가 결과입니다. 후속 정밀분석 승인 결과와는 별도로 유지합니다.</div><table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}><thead><tr><th style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>XRF Level ╲ C&R</th>{[["H",`${crCounts.H}건 · 직접+잔류`],["M",`${crCounts.M}건 · 직접+비잔류`],["L",`${crCounts.L}건 · 비접촉`]].map(([c,d])=><th key={c} style={{padding:"8px 12px",background:C.bg,border:`1px solid ${C.bd}`,textAlign:"center",fontSize:11,color:C.text3}}>{c}<br/><span style={{fontSize:9,color:C.text4,fontWeight:400}}>{d}</span></th>)}</tr></thead><tbody>{["H","M","L"].map(x=><tr key={x}><td style={{padding:"10px 12px",border:`1px solid ${C.bd}`,fontWeight:600,color:C.text2,background:C.bg,fontSize:11}}><span style={{color:x==="H"?C.red:x==="M"?C.xWarn:C.xOk}}>●</span> {x==="H"?"H · Exceeded":x==="M"?"M · Less than":"L · N.D."}</td>{["H","M","L"].map(c=>{const cnt=matrix[x]?.[c]||0;const cs=x==="H"?cellColors.H:cellColors[x][c];return <td key={c} onClick={()=>cnt>0&&gotoListWithFilter({xrf:[x],crLevel:[c]})} style={{padding:"12px",border:`1px solid ${C.bd}`,background:cnt?cs.bg:C.card,textAlign:"center",cursor:cnt?"pointer":"default"}}><div style={{fontSize:20,fontWeight:700,color:cnt?cs.c:C.text4}}>{cnt}</div><div style={{fontSize:9,color:cnt?cs.c:C.text4,marginTop:3}}>{cs.l}</div></td>})}</tr>)}</tbody></table></div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-              <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>주기 관리 현황</div>{[["월 1회",cycleCounts.Monthly],["반기 1회",cycleCounts.Semiannual],["연 1회",cycleCounts.Annual],["미이행",stats.overdue],["측정권장 (월 D-15 / 반기·연 D-30)",stats.dueSoon],["현재 이행",active.filter(i=>getCS(i)==="ok").length]].map(([l,n])=><div key={l} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11}}><span style={{color:C.text2}}>{l}</span><strong style={{color:l==="미이행"?C.red:C.charcoal}}>{n}건</strong></div>)}</div>
-              <div style={{...card,padding:"18px 20px"}}><div style={{...T.cardTitle,marginBottom:12}}>분석 Workflow 현황</div>{[["XRF 재측정",workflowCounts.xrfRemeasure,"xrf"],["정밀분석 인계 필요",workflowCounts.precisionTransferRequired,"precision"],["정밀분석 결과 대기",workflowCounts.precisionResultWaiting,"precision"],["정밀분석 후속조치 필요",workflowCounts.precisionFollowupRequired,"precision"],["정밀분석 NG · 반려",workflowCounts.precisionNgReview,"precision"]].map(([l,n,target])=><div key={l} onClick={()=>{if(n){setTab(target);}}} style={{display:"flex",justifyContent:"space-between",padding:"8px 10px",borderBottom:`1px solid ${C.bd}`,fontSize:11,cursor:n?"pointer":"default",background:n?C.alt:"transparent"}}><span style={{color:n?C.text2:C.text4}}>{l}</span><strong style={{color:n?C.orange:C.text4}}>{n}건</strong></div>)}</div>
-            </div>
             <div style={{...card,padding:"18px 20px"}}>
               <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",gap:12,marginBottom:5,flexWrap:"wrap"}}>
                 <div style={{...T.cardTitle}}>고위험 / 후속분석 대상 품목</div>
@@ -10795,32 +11550,60 @@ export default function App(){
                 </table>
               </div>
             </div>
-            {replacementChains.length>0&&<div style={{...card,padding:"16px 20px"}}>
-              <div data-i18n-skip="true" style={{...T.cardTitle,fontFamily:FONT_SANS,marginBottom:4}}>{lang==="en"?`Replacement History - ${replacementChains.length} items`:`대체 이력 - ${replacementChains.length}건`}</div>
-              <div data-i18n-skip="true" style={{fontFamily:FONT_SANS,fontSize:11,fontWeight:400,lineHeight:1.45,color:C.text3,marginBottom:14}}>{lang==="en"?"History of existing items replaced by new items":"기존 품목이 신규 항목으로 대체된 이력"}</div>
-              {replacementChains.map((chain,i)=>(
-                <div key={`${chain.old.code}-${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 0",borderTop:i>0?`1px solid ${C.bd}`:"none",flexWrap:"wrap"}}>
-                  <div onClick={()=>gotoXrf(chain.old.code)} title={`${chain.old.code} XRF 상세로 이동`}
-                    style={{fontFamily:FONT_SANS,padding:"8px 12px",background:C.alt,border:`1px dashed ${C.bd2}`,borderRadius:6,minWidth:180,cursor:"pointer",lineHeight:1.4}}>
-                    <div data-i18n-skip="true" style={{fontSize:10,color:C.text4}}>{lang==="en"?`Existing Measurements: ${chain.old.measurementCount||chain.old.history?.length||0} preserved · Transition ${chain.old.replacementDate||chain.old.finalUseDate||"—"}`:`기존 측정이력 ${chain.old.measurementCount||chain.old.history?.length||0}건 보존 · 전환 ${chain.old.replacementDate||chain.old.finalUseDate||"—"}`}</div>
-                    <div style={{fontSize:12,fontWeight:500,color:C.text2,marginTop:2,fontFamily:FONT_SANS}}>{chain.old.code}</div>
-                    <div data-i18n-skip="true" style={{fontSize:12,color:C.text2}}>{displayItemName(chain.old,lang)}</div>
-                    <div data-i18n-skip="true" style={{fontSize:10,color:chain.old.lifecycle==="Discontinued"?C.redDk:C.text4,marginTop:3}}>{lang==="en"?translateUiTextKoToEn(LIFECYCLE_KO[chain.old.lifecycle]||chain.old.lifecycle||"—"):(LIFECYCLE_KO[chain.old.lifecycle]||chain.old.lifecycle||"—")}</div>
+            {replacementHistoryGroups.length>0&&<div style={{...card,padding:"16px 20px"}}>
+              <div data-i18n-skip="true" style={{...T.cardTitle,fontFamily:FONT_SANS,marginBottom:4}}>{lang==="en"?`Replacement History - ${replacementHistoryEntries.length} events`:`대체 이력 - ${replacementHistoryEntries.length}건`}</div>
+              <div data-i18n-skip="true" style={{fontFamily:FONT_SANS,fontSize:11,fontWeight:400,lineHeight:1.45,color:C.text3,marginBottom:14}}>{lang==="en"?"Derived replacement items are grouped under the same previous item. Period substitutions and return-to-use events remain separate.":"동일한 변경 전 품목에서 파생된 대체품은 한 행으로 묶고, 주기별 대체·사용 복귀 이력은 개별 표시합니다."}</div>
+              {replacementHistoryGroups.map((group,index)=>{
+                const entry=group.primary;
+                const groupKinds=new Set(group.entries.map(row=>row.kind));
+                const kindMeta=groupKinds.size>1
+                  ? {ko:"대체·변경",en:"Replacement / Change",color:A.purple.tx,border:A.purple.ln,background:A.purple.bg}
+                  : entry.kind==="reactivation"
+                  ? {ko:"사용 복귀",en:"Return to Use",color:A.green.tx,border:A.green.ln,background:A.green.bg}
+                  : entry.kind==="periodSubstitution"
+                    ? {ko:"주기 대체",en:"Period Substitute",color:A.blue.tx,border:A.blue.ln,background:A.blue.bg}
+                    : entry.kind==="change"
+                      ? {ko:"품목 변경",en:"Item Change",color:A.amber.tx,border:A.amber.ln,background:A.amber.bg}
+                      : {ko:"영구 대체",en:"Replacement",color:A.purple.tx,border:A.purple.ln,background:A.purple.bg};
+                const fromName=lang==="en"?(entry.fromItemNameEn||entry.fromItemName):(entry.fromItemName||entry.fromItemNameEn);
+                const renderHistoryItem=(side,code,name,item)=>{
+                  const canOpen=!!code;
+                  return <button type="button" onClick={()=>canOpen&&gotoXrf(code)} disabled={!canOpen}
+                    title={canOpen?`${code} XRF ${lang==="en"?"details":"상세로 이동"}`:""}
+                    style={{width:"100%",minWidth:0,textAlign:side==="from"?"center":"left",padding:"10px 12px",background:side==="to"?C.charcoalBg:C.alt,border:`1px ${side==="from"?"dashed":"solid"} ${C.bd2}`,borderRadius:7,cursor:canOpen?"pointer":"default",fontFamily:FONT_SANS,boxSizing:"border-box"}}>
+                    <div data-i18n-skip="true" style={{fontSize:9.5,color:C.text4,marginBottom:3}}>{side==="from"?(lang==="en"?"Before":"변경 전"):(lang==="en"?"Derived item":"파생 품목")}</div>
+                    <div style={{fontSize:11.5,fontWeight:750,color:C.text1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{code||"—"}</div>
+                    <div data-i18n-skip="true" style={{fontSize:11,color:C.text2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",marginTop:2}}>{name||displayItemName(item,lang)||"—"}</div>
+                  </button>;
+                };
+                return <div className="replacement-history-row" key={group.key} style={{display:"grid",gridTemplateColumns:"minmax(104px,118px) minmax(0,1fr)",gap:12,alignItems:"start",padding:"14px 0",borderTop:index?`1px solid ${C.bd}`:"none"}}>
+                  <div data-i18n-skip="true" style={{alignSelf:"stretch",display:"flex",flexDirection:"column",justifyContent:"center",gap:5}}>
+                    <span style={{alignSelf:"flex-start",padding:"3px 8px",borderRadius:7,border:`1px solid ${kindMeta.border}`,background:kindMeta.background,color:kindMeta.color,fontSize:10,fontWeight:750}}>{lang==="en"?kindMeta.en:kindMeta.ko}</span>
+                    <strong style={{fontSize:11,color:C.text2}}>{group.latestDate||"—"}</strong>
+                    {group.entries.length>1&&<span style={{fontSize:10,color:C.text4}}>{lang==="en"?`${group.entries.length} derived items`:`파생 ${group.entries.length}건`}</span>}
+                    {group.entries.length===1&&entry.periodNo&&<span style={{fontSize:10,color:C.text4}}>P{entry.periodNo}</span>}
                   </div>
-                  <span aria-hidden="true" style={{fontSize:16,color:C.text4}}>→</span>
-                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                    {chain.successors.map(s=>(
-                      <div key={s.code} onClick={()=>gotoXrf(s.code)} title={`${s.code} XRF 상세로 이동`}
-                        style={{fontFamily:FONT_SANS,padding:"8px 12px",background:C.charcoalBg,border:`1px solid ${C.bd}`,borderRadius:6,cursor:"pointer",minWidth:170,lineHeight:1.4}}>
-                        <div data-i18n-skip="true" style={{fontSize:10,color:C.charcoalMd}}>{lang==="en"?`Replacement Item · ${translateUiTextKoToEn(LIFECYCLE_KO[s.lifecycle]||"신규 대체")} · ${s.replacementDate||s.firstDate||"—"}`:`대체품 · ${LIFECYCLE_KO[s.lifecycle]||"신규 대체"} · ${s.replacementDate||s.firstDate||"—"}`}</div>
-                        <div style={{fontSize:12,fontWeight:500,color:C.charcoal,marginTop:2,fontFamily:FONT_SANS}}>{s.code}</div>
-                        <div data-i18n-skip="true" style={{fontSize:12,color:C.text1}}>{displayItemName(s,lang)}</div>
-                        <div data-i18n-skip="true" style={{fontSize:10,color:C.text4,marginTop:3}}>{lang==="en"?`Replaces Existing Item ${s.replacementOf||chain.old.code}`:`기존 품목 ${s.replacementOf||chain.old.code} 대체`}</div>
-                      </div>
-                    ))}
+                  <div className="replacement-history-relation" style={{display:"grid",gridTemplateColumns:"minmax(180px,.72fr) 22px minmax(0,1.5fr)",gap:9,alignItems:"stretch",minWidth:0}}>
+                    <div style={{minWidth:0,display:"flex",alignItems:"center"}}>{renderHistoryItem("from",entry.fromPartNumber,fromName,entry.fromItem)}</div>
+                    <span className="replacement-history-arrow" aria-hidden="true" style={{display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:kindMeta.color}}>→</span>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:8,minWidth:0}}>
+                      {group.entries.map((target,targetIndex)=>{
+                        const toName=lang==="en"?(target.toItemNameEn||target.toItemName):(target.toItemName||target.toItemNameEn);
+                        return <div key={target.eventId||`${target.toPartNumber||"target"}-${targetIndex}`} style={{minWidth:0,padding:8,background:C.bg,border:`1px solid ${C.bd}`,borderRadius:8,boxSizing:"border-box"}}>
+                          {renderHistoryItem("to",target.toPartNumber,toName,target.toItem)}
+                          <div data-i18n-skip="true" style={{display:"flex",alignItems:"center",gap:"4px 9px",flexWrap:"wrap",padding:"7px 3px 2px",fontSize:10.5,lineHeight:1.45,color:C.text3}}>
+                            <span><strong style={{color:C.text2}}>{lang==="en"?"Effective":"적용일"}</strong> · {target.effectiveDate||"—"}</span>
+                            <span><strong style={{color:C.text2}}>{lang==="en"?"Status":"상태"}</strong> · {target.status||"—"}</span>
+                            {target.periodNo&&<span><strong style={{color:C.text2}}>{lang==="en"?"Period":"주기"}</strong> · P{target.periodNo}</span>}
+                            {target.linkedMeasurementId&&<span style={{minWidth:0,overflowWrap:"anywhere"}}><strong style={{color:C.text2}}>Measurement</strong> · {target.linkedMeasurementId}</span>}
+                          </div>
+                          {target.reason&&<div data-i18n-skip="true" style={{marginTop:6,padding:"7px 8px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:6,fontSize:10.5,lineHeight:1.55,color:C.text3,whiteSpace:"normal",wordBreak:"keep-all",overflowWrap:"break-word"}}><strong style={{color:C.text2}}>{lang==="en"?"Reason":"사유"}</strong> · {target.reason}</div>}
+                        </div>;
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
+                </div>;
+              })}
             </div>}
           </div>;
         })()}
