@@ -95,8 +95,9 @@ assert(originalSource.includes('measurementSavePending||registrationSavePending?
 assert(originalSource.includes("const active=materialScopes.operational;"),"risk overview must share the material-list operational scope");
 assert(!originalSource.includes("const active=allItems.filter(i=>i.isCurrent && !isDiscontinueRequestItem(i));"),"risk overview must not maintain a separate active-item rule");
 assert(originalSource.includes('data-precision-item-label="true"'),"precision item code/name group labels must have a distinct visual treatment");
-assert(originalSource.includes('gridTemplateColumns:`minmax(0,1fr) ${lang==="en"?20:16}px`'),"filter headers must reserve a separate non-overlapping arrow column");
-assert(originalSource.includes('period:80,code:84,name:150,dept:88,date:92,elements:94'),"English precision headers must keep their compact proportional widths");
+assert(originalSource.includes('if(balancedHeader&&lang==="en")')&&originalSource.includes('height:8,textAlign:"center"'),"English precision filter headers must reserve a separate non-overlapping arrow row");
+assert(originalSource.includes('gridTemplateColumns:balancedHeader?"16px minmax(0,1fr) 16px"'),"Korean precision filter headers must keep the arrow in the right-hand column");
+assert(originalSource.includes('period:112,code:72,name:136,dept:96,date:104,elements:102'),"English precision headers must keep their compact proportional widths");
 assert(originalSource.includes('minWidth:lang==="en"?0:precisionTableWeight'),"English precision table must fit the available width without a forced horizontal scroll");
 assert(originalSource.includes('.app-root[data-lang="en"] .precision-analysis-table > table'),"English precision table must override the narrow-screen wide-table minimum");
 assert(originalSource.includes('const UI_TRANSLATABLE_ATTRS = ["placeholder","title","aria-label","alt"]'),"English mode must translate visible fallback image text as well as control attributes");

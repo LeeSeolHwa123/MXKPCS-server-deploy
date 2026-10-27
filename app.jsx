@@ -383,7 +383,7 @@ const FILTER_LABELS = {
   firstDate: {},
   xrf: {NG:"NG", OK:"OK", "재측정 필요":"재측정", "확인 필요":"확인 필요", H:"H · Exceeded", M:"M · Less than", L:"L · N.D.", "—":"—"},
   compliance: {overdue:"미이행", dueSoon:"측정권장", ok:"이행", upcoming:"예정", notAvailable:"대상 아님"},
-  precision: {OK:"OK", NG:"NG", "—":"—"},
+  precision: {OK:"OK", NG:"NG", "해당 없음":"해당 없음", "—":"—"},
   crLevel: {H:"H · 직접접촉+잔류", M:"M · 직접접촉+비잔류", L:"L · 비접촉"},
   risk: {"Not Allowed":"사용불허", H:"H", M:"M", L:"L", "—":"—"},
   retest: {review:"재측정", trusted:"재측정 불필요"},
@@ -415,7 +415,7 @@ const UNIQUE_VALS = {
   cycle: ["Monthly","Semiannual","Annual","Not Available"],
   xrf: ["NG","OK","재측정 필요","확인 필요","—"],
   compliance: ["overdue","dueSoon","ok","upcoming","notAvailable"],
-  precision: ["OK","NG","—"],
+  precision: ["OK","NG","해당 없음","—"],
   crLevel: ["H","M","L"],
   risk: ["Not Allowed","H","M","L","—"],
   retest: ["review","trusted"],
@@ -1700,6 +1700,7 @@ const UI_EN_MAP = {
   "발생 주기":"Occurrence Period","대상 원소":"Target Elements","인계 사유":"Transfer Reason",
   "인계 상태":"Transfer Status","컨펌 상태":"Confirmation Status","정밀 결과":"Precision Result",
   "승인 상태":"Approval Status","다음 마감":"Next Due","상세 보기":"View Details",
+  "상세 사유":"Detailed Reason","처리일":"Processed Date","관리":"Manage",
   "검사주기":"Inspection Cycle","공정명":"Process","담당자":"Owner",
   "요청일":"Request Date","측정일":"Measurement Date","최종 사용일":"Final Use Date",
   "최종 사용 예정일":"Planned Final Use Date","사용 예정 일자":"Planned Use Date","사용 일자":"Use Date",
@@ -1771,6 +1772,8 @@ const UI_EN_MAP = {
   "정밀분석 NG":"Precision NG","정밀분석 후속조치 필요":"Precision Follow-up Required",
   "정밀분석 성적서 PDF":"Precision Report PDF","정밀분석 관리":"Precision Analysis Management",
   "정밀분석 인계 관리":"Transfer Management","인계 상태":"Transfer Status","인계 사유":"Transfer Reason",
+  "최종 확인 필요":"Final Confirmation Required","정밀분석 목록 구분":"Precision Analysis List Type",
+  "하위 항목 펼치기":"Expand Item History","하위 항목 접기":"Collapse Item History",
   "인계일":"Transfer Date","인계 완료":"Transfer Complete","인계 필요":"Transfer Required",
   "현재 단계":"Current Stage","현재 조치":"Current Action","현재 주기":"Current Period",
   "선택 주기":"Selected Period","대상 원소":"Target Elements","대상 품목":"Target Item",
@@ -2478,7 +2481,7 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
         }
       }else if(p?.requestStatus==="EXEMPTED" || p?.handoffException===true){
         stage="PRECISION_HANDOFF_EXEMPTED";
-        approval={status:"미인계 예외",basis:"PRECISION_HANDOFF_EXEMPTED",basisRecordId:latestCase.key};
+        approval={status:"승인",basis:"PRECISION_HANDOFF_EXEMPTED",basisRecordId:latestCase.key};
       }else if(p?.requestStatus==="REQUESTED"){
         stage="PRECISION_RESULT_WAITING";
         approval={status:"측정 진행중",basis:"PRECISION_REQUESTED",basisRecordId:latestCase.key};
@@ -2565,7 +2568,7 @@ function deriveRuntimeWorkflow(item,precisionOverrides,approvalOverrides){
       approval={...(approval||{}),status:"반려",basis:"PRECISION_NG_REJECTED",basisRecordId:precision.id||key};
     }else if(precision?.requestStatus==="EXEMPTED" || precision?.handoffException===true){
       stage="PRECISION_HANDOFF_EXEMPTED";
-      approval={...(approval||{}),status:"미인계 예외",basis:"PRECISION_HANDOFF_EXEMPTED",basisRecordId:precision?.id||key};
+      approval={...(approval||{}),status:"승인",basis:"PRECISION_HANDOFF_EXEMPTED",basisRecordId:precision?.id||key};
     }else if(precisionRequested){
       stage="PRECISION_RESULT_WAITING";
       approval={...(approval||{}),status:"측정 진행중",basis:"PRECISION_REQUESTED",basisRecordId:precision?.id||key};
@@ -4876,12 +4879,21 @@ function FH({label, col, filterState, openFilter, onOpen, lang="ko", balancedHea
   const canWrapAtSpace=String(displayLabel).trim().includes(" ");
   const englishWords=String(displayLabel).trim().split(/\s+/).filter(Boolean);
   const splitIntoTwoLines=lang==="en"&&breakTwoWordEnglish&&englishWords.length===2;
+  const renderedLabel=splitIntoTwoLines?<>{englishWords[0]}<br/>{englishWords[1]}</>:displayLabel;
+  if(balancedHeader&&lang==="en"){
+    return <div data-filter-header={col} data-i18n-skip="true" onClick={e=>onOpen(col,e)}
+      style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,minHeight:46,padding:"2px 4px",boxSizing:"border-box"}}>
+      <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.12,textAlign:"center",overflow:"visible",overflowWrap:"normal",wordBreak:"keep-all"}}>{renderedLabel}</span>
+      <span aria-hidden="true" style={{display:"block",width:"100%",height:8,textAlign:"center",fontSize:8,color:isAct?C.red:C.charcoalLt,fontWeight:700,lineHeight:1,whiteSpace:"nowrap"}}>{isAct?`▼${cnt}`:"▼"}</span>
+      {isAct&&col!=="category"&&<span style={{width:4,height:4,borderRadius:"50%",background:C.red,position:"absolute",left:2,top:2}}/>}
+    </div>;
+  }
   return(
     <div data-filter-header={col} data-i18n-skip="true" onClick={e=>onOpen(col,e)}
       style={{position:"relative",display:"grid",gridTemplateColumns:balancedHeader?"16px minmax(0,1fr) 16px":`minmax(0,1fr) ${lang==="en"?20:16}px`,columnGap:2,alignItems:"center",cursor:"pointer",userSelect:"none",width:"100%",minWidth:0,padding:"0 1px",boxSizing:"border-box"}}>
       {balancedHeader&&<span aria-hidden="true" style={{display:"block",width:16}}/>}
       <span style={{display:"block",width:"100%",minWidth:0,color:isAct?C.text1:C.charcoalLt,fontWeight:isAct?700:600,fontSize:lang==="en"?9.5:10,letterSpacing:lang==="en"?.15:.5,textTransform:"uppercase",whiteSpace:canWrapAtSpace?"normal":"nowrap",lineHeight:1.15,textAlign:"center",overflow:"visible",overflowWrap:"normal",wordBreak:"keep-all"}}>
-        {splitIntoTwoLines?<>{englishWords[0]}<br/>{englishWords[1]}</>:displayLabel}
+        {renderedLabel}
       </span>
       <span aria-hidden="true" style={{display:"block",width:"100%",textAlign:"center",fontSize:8,color:isAct?C.red:C.charcoalLt,fontWeight:700,lineHeight:1,whiteSpace:"nowrap"}}>{isAct?`▼${cnt}`:"▼"}</span>
       {isAct&&col!=="category"&&<span style={{width:4,height:4,borderRadius:"50%",background:C.red,position:"absolute",left:1,top:"50%",transform:"translateY(-50%)"}}/>}
@@ -5658,6 +5670,11 @@ function normalizeAnalysisResult(value){
 }
 function precisionAnalysisResultOf(item){
   const wf=workflowForItem(item);
+  // 정밀분석 대상 제외는 XRF NG 이력을 유지하되, 부자재 리스트에서는 정밀분석 결과를 해당 없음으로 표시합니다.
+  // 승인 상태는 deriveRuntimeWorkflow()의 동일한 예외 Case에서 승인으로 파생됩니다.
+  if(wf?.stage==="PRECISION_HANDOFF_EXEMPTED"
+    || wf?.precision?.requestStatus==="EXEMPTED"
+    || wf?.precision?.handoffException===true) return "해당 없음";
   // 정밀 "결과" 값은 OK/NG만 사용합니다. 미해결 Case가 있으면 결과 없음(—)으로 유지합니다.
   if(Array.isArray(wf?.precisionCases) && wf.precisionCases.length){
     const active=wf.precisionCases.find(c=>c.key===wf.activePrecisionCaseKey);
@@ -11459,7 +11476,7 @@ export default function App(){
             const casePeriodLabel=precisionCasePeriodLabel(r);
             const measuredDate=dateOnly(r.measurement?.date||r.measurement?.measuredDate)||"—";
             const department=lang==="en"?translateUiTextKoToEn(r.item.dept||"—"):(r.item.dept||"—");
-            const statusBadge=(label,done)=><span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",maxWidth:"100%",minHeight:18,padding:lang==="en"?"2px 3px":"0 6px",boxSizing:"border-box",borderRadius:UI.pill,border:`1px solid ${done?C.charcoalDk:C.bd2}`,background:done?C.charcoalDk:C.card,color:done?"#fff":C.text4,fontSize:lang==="en"?9:9.5,fontWeight:600,whiteSpace:lang==="en"?"normal":"nowrap",lineHeight:1.05}}>{label}</span>;
+            const statusBadge=(label,done)=><span data-i18n-skip="true" style={{display:"inline-flex",alignItems:"center",justifyContent:"center",maxWidth:"100%",minHeight:18,padding:lang==="en"?"2px 3px":"0 6px",boxSizing:"border-box",borderRadius:UI.pill,border:`1px solid ${done?C.charcoalDk:C.bd2}`,background:done?C.charcoalDk:C.card,color:done?"#fff":C.text4,fontSize:lang==="en"?9:9.5,fontWeight:600,whiteSpace:lang==="en"?"normal":"nowrap",lineHeight:1.05}}>{lang==="en"?translateUiTextKoToEn(label):label}</span>;
             const tdStyle={height:lang==="en"?46:44,padding:lang==="en"?"3px 2px":"4px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",fontSize:10.5,color:C.text2,overflow:lang==="en"?"visible":"hidden"};
             return <tr key={r.key} onClick={()=>{
               if(precisionSelCaseId===r.key){
@@ -11478,7 +11495,7 @@ export default function App(){
               <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all"}}>{department}</td>
               <td style={{...tdStyle,whiteSpace:"nowrap"}}>{measuredDate}</td>
               <td style={tdStyle}><div style={{display:"flex",gap:3,justifyContent:"center",flexWrap:"wrap"}}>{(r.targets||[]).length?r.targets.map(element=><span key={element} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",minWidth:25,height:18,padding:"0 4px",borderRadius:UI.pill,background:C.bg,border:`1px solid ${C.bd2}`,fontSize:10,fontWeight:650}}>{element}</span>):"—"}</div></td>
-              <td style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{r.triggerLabel||"—"}</td>
+              <td data-i18n-skip="true" style={{...tdStyle,whiteSpace:"normal",wordBreak:"keep-all",lineHeight:1.3}}>{lang==="en"?translateUiTextKoToEn(r.triggerLabel||"—"):(r.triggerLabel||"—")}</td>
               <td style={tdStyle}>{statusBadge(isException?"해당 없음":(isRequested?"인계 완료":"인계 필요"),isRequested||isException)}</td>
               <td style={tdStyle}>{statusBadge(hasReport?"첨부 완료":"미첨부",hasReport)}</td>
               <td style={tdStyle}>{statusBadge(isConfirmed?"최종 컨펌":"미확정",isConfirmed)}</td>
@@ -11504,7 +11521,7 @@ export default function App(){
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                <div style={{...T.cardTitle}}>정밀분석 관리</div>
+                <div data-i18n-skip="true" style={{...T.cardTitle}}>{lang==="en"?"Precision Analysis Management":"정밀분석 관리"}</div>
                 <div data-i18n-skip="true" style={{position:"relative"}}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.text4} strokeWidth="2.2" strokeLinecap="round" style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",pointerEvents:"none"}}>
                     <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/>
@@ -11514,8 +11531,8 @@ export default function App(){
                     aria-label={lang==="en"?"Search precision analysis cases":"정밀분석 항목 검색"}
                     style={{height:34,width:220,boxSizing:"border-box",padding:"0 12px 0 32px",border:`1px solid ${C.bd}`,borderRadius:UI.rs,fontSize:12,outline:"none",background:C.card,color:C.text1}}/>
                 </div>
-                <span style={{fontSize:11,color:C.text4}}>결과 <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>건</span>
-                {precisionHasFilters&&<button type="button" onClick={handlePrecisionFiltersClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>필터 초기화</button>}
+                <span data-i18n-skip="true" style={{fontSize:11,color:C.text4}}>{lang==="en"?"Results":"결과"} <strong style={{color:C.text2,fontWeight:700}}>{filteredPrecisionRows.length}</strong>{lang==="en"?"":"건"}</span>
+                {precisionHasFilters&&<button type="button" data-i18n-skip="true" onClick={handlePrecisionFiltersClearAll} className="pill-btn" style={{height:26,padding:"0 13px",background:C.card,border:`1px solid ${C.bd2}`,fontSize:11,color:C.text3,fontWeight:500}}>{lang==="en"?"Reset Filters":"필터 초기화"}</button>}
               </div>
               <FilterChips filterState={precisionFilters} onClear={handlePrecisionFilterClear} onClearAll={handlePrecisionFiltersClearAll}/>
               {precisionListMode==="exceptions"?<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label={lang==="en"?"Items excluded from precision analysis":"정밀분석 대상 제외 목록"} tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
@@ -11537,14 +11554,14 @@ export default function App(){
                     </tr>;
                   })}</tbody>
                 </table>
-              </div>:<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label="품목별 정밀분석 발생 이력 표" tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
+              </div>:<div className="responsive-table-scroll table-scroll-wide precision-analysis-table" role="region" aria-label={lang==="en"?"Precision analysis history by item":"품목별 정밀분석 발생 이력 표"} tabIndex={0} style={{background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,width:"100%",maxWidth:"100%"}}>
                 <table style={{width:"100%",minWidth:lang==="en"?0:precisionTableWeight,maxWidth:lang==="en"?"100%":"none",borderCollapse:"collapse",tableLayout:"fixed"}}>
                   <colgroup>{precisionColumns.map(column=><col key={column.key} style={{width:`${(column.w/precisionTableWeight)*100}%`}}/>)}</colgroup>
                   <thead><tr style={{height:lang==="en"?62:42}}>{precisionColumns.map(column=><th key={column.key} style={{height:lang==="en"?62:42,padding:lang==="en"?"4px 2px":"4px 5px",borderBottom:`1px solid ${C.bd}`,textAlign:"center",verticalAlign:"middle",boxSizing:"border-box",background:C.card,whiteSpace:"normal",overflow:"visible",wordBreak:"keep-all",lineHeight:1.15}}>{column.el}</th>)}</tr></thead>
                   {precisionListRows.length===0?(
                     <tbody><tr><td colSpan={precisionColumns.length} style={{padding:44,textAlign:"center",color:C.text4,fontSize:12}}>{precisionListMode==="exceptions"?(lang==="en"?"No excluded items.":"정밀분석 대상에서 제외된 항목이 없습니다."):(lang==="en"?"No precision-analysis targets.":"정밀분석 대상이 없습니다.")}</td></tr></tbody>
                   ):filteredPrecisionRows.length===0?(
-                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>조건에 맞는 정밀분석 항목이 없습니다.<button type="button" onClick={handlePrecisionFiltersClearAll} style={{marginLeft:10,padding:"4px 10px",background:"none",border:`1px solid ${C.bd}`,fontSize:11,cursor:"pointer",color:C.text3}}>초기화</button></td></tr></tbody>
+                    <tbody><tr><td colSpan={precisionColumns.length} style={{padding:40,textAlign:"center",color:C.text4,fontSize:12}}>{lang==="en"?"No precision analysis cases match the current filters.":"조건에 맞는 정밀분석 항목이 없습니다."}<button type="button" data-i18n-skip="true" onClick={handlePrecisionFiltersClearAll} style={{marginLeft:10,padding:"4px 10px",background:"none",border:`1px solid ${C.bd}`,fontSize:11,cursor:"pointer",color:C.text3}}>{lang==="en"?"Reset":"초기화"}</button></td></tr></tbody>
                   ):precisionGroups.map(group=>{
                     const isCollapsed=!!collapsedPrecisionGroupKeys[group.key];
                     return <tbody key={group.key}>
@@ -11556,7 +11573,7 @@ export default function App(){
                             <span style={{fontSize:12.5,color:C.text1,fontWeight:750,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{displayItemName(group.item,lang)||"—"}</span>
                           </div>
                           <button type="button" onClick={event=>{event.stopPropagation();setCollapsedPrecisionGroupKeys(previous=>({...previous,[group.key]:!previous[group.key]}));}}
-                            aria-expanded={!isCollapsed} aria-label={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"} title={isCollapsed?"하위 항목 펼치기":"하위 항목 접기"}
+                            aria-expanded={!isCollapsed} aria-label={lang==="en"?(isCollapsed?"Expand item history":"Collapse item history"):(isCollapsed?"하위 항목 펼치기":"하위 항목 접기")} title={lang==="en"?(isCollapsed?"Expand item history":"Collapse item history"):(isCollapsed?"하위 항목 펼치기":"하위 항목 접기")}
                             style={{width:28,height:28,display:"inline-flex",alignItems:"center",justifyContent:"center",border:0,background:"transparent",color:C.text3,cursor:"pointer",padding:0,flex:"0 0 auto"}}>
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{transform:isCollapsed?"rotate(-90deg)":"rotate(0deg)",transition:"transform .15s"}}><path d="m6 9 6 6 6-6"/></svg>
                           </button>

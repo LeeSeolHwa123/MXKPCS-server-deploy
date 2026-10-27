@@ -21,7 +21,8 @@ export {
   buildRuntimeFromSharePoint,runtimePrecisionCasesForItem,deriveRuntimeWorkflow,
   precisionCaseFlowKey,summarizePrecisionCases,approvalFilterKey,workflowStageLabel,
   itemXrfWorst,isPrecisionHandoffExceptionCase,precisionRowsForListMode,
-  activePrecisionExceptionCaseOf,riskPrecisionPresentationOf
+  activePrecisionExceptionCaseOf,riskPrecisionPresentationOf,precisionAnalysisResultOf,
+  translateUiTextKoToEn
 };
 `;
 
@@ -77,16 +78,28 @@ assert(precisionCase?.precision?.handoffException===true,"measurement case must 
 assert(app.precisionCaseFlowKey(precisionCase)==="exception","precision tab and risk flow must share the exception bucket");
 assert(summary.total===1 && summary.exception===1 && summary.inProgress===0,"exception history must remain in totals but leave the in-progress count");
 assert(workflow.stage==="PRECISION_HANDOFF_EXEMPTED","latest-item workflow must expose the exception stage");
-assert(workflow.approval?.status==="미인계 예외","other tabs must receive the same exception status");
-assert(app.approvalFilterKey(workflow.approval?.status)==="exception","material-list approval filters must map the exception consistently");
+assert(workflow.triggerMeasurement?.id===measurementId,"material, precision, and risk tabs must share the same trigger measurement ID");
+assert(workflow.approval?.status==="승인","precision exceptions must appear as approved in the material list");
+assert(app.approvalFilterKey(workflow.approval?.status)==="approved","material-list approval filters must map precision exceptions to approved");
+assert(app.precisionAnalysisResultOf({...item,__workflow:workflow})==="해당 없음","material-list precision result must expose the exception as not applicable");
 assert(app.workflowStageLabel(workflow.stage)==="정밀분석 대상 제외","current-action labels must expose the excluded state");
 assert(app.itemXrfWorst(item)==="NG","exception must not overwrite the source XRF NG result");
 assert(app.isPrecisionHandoffExceptionCase(precisionCase)===true,"exception case classifier must recognize the DB-mapped row");
 assert(app.precisionRowsForListMode([precisionCase],"targets").length===0,"active precision target list must exclude exception cases");
 assert(app.precisionRowsForListMode([precisionCase],"exceptions").length===1,"exception list must retain exception cases for later review");
+assert(app.precisionRowsForListMode([precisionCase],"exceptions")[0]?.key===measurementId,"precision exception list must retain the shared measurement ID");
 assert(app.activePrecisionExceptionCaseOf(workflow)?.key===measurementId,"risk overview must resolve the active exception by measurement ID");
 assert(riskPresentation.resultLabel==="해당 없음","risk overview precision result must expose the shared excluded state as not applicable");
 assert(riskPresentation.actionLabel==="제외 사유 확인","risk overview current action must link to the exclusion reason");
+assert(app.translateUiTextKoToEn("상세 사유")==="Detailed Reason","English exception headers must not retain Korean detail text");
+assert(app.translateUiTextKoToEn("처리일")==="Processed Date","English exception headers must translate the processed date");
+assert(app.translateUiTextKoToEn("관리")==="Manage","English exception headers must translate management actions");
+assert(app.translateUiTextKoToEn("최종 확인 필요")==="Final Confirmation Required","English precision flow labels must not be partially translated");
+["발생 주기","품번","품목명","부서","측정일","대상 원소","인계 사유","인계 상태","성적서","컨펌 상태","정밀 결과","대상 제외","제외 사유","상세 사유","처리일","관리"].forEach(label=>{
+  assert(!/[가-힣]/.test(app.translateUiTextKoToEn(label)),`English precision header must not retain Korean text: ${label}`);
+});
+assert(source.includes('if(balancedHeader&&lang==="en")')&&source.includes('flexDirection:"column"')&&source.includes('height:8,textAlign:"center"'),"English precision filter arrows must occupy a separate row below header labels");
+assert(source.includes('gridTemplateColumns:balancedHeader?"16px minmax(0,1fr) 16px"'),"Korean precision filter arrows must remain in the right-hand header column");
 assert(source.includes('row?.key,precisionCasePeriodLabel(row)'),"precision exception search must support exact measurement-ID navigation");
 assert(source.includes('ko:"대상 제외 목록"'),"precision tab must expose a separate excluded-items selector");
 assert(source.includes('"정밀분석 대상 제외 처리"'),"precision exclusion dialog must use an intuitive title");
@@ -101,7 +114,7 @@ assert(!source.includes('>{lang==="en"?"Edit":"편집"}</button>'),"excluded-ite
 assert(source.includes('const processSteps=steps.slice(0,3)'),"risk analysis flow must keep only the first three cards as sequential stages");
 assert(source.includes('lang==="en"?"Case Outcome":"처리 결과"'),"risk analysis flow must group terminal outcomes under one shared result area");
 assert(source.includes('const resultSteps=steps.slice(3)'),"OK, NG, and excluded cases must share the same outcome level");
-assert(source.includes('>{filteredPrecisionRows.length}</strong>건</span>'),"precision list summary must retain only the current result count");
+assert(source.includes('>{filteredPrecisionRows.length}</strong>{lang==="en"?"":"건"}</span>'),"precision list summary must retain only the current result count");
 assert(!source.includes('건 · 전체 {precisionListRows.length}건</span>'),"precision list summary must not repeat the unfiltered total");
 assert(!source.includes('lang==="en"?"Grouped by item · Newest measurement first":"품목별 구분 · 측정일 최신순"'),"precision list summary must not render the grouping and sort note");
 assert(source.includes('border:`1px solid ${A.purple.ln}`')&&source.includes('background:A.purple.bg'),"risk analysis flow outcome group must retain the purple fill and border");
