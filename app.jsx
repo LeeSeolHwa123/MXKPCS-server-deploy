@@ -381,13 +381,13 @@ const FILTER_LABELS = {
   dept: {},
   cycle: {Monthly:"월 1회", Semiannual:"반기 1회", Annual:"연 1회", "Not Available":"—"},
   firstDate: {},
-  xrf: {NG:"NG · 정밀분석", OK:"OK", "재측정 필요":"재측정", "확인 필요":"결과 확인", H:"H · Exceeded", M:"M · Less than", L:"L · N.D.", "—":"—"},
+  xrf: {NG:"NG", OK:"OK", "재측정 필요":"재측정", "확인 필요":"확인 필요", H:"H · Exceeded", M:"M · Less than", L:"L · N.D.", "—":"—"},
   compliance: {overdue:"미이행", dueSoon:"측정권장", ok:"이행", upcoming:"예정", notAvailable:"대상 아님"},
   precision: {OK:"OK", NG:"NG", "—":"—"},
   crLevel: {H:"H · 직접접촉+잔류", M:"M · 직접접촉+비잔류", L:"L · 비접촉"},
   risk: {"Not Allowed":"사용불허", H:"H", M:"M", L:"L", "—":"—"},
   retest: {review:"재측정", trusted:"재측정 불필요"},
-  approval: {approved:"사용/단종 승인", measuring:"측정 진행중", request:"의뢰 필요", exception:"해당 없음", rejected:"사용/단종 반려", hold:"보류/검토중", cancelled:"처리 취소"},
+  approval: {approved:"승인", measuring:"측정 진행중", request:"의뢰 필요", exception:"해당 없음", rejected:"반려", hold:"보류", cancelled:"처리 취소"},
   lifecycle: {ExistingActive:"기존 운영", NewReplacement:"신규 대체", ReplacedOld:"대체됨", Discontinued:"단종", NewItem:"신규 도입", Cancelled:"처리 취소"},
   nextDue: {},
   dDay: {},
@@ -407,18 +407,24 @@ const FILTER_LABELS = {
   paExceptionDetail: {},
   paExceptionAt: {},
 };
-const COL_NAMES = {category:"분류", code:"품번", name:"품목명", dept:"부서", cycle:"주기", firstDate:"최초 등록", xrf:"XRF 결과", compliance:"현재 상태", precision:"정밀분석", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", nextDue:"다음 마감", dDay:"D-DAY", dueMonth:"도래월", paPeriod:"발생 주기", paCode:"품번", paName:"품목명", paDept:"부서", paMeasuredDate:"측정일", paElements:"대상 원소", paReason:"인계 사유", paHandoff:"인계 상태", paReport:"성적서", paConfirm:"컨펌 상태", paResult:"정밀 결과", paExceptionReason:"제외 사유", paExceptionDetail:"상세 사유", paExceptionAt:"처리일"};
+const COL_NAMES = {category:"분류", photo:"사진", code:"품번", name:"품목명", dept:"부서", cycle:"주기", firstDate:"최초 등록", xrf:"XRF 결과", compliance:"현재 상태", precision:"정밀분석", crLevel:"C&R 등급", risk:"Risk", retest:"XRF 후속조치", approval:"승인 상태", lifecycle:"라이프사이클", nextDue:"다음 마감", dDay:"D-DAY", dueMonth:"도래월", paPeriod:"발생 주기", paCode:"품번", paName:"품목명", paDept:"부서", paMeasuredDate:"측정일", paElements:"대상 원소", paReason:"인계 사유", paHandoff:"인계 상태", paReport:"성적서", paConfirm:"컨펌 상태", paResult:"정밀 결과", paExceptionReason:"제외 사유", paExceptionDetail:"상세 사유", paExceptionAt:"처리일"};
 const UNIQUE_VALS = {
   category: ["existing","new","changed"],
+  photo: ["사진 있음","사진 없음"],
   dept: ["Assembly","Common","Molding","Plating","Stamping"],
   cycle: ["Monthly","Semiannual","Annual","Not Available"],
   xrf: ["NG","OK","재측정 필요","확인 필요","—"],
   compliance: ["overdue","dueSoon","ok","upcoming","notAvailable"],
+  precision: ["OK","NG","—"],
   crLevel: ["H","M","L"],
   risk: ["Not Allowed","H","M","L","—"],
   retest: ["review","trusted"],
-  approval: ["approved","measuring","request","rejected","hold","cancelled"],
+  approval: ["approved","measuring","request","exception","rejected","hold","cancelled"],
   lifecycle: ["ExistingActive","NewReplacement","ReplacedOld","Discontinued","NewItem","Cancelled"],
+  paHandoff: ["인계 필요","인계 완료","해당 없음"],
+  paReport: ["미첨부","첨부 완료"],
+  paConfirm: ["미확정","최종 컨펌"],
+  paResult: ["OK","NG","—"],
 };
 
 // 초기 마이그레이션 원본부터 Item_Name_EN이 비어 있던 품목의 표시 보정값입니다.
@@ -4796,10 +4802,9 @@ function FilterPanel({column, pos, selected, values, onToggle, onClear, onClose}
   const safeValues = values||UNIQUE_VALS[column]||[];
   const labels = FILTER_LABELS[column]||{};
   const allSel = selected.length===0;
-  const handleAll = ()=>{
-    if(allSel){ safeValues.forEach(v=>onToggle(column,v)); }
-    else { onClear(column); }
-  };
+  // 빈 배열을 "모든 값 포함"으로 사용하므로 전체 선택은 값 전체를 필터에 넣지 않고 필터를 해제합니다.
+  // 품번·품명처럼 항목 수가 많은 열에서 전체 값이 필터 칩으로 생성되던 문제를 방지합니다.
+  const handleAll = ()=>onClear(column);
   return(
     <div data-filter-panel="1" style={{position:"fixed",top:pos.top,left:pos.left,zIndex:9999,
       background:C.card,border:`1px solid ${C.bd2}`,borderRadius:4,
@@ -4816,6 +4821,7 @@ function FilterPanel({column, pos, selected, values, onToggle, onClear, onClose}
         {!allSel&&<span style={{fontSize:10,color:C.text4,marginLeft:"auto"}}>{selected.length}/{safeValues.length}</span>}
       </div>
       <div style={{maxHeight:220,overflowY:"auto"}}>
+        {safeValues.length===0&&<div style={{padding:"13px 12px",fontSize:11,color:C.text4,textAlign:"center"}}>표시할 구성 항목이 없습니다.</div>}
         {safeValues.map(v=>{
           const isSel=selected.includes(v);
           return(
@@ -5461,6 +5467,50 @@ function listColumnValue(item,column,approvalStatus=""){
   return "—";
 }
 
+function orderedUniqueFilterValues(column,values=[]){
+  const actual=new Set((values||[]).map(value=>String(value??"").trim()||"—"));
+  const ordered=[];
+  (UNIQUE_VALS[column]||[]).forEach(value=>{
+    if(!actual.has(value)) return;
+    ordered.push(value);
+    actual.delete(value);
+  });
+  return ordered.concat([...actual].sort((a,b)=>a.localeCompare(b,"ko",{numeric:true,sensitivity:"base"})));
+}
+
+// 부자재 리스트의 필터 옵션은 해당 열에 실제로 렌더링되는 값만 사용합니다.
+// 위험도 매트릭스에서 전달하는 XRF Level(H/M/L)은 필터 판정에서는 계속 지원하지만
+// XRF 결과 열의 드롭다운에는 화면에 보이지 않는 Level 값을 노출하지 않습니다.
+function materialFilterValuesForItem(item,column,approvalStatus=""){
+  if(!item) return ["—"];
+  const cycleMuted=isDiscontinueRequestItem(item) || isDiscontinuedItem(item) || !isComplianceTarget(item);
+  if(column==="cycle") return [cycleMuted||isEquipmentItem(item)?"Not Available":(itemCycleFromRisk(item)||"Not Available")];
+  if(column==="compliance") return [cycleMuted?"notAvailable":getCS(item)];
+  if(column==="xrf"){
+    if(isDiscontinueRequestItem(item)) return ["—"];
+    const workflow=workflowForItem(item);
+    const result=itemXrfWorst(item)||"—";
+    let status="";
+    if(workflow.stage==="XRF_REQUIRED") status="확인 필요";
+    else if(workflow.stage==="XRF_REMEASURE_REQUIRED") status="재측정 필요";
+    else if(result==="—") status="확인 필요";
+    const visible=[];
+    if(status && status!==result) visible.push(status);
+    if(result!=="—") visible.push(result);
+    if(!visible.length) visible.push("—");
+    return [...new Set(visible)];
+  }
+  if(column==="precision") return [isDiscontinueRequestItem(item)?"—":precisionAnalysisResultOf(item)||"—"];
+  if(column==="crLevel") return [item.crLevel||"—"];
+  if(column==="risk") return [itemFinalRisk(item)||"—"];
+  if(column==="retest") return [itemRetestRequired(item)?"review":"trusted"];
+  if(column==="lifecycle") return [item.lifecycle||"—"];
+  if(column==="dueMonth") return isComplianceTarget(item)
+    ? itemStatusPeriods(item).filter(period=>!period?.measured&&period?.due).map(period=>String(period.due).slice(0,7))
+    : [];
+  return [listColumnValue(item,column,approvalStatus)];
+}
+
 function approvalStatusOfItemFallback(item){
   return item?.approvalStatus||deriveInitialApprovalStatus(latestMeasurementOf(item));
 }
@@ -5469,11 +5519,12 @@ function itemMatchesListColumnFilter(item,column,selected,approvalStatus=""){
   const selectedValues=selected||[];
   if(!selectedValues.length) return true;
   if(column==="xrf"){
-    const result=itemXrfResult(item);
     const level=riskBasisXrfLevelOf(item)||itemLatestXrfLevel(item);
-    return selectedValues.includes(result)||selectedValues.includes(level);
+    const visibleValues=materialFilterValuesForItem(item,column,approvalStatus);
+    return selectedValues.some(value=>visibleValues.includes(value)||value===level);
   }
-  return selectedValues.includes(listColumnValue(item,column,approvalStatus));
+  const actualValues=materialFilterValuesForItem(item,column,approvalStatus);
+  return selectedValues.some(value=>actualValues.includes(value));
 }
 
 function itemMatchesListSearch(item,search,approvalStatus=""){
@@ -8014,8 +8065,7 @@ export default function App(){
   const precisionFilterValues=useMemo(()=>{
     const output={};
     PRECISION_FILTER_KEYS.forEach(column=>{
-      output[column]=[...new Set(precisionListRows.flatMap(row=>precisionCaseFilterValues(row,column,lang)).filter(Boolean))]
-        .sort((a,b)=>String(a).localeCompare(String(b),"ko",{numeric:true,sensitivity:"base"}));
+      output[column]=orderedUniqueFilterValues(column,precisionListRows.flatMap(row=>precisionCaseFilterValues(row,column,lang)).filter(Boolean));
     });
     return output;
   },[precisionListRows,lang]);
@@ -9083,34 +9133,10 @@ export default function App(){
   );
 
   const listFilterValues=useMemo(()=>{
-    const uniqueSorted=values=>[...new Set(values.map(value=>String(value||"—")).filter(Boolean))]
-      .sort((a,b)=>a.localeCompare(b,"ko",{numeric:true,sensitivity:"base"}));
-    const columnValues=column=>uniqueSorted(listItems.map(item=>listColumnValue(item,column,approvalStatusOf(item))));
-    return {
-      category:columnValues("category"),
-      photo:columnValues("photo"),
-      code:columnValues("code"),
-      name:columnValues("name"),
-      dept:columnValues("dept"),
-      cycle:columnValues("cycle"),
-      firstDate:columnValues("firstDate"),
-      xrf:uniqueSorted(listItems.flatMap(item=>[
-        listColumnValue(item,"xrf",approvalStatusOf(item)),
-        riskBasisXrfLevelOf(item)||itemLatestXrfLevel(item),
-      ].filter(Boolean))),
-      compliance:columnValues("compliance"),
-      precision:columnValues("precision"),
-      crLevel:uniqueSorted(listItems.map(item=>item.crLevel||"—")),
-      risk:uniqueSorted(listItems.map(item=>itemFinalRisk(item)||"—")),
-      retest:uniqueSorted(listItems.map(item=>itemRetestRequired(item)?"review":"trusted")),
-      approval:columnValues("approval"),
-      lifecycle:uniqueSorted(listItems.map(item=>item.lifecycle||"—")),
-      nextDue:columnValues("nextDue"),
-      dDay:columnValues("dDay"),
-      dueMonth:uniqueSorted(listItems.flatMap(item=>isComplianceTarget(item)
-        ? itemStatusPeriods(item).filter(period=>!period?.measured&&period?.due).map(period=>String(period.due).slice(0,7))
-        : [])),
-    };
+    return Object.fromEntries(MATERIAL_LIST_FILTER_KEYS.map(column=>[
+      column,
+      orderedUniqueFilterValues(column,listItems.flatMap(item=>materialFilterValuesForItem(item,column,approvalStatusOf(item)))),
+    ]));
   },[listItems,approvalStatusOf]);
 
   const filtered=useMemo(()=>listItems.filter(item=>{
@@ -9119,12 +9145,10 @@ export default function App(){
     for(const column of ["category","photo","code","name","dept","cycle","firstDate","compliance","xrf","precision","approval","nextDue","dDay"]){
       if(!itemMatchesListColumnFilter(item,column,fs[column],approvalStatus)) return false;
     }
-    if(fs.crLevel.length>0&&!fs.crLevel.includes(item.crLevel||"—")) return false;
-    if(fs.risk.length>0&&!fs.risk.includes(itemFinalRisk(item)||"—")) return false;
-    if(fs.retest.length>0&&!fs.retest.includes(itemRetestRequired(item)?"review":"trusted")) return false;
-    if(fs.lifecycle.length>0&&!fs.lifecycle.includes(item.lifecycle||"—")) return false;
-    if((fs.dueMonth||[]).length>0
-      && !fs.dueMonth.some(monthKey=>openDuePeriodsInMonth(item,monthKey).length>0)) return false;
+    for(const column of ["crLevel","risk","retest","lifecycle","dueMonth"]){
+      const selectedValues=fs[column]||[];
+      if(selectedValues.length>0&&!selectedValues.some(value=>materialFilterValuesForItem(item,column,approvalStatus).includes(value))) return false;
+    }
     if(!itemMatchesListSearch(item,search,approvalStatus)) return false;
     return true;
   }).map((item,idx)=>({item,idx})).sort((a,b)=>{
