@@ -106,7 +106,13 @@ assert(!source.includes('건 · 전체 {precisionListRows.length}건</span>'),"p
 assert(!source.includes('lang==="en"?"Grouped by item · Newest measurement first":"품목별 구분 · 측정일 최신순"'),"precision list summary must not render the grouping and sort note");
 assert(source.includes('border:`1px solid ${A.purple.ln}`')&&source.includes('background:A.purple.bg'),"risk analysis flow outcome group must retain the purple fill and border");
 assert(!source.includes('const listFilterValues=useMemo(()=>{\n    const uniqueSorted=values=>[...new Set(values.map(value=>String(value||"—")).filter(Boolean))]\n      .sort((a,b)=>a.localeCompare(b,"ko",{numeric:true,sensitivity:"base"}));\n    return {\n      ...UNIQUE_VALS'),"material filter options must not be populated from hard-coded global choices");
-assert(source.includes('category:columnValues("category")')&&source.includes('approval:columnValues("approval")')&&source.includes('lifecycle:uniqueSorted(listItems.map(item=>item.lifecycle||"—"))'),"material filter options must be derived from actual list items");
+assert(source.includes('orderedUniqueFilterValues(column,listItems.flatMap(item=>materialFilterValuesForItem(item,column,approvalStatusOf(item))))'),"material filter options must be derived from the values actually rendered for each list item");
+assert(source.includes('if(status && status!==result) visible.push(status)')&&source.includes('if(result!=="—") visible.push(result)'),"XRF filter options must use the visible workflow status and result");
+assert(source.includes('const handleAll = ()=>onClear(column)'),"select-all must clear the filter instead of creating one chip for every actual value");
+assert(source.includes('approval: ["approved","measuring","request","exception","rejected","hold","cancelled"]'),"actual exception approval states must retain the established business order");
+assert(source.includes('xrf: {NG:"NG", OK:"OK", "재측정 필요":"재측정", "확인 필요":"확인 필요"'),"XRF filter labels must match the text rendered in the XRF column");
+assert(source.includes('approval: {approved:"승인", measuring:"측정 진행중", request:"의뢰 필요", exception:"해당 없음", rejected:"반려", hold:"보류"'),"approval filter labels must match the approval badges");
+assert(source.includes('const COL_NAMES = {category:"분류", photo:"사진"'),"the photo filter must retain its actual column name");
 assert(source.includes('paElements:targetElements.length?targetElements:["—"]'),"precision element filter must include the displayed empty value when no target element exists");
 assert(source.includes('setPrecisionQuickException({row:r,mode:"apply"})'),"precision target rows must expose a direct exception action");
 assert(source.includes('setPrecisionQuickException({row:r,mode:"edit"})'),"exception rows must expose exception editing");
