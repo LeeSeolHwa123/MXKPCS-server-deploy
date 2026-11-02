@@ -43,22 +43,19 @@ const runtime=app.buildRuntimeFromSharePoint({lists:{
     {id:"24",fields:{Title:measurementId,field_1:"Cl",field_2:"ND",field_3:"1",field_4:"N.D."}},
     {id:"25",fields:{Title:measurementId,field_1:"Br",field_2:"ND",field_3:"1",field_4:"N.D."}},
   ],
-  XRF_Requests:[{id:"30",fields:{
+  XRF_Requests:[],
+  XRF_PrecisionExceptions:[{id:"30",fields:{
     Title:`PREC_EXC_${measurementId}`,
-    field_1:"PrecisionHandoffException",
-    field_2:"Applied",
-    field_3:"ITM_EXCEPTION",
-    field_4:measurementId,
-    field_5:"HAZARDOUS_SUBSTANCE_SCREENING",
-    field_15:"유해물질 확인 목적의 조사성 측정",
-    Processed_At:"2026-10-26T09:00:00Z",
-    Processed_By:"admin",
-    Before_Target_Snapshot_JSON:JSON.stringify({
-      eventType:"PRECISION_HANDOFF_EXCEPTION",status:"ACTIVE",triggerMeasurementId:measurementId,
-      itemId:"ITM_EXCEPTION",reasonCode:"HAZARDOUS_SUBSTANCE_SCREENING",
-      reasonDetail:"유해물질 확인 목적의 조사성 측정",evidence:"APPROVAL-2026-001",
-      createdAt:"2026-10-26T09:00:00Z",createdBy:"admin"
-    })
+    Measurement_ID:measurementId,
+    Item_ID:"ITM_EXCEPTION",
+    Exception_Reason:"HAZARDOUS_SUBSTANCE_SCREENING",
+    Exception_Detail:"유해물질 확인 목적의 조사성 측정",
+    Evidence_Reference:"APPROVAL-2026-001",
+    Is_Active:true,
+    Excluded_At:"2026-10-26T09:00:00Z",
+    Excluded_By:"admin",
+    Removed_At:null,
+    Removed_By:null,
   }}],
   XRF_PrecisionAnalyses:[],
   XRF_PrecisionElementResults:[],
@@ -141,8 +138,12 @@ assert(!source.includes('기존과 동일하게 NG 발생 건이 자동으로 �
 assert(!source.includes('정밀분석 인계에서 제외된 건입니다. XRF NG와 위험도 이력은 유지됩니다.'),"removed exception-list guidance must not remain");
 
 assert(apiSource.includes('action === "setPrecisionHandoffException"'),"API must expose the exception mutation action");
-assert(apiSource.includes('field_1: "PrecisionHandoffException"'),"API must store exceptions as isolated XRF_Requests audit events");
-assert(apiSource.includes('Before_Target_Snapshot_JSON: JSON.stringify(event)'),"API must persist the complete exception audit payload");
+assert(apiSource.includes('XRF_PrecisionExceptions: "XRF_PrecisionExceptions"'),"API must address the dedicated SharePoint exception list");
+assert(apiSource.includes('Measurement_ID: triggerMeasurementId'),"API must link a dedicated exception row to its measurement ID");
+assert(apiSource.includes('Exception_Reason: enabled ? reasonCode'),"API must store the selected exception reason in the dedicated column");
+assert(apiSource.includes('Is_Active: enabled'),"API must keep exception activation state in the dedicated boolean column");
+assert(apiSource.includes('action === "migratePrecisionExceptions"'),"API must expose a verified one-time exception migration action");
+assert(source.includes('lists.XRF_PrecisionExceptions||lists.precisionExceptions||[]'),"the web runtime must read the dedicated exception list");
 assert(apiSource.includes('정밀분석 대상 제외 편집값의 DB 저장 검증에 실패했습니다.'),"API must verify edited exclusion values after saving");
 assert(apiSource.includes('if (activeException) throw new Error'),"precision transfer must reject an active exception until it is removed");
 

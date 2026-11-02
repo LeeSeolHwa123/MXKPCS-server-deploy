@@ -1078,27 +1078,27 @@ function buildSharePointPrecisionOverrides(precisionRows,precisionElementRows){
   return output;
 }
 
-function buildSharePointPrecisionExceptionOverrides(requestRows,precisionOverrides={}){
+function buildSharePointPrecisionExceptionOverrides(exceptionRows,precisionOverrides={}){
   const output={};
-  for(const row of requestRows||[]){
+  for(const row of exceptionRows||[]){
     const f=sharePointFields(row);
-    if(String(f.field_1||"").trim().toLowerCase()!=="precisionhandoffexception") continue;
-    const event=parseSharePointJson(f.Before_Target_Snapshot_JSON)||{};
-    const triggerMeasurementId=String(event.triggerMeasurementId||f.field_4||"").trim();
-    const status=String(event.status||f.field_2||"").trim().toUpperCase();
-    if(!triggerMeasurementId || status!=="ACTIVE") continue;
-    // 실제 정밀분석 인계 Header가 이미 있으면 그 상태를 우선해 예외가 결과를 가리지 않도록 합니다.
+    const triggerMeasurementId=String(f.Measurement_ID||f.Title||"").trim();
+    const isActive=f.Is_Active===true || f.Is_Active===1 || String(f.Is_Active||"").trim().toLowerCase()==="true";
+    if(!triggerMeasurementId || !isActive) continue;
+    // 실제 정밀분석 Header가 이미 생성된 건은 결과/인계 상태를 우선합니다.
     if(precisionOverrides?.[triggerMeasurementId]?.requestStatus==="REQUESTED") continue;
     output[triggerMeasurementId]={
       ...(precisionOverrides?.[triggerMeasurementId]||{}),
       requestStatus:"EXEMPTED",
       handoffException:true,
+      exceptionSpItemId:row?.id||null,
+      // 이전 UI 코드와의 호환을 위해 한 배포 주기 동안 동일 ID 별칭을 유지합니다.
       exceptionRequestSpItemId:row?.id||null,
-      exceptionReasonCode:String(event.reasonCode||f.field_5||"").trim(),
-      exceptionReasonDetail:sharePointPlainText(event.reasonDetail||f.field_15||""),
-      exceptionAt:event.createdAt||f.Processed_At||row?.createdDateTime||"",
-      exceptionBy:sharePointPlainText(event.createdBy||f.Processed_By||""),
-      exceptionEvidence:sharePointPlainText(event.evidence||""),
+      exceptionReasonCode:String(f.Exception_Reason||"").trim(),
+      exceptionReasonDetail:sharePointPlainText(f.Exception_Detail||""),
+      exceptionAt:f.Excluded_At||row?.createdDateTime||"",
+      exceptionBy:sharePointPlainText(f.Excluded_By||""),
+      exceptionEvidence:sharePointPlainText(f.Evidence_Reference||""),
     };
   }
   return output;
@@ -1112,6 +1112,7 @@ function buildRuntimeFromSharePoint(payload){
   const elementRows=lists.XRF_ElementResults||lists.elementResults||[];
   const precisionRows=lists.XRF_PrecisionAnalyses||lists.precisionAnalyses||[];
   const precisionElementRows=lists.XRF_PrecisionElementResults||lists.precisionElementResults||[];
+  const precisionExceptionRows=lists.XRF_PrecisionExceptions||lists.precisionExceptions||[];
 
   const measurementMap=buildSharePointMeasurementMap(measurementRows,elementRows);
   const baseMasterItems=deriveReplacementRelations(buildSharePointMasterItems(itemRows,measurementMap,payload?.itemPhotos||{}));
@@ -1120,7 +1121,7 @@ function buildRuntimeFromSharePoint(payload){
   const precisionHeaderOverrides=buildSharePointPrecisionOverrides(precisionRows,precisionElementRows);
   const precisionOverrides={
     ...precisionHeaderOverrides,
-    ...buildSharePointPrecisionExceptionOverrides(requestRows,precisionHeaderOverrides),
+    ...buildSharePointPrecisionExceptionOverrides(precisionExceptionRows,precisionHeaderOverrides),
   };
   const replacementHistory=buildSharePointReplacementHistory(requestRows,masterItems);
 
@@ -1136,7 +1137,8 @@ function buildRuntimeFromSharePoint(payload){
       measurements:measurementRows.length,
       elementResults:elementRows.length,
       precisionAnalyses:precisionRows.length,
-      precisionElementResults:precisionElementRows.length
+      precisionElementResults:precisionElementRows.length,
+      precisionExceptions:precisionExceptionRows.length
     }
   };
 }
