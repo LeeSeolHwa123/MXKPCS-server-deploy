@@ -3,3 +3,6 @@ db_export/
 node_modules/
 .tools/
 .env*
+outputs/*
+!outputs/sharepoint_db_schema_2026-11-03/
+!outputs/sharepoint_db_schema_2026-11-03/**
