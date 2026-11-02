@@ -15,6 +15,8 @@ const LIST_IDS = {
   XRF_ElementResults: "b0a877ee-5334-4237-9b8f-e94235b118a4",
   XRF_PrecisionAnalyses: "3c387146-a8c5-4b94-9bf3-251452b19a1c",
   XRF_PrecisionElementResults: "3fc979f1-4d6c-4d8a-9c75-3cab099d9971",
+  // Microsoft Graph supports addressing a SharePoint list by title as well as by GUID.
+  XRF_PrecisionExceptions: "XRF_PrecisionExceptions",
   XRF_ReportLibrary: "0462cdd6-f3ce-40bf-a814-471796a6147b",
   XRF_ItemPhotoLibrary: "ef7471b3-dea2-447f-a54a-254cddc7ed1a",
 };
@@ -26,6 +28,7 @@ const WRITABLE_LISTS = new Set([
   "XRF_ElementResults",
   "XRF_PrecisionAnalyses",
   "XRF_PrecisionElementResults",
+  "XRF_PrecisionExceptions",
 ]);
 
 const XRF_SOURCE_ELEMENTS = ["Pb", "Hg", "Cr", "Cd", "Cl", "Br"];
@@ -689,9 +692,34 @@ async function handleListColumns(siteId, accessToken, listName) {
     displayName: column?.displayName || null,
     hidden: column?.hidden === true,
     readOnly: column?.readOnly === true,
+    required: column?.required === true,
+    indexed: column?.indexed === true,
+    enforceUniqueValues: column?.enforceUniqueValues === true,
+    defaultValue: column?.defaultValue?.value ?? null,
     type: column?.text ? "text" : column?.number ? "number" : column?.dateTime ? "dateTime"
-      : column?.boolean ? "boolean" : column?.hyperlinkOrPicture ? "hyperlinkOrPicture" : "other",
+      : column?.boolean ? "boolean" : column?.choice ? "choice"
+        : column?.hyperlinkOrPicture ? "hyperlinkOrPicture" : "other",
+    allowMultipleLines: column?.text?.allowMultipleLines === true,
+    choices: Array.isArray(column?.choice?.choices) ? column.choice.choices : [],
   }));
+}
+
+async function handleListInfo(siteId, accessToken, listName) {
+  if (!LIST_IDS[listName]) throw new Error("조회할 수 없는 SharePoint List입니다.");
+  const response = await fetchWithRetry(listUrl(siteId, listName), {
+    method: "GET", headers: graphHeaders(accessToken),
+  });
+  const list = await response.json();
+  return {
+    id: list?.id || null,
+    name: list?.name || null,
+    displayName: list?.displayName || null,
+    webUrl: list?.webUrl || null,
+    createdDateTime: list?.createdDateTime || null,
+    lastModifiedDateTime: list?.lastModifiedDateTime || null,
+    template: list?.list?.template || null,
+    hidden: list?.list?.hidden === true,
+  };
 }
 
 function listUrl(siteId, listName) {
@@ -1651,86 +1679,237 @@ async function handleSetPrecisionHandoffException(siteId, accessToken, payload) 
     throw new Error("이미 정밀분석에 인계되었거나 결과가 등록된 건은 정밀분석 대상에서 제외할 수 없습니다.");
   }
 
-  const requestRows = await readList(siteId, "XRF_Requests", accessToken);
+  const exceptionRows = await readList(siteId, "XRF_PrecisionExceptions", accessToken);
   const eventIdRaw = `PREC_EXC_${triggerMeasurementId}`;
   const eventId = eventIdRaw.length <= 250
     ? eventIdRaw
     : `PREC_EXC_${Buffer.from(triggerMeasurementId).toString("base64url").slice(0, 220)}`;
-  let eventRow = requestRows.find(row => cleanText(row?.fields?.Title).trim() === eventId
-    && cleanText(row?.fields?.field_1).trim().toLowerCase() === "precisionhandoffexception") || null;
-  const previousEvent = parseJsonObject(eventRow?.fields?.Before_Target_Snapshot_JSON);
+  let eventRow = exceptionRows.find(row => cleanText(row?.fields?.Measurement_ID).trim() === triggerMeasurementId) || null;
   const now = new Date().toISOString();
   const actor = cleanText(payload?.actor || "admin").trim() || "admin";
-  if (!enabled && (!eventRow || String(previousEvent?.status || eventRow?.fields?.field_2 || "").toUpperCase() !== "ACTIVE")) {
+  const wasActive = eventRow?.fields?.Is_Active === true || bool(eventRow?.fields?.Is_Active);
+  if (!enabled && (!eventRow || !wasActive)) {
     throw new Error("해제할 정밀분석 대상 제외 기록이 없습니다.");
   }
 
-  const event = enabled ? {
-    eventId,
-    eventType: "PRECISION_HANDOFF_EXCEPTION",
-    status: "ACTIVE",
-    triggerMeasurementId,
-    itemId: cleanText(measurement?.fields?.field_1).trim(),
-    reasonCode,
-    reasonDetail,
-    evidence,
-    createdAt: previousEvent?.createdAt || now,
-    createdBy: previousEvent?.createdBy || actor,
-    updatedAt: now,
-    updatedBy: actor,
-    revokedAt: "",
-    revokedBy: "",
-  } : {
-    ...previousEvent,
-    eventId,
-    eventType: "PRECISION_HANDOFF_EXCEPTION",
-    status: "REVERTED",
-    triggerMeasurementId,
-    revokedAt: now,
-    revokedBy: actor,
-  };
   const fields = {
     Title: eventId,
-    field_1: "PrecisionHandoffException",
-    field_2: enabled ? "Applied" : "Reverted",
-    field_3: cleanText(measurement?.fields?.field_1).trim(),
-    field_4: triggerMeasurementId,
-    field_5: enabled ? reasonCode : nonEmpty(previousEvent?.reasonCode),
-    field_15: enabled ? reasonDetail : nonEmpty(previousEvent?.reasonDetail),
-    Processed_At: enabled ? now : (eventRow?.fields?.Processed_At || previousEvent?.createdAt || now),
-    Processed_By: enabled ? actor : (eventRow?.fields?.Processed_By || previousEvent?.createdBy || actor),
-    Reverted_At: enabled ? null : now,
-    Reverted_By: enabled ? null : actor,
-    Revert_Reason: enabled ? null : "Precision handoff exception removed",
-    Before_Target_Snapshot_JSON: JSON.stringify(event),
-    Is_Migration: false,
+    Measurement_ID: triggerMeasurementId,
+    Item_ID: cleanText(measurement?.fields?.field_1).trim(),
+    Exception_Reason: enabled ? reasonCode : cleanText(eventRow?.fields?.Exception_Reason).trim(),
+    Exception_Detail: enabled ? reasonDetail : cleanText(eventRow?.fields?.Exception_Detail),
+    Evidence_Reference: enabled ? evidence : cleanText(eventRow?.fields?.Evidence_Reference),
+    Is_Active: enabled,
+    Excluded_At: enabled ? (eventRow?.fields?.Excluded_At || now) : eventRow?.fields?.Excluded_At,
+    Excluded_By: enabled ? (cleanText(eventRow?.fields?.Excluded_By).trim() || actor) : eventRow?.fields?.Excluded_By,
+    Removed_At: enabled ? null : now,
+    Removed_By: enabled ? null : actor,
   };
 
   if (!eventRow) {
-    eventRow = await createListItem(siteId, "XRF_Requests", fields, accessToken);
+    eventRow = await createListItem(siteId, "XRF_PrecisionExceptions", fields, accessToken);
   } else {
-    await patchListItem(siteId, "XRF_Requests", eventRow.id, fields, accessToken);
+    await patchListItem(siteId, "XRF_PrecisionExceptions", eventRow.id, fields, accessToken);
   }
 
-  const verified = await findListItem(siteId, "XRF_Requests", eventRow.id, accessToken);
-  const verifiedEvent = parseJsonObject(verified?.fields?.Before_Target_Snapshot_JSON);
-  if ((String(verifiedEvent?.status || "").toUpperCase() === "ACTIVE") !== enabled
-    || cleanText(verifiedEvent?.triggerMeasurementId).trim() !== triggerMeasurementId) {
+  const verified = await findListItem(siteId, "XRF_PrecisionExceptions", eventRow.id, accessToken);
+  if (bool(verified?.fields?.Is_Active) !== enabled
+    || cleanText(verified?.fields?.Measurement_ID).trim() !== triggerMeasurementId) {
     throw new Error("정밀분석 대상 제외 상태의 DB 저장 검증에 실패했습니다.");
   }
-  if (enabled && (cleanText(verifiedEvent?.reasonCode).trim() !== reasonCode
-    || cleanText(verifiedEvent?.reasonDetail).trim() !== reasonDetail
-    || cleanText(verifiedEvent?.evidence).trim() !== evidence)) {
+  if (enabled && (cleanText(verified?.fields?.Exception_Reason).trim() !== reasonCode
+    || cleanText(verified?.fields?.Exception_Detail).trim() !== reasonDetail
+    || cleanText(verified?.fields?.Evidence_Reference).trim() !== evidence)) {
     throw new Error("정밀분석 대상 제외 편집값의 DB 저장 검증에 실패했습니다.");
   }
   return {
     eventId,
-    requestSpItemId: eventRow.id,
+    exceptionSpItemId: eventRow.id,
     triggerMeasurementId,
     handoffException: enabled,
     reasonCode: enabled ? reasonCode : "",
     reasonDetail: enabled ? reasonDetail : "",
     evidence: enabled ? evidence : "",
+  };
+}
+
+async function inspectPrecisionExceptionSchema(siteId, accessToken) {
+  const [list, columns] = await Promise.all([
+    handleListInfo(siteId, accessToken, "XRF_PrecisionExceptions"),
+    handleListColumns(siteId, accessToken, "XRF_PrecisionExceptions"),
+  ]);
+  const byName = new Map(columns.map(column => [column.name, column]));
+  const expected = [
+    ["Title", "text", false, false, false, false],
+    ["Measurement_ID", "text", true, true, true, false],
+    ["Item_ID", "text", true, false, false, false],
+    ["Exception_Reason", "choice", true, false, false, false],
+    ["Exception_Detail", "text", false, false, false, true],
+    ["Evidence_Reference", "text", false, false, false, true],
+    ["Is_Active", "boolean", false, false, false, false],
+    ["Excluded_At", "dateTime", true, false, false, false],
+    ["Excluded_By", "text", true, false, false, false],
+    ["Removed_At", "dateTime", false, false, false, false],
+    ["Removed_By", "text", false, false, false, false],
+  ];
+  const issues = [];
+  for (const [name, type, required, unique, indexed, multiline] of expected) {
+    const column = byName.get(name);
+    if (!column) { issues.push(`${name}: missing`); continue; }
+    if (column.type !== type) issues.push(`${name}: type=${column.type}, expected=${type}`);
+    if (required && !column.required) issues.push(`${name}: required=false`);
+    if (unique && !column.enforceUniqueValues) issues.push(`${name}: unique=false`);
+    if (indexed && !column.indexed) issues.push(`${name}: indexed=false`);
+    if (multiline && !column.allowMultipleLines) issues.push(`${name}: allowMultipleLines=false`);
+  }
+  const active = byName.get("Is_Active");
+  const warnings = [];
+  if (active && !active.required) warnings.push("Is_Active: required=false");
+  if (active && !active.indexed) warnings.push("Is_Active: indexed=false");
+  if (active && ![true, "true", "1", 1].includes(active.defaultValue)) {
+    issues.push(`Is_Active: default=${String(active.defaultValue)}, expected=Yes`);
+  }
+  return { list, columns, issues, warnings };
+}
+
+function legacyPrecisionExceptionTarget(row, measurementById) {
+  const fields = row?.fields || {};
+  const event = parseJsonObject(fields.Before_Target_Snapshot_JSON);
+  const measurementId = cleanText(event?.triggerMeasurementId || fields.field_4).trim();
+  const measurement = measurementById.get(measurementId);
+  const active = String(event?.status || fields.field_2 || "").trim().toUpperCase() === "ACTIVE"
+    || String(fields.field_2 || "").trim().toLowerCase() === "applied";
+  const eventIdRaw = cleanText(event?.eventId || fields.Title || `PREC_EXC_${measurementId}`).trim();
+  return {
+    sourceSpItemId: row?.id || null,
+    fields: {
+      Title: eventIdRaw.slice(0, 250),
+      Measurement_ID: measurementId,
+      Item_ID: cleanText(event?.itemId || fields.field_3 || measurement?.fields?.field_1).trim(),
+      Exception_Reason: cleanText(event?.reasonCode || fields.field_5).trim(),
+      Exception_Detail: cleanText(event?.reasonDetail || fields.field_15),
+      Evidence_Reference: cleanText(event?.evidence),
+      Is_Active: active,
+      Excluded_At: event?.createdAt || fields.Processed_At || row?.createdDateTime || null,
+      Excluded_By: cleanText(event?.createdBy || fields.Processed_By || "admin").trim() || "admin",
+      Removed_At: active ? null : (event?.revokedAt || fields.Reverted_At || row?.lastModifiedDateTime || null),
+      Removed_By: active ? null : (cleanText(event?.revokedBy || fields.Reverted_By).trim() || null),
+    },
+  };
+}
+
+async function handleMigratePrecisionExceptions(siteId, accessToken, payload) {
+  const dryRun = payload?.dryRun !== false;
+  const deleteLegacyPrecision = payload?.deleteLegacyPrecision === true;
+  if (!dryRun && !verifyPrecisionHandoffPassword(payload?.precisionHandoffPassword)) {
+    const error = new Error("관리자 비밀번호가 올바르지 않습니다.");
+    error.status = 403;
+    throw error;
+  }
+
+  const schema = await inspectPrecisionExceptionSchema(siteId, accessToken);
+  if (schema.issues.length) {
+    const error = new Error(`XRF_PrecisionExceptions 스키마 검증 실패: ${schema.issues.join("; ")}`);
+    error.status = 409;
+    throw error;
+  }
+
+  const [requestRows, measurementRows, existingRows] = await Promise.all([
+    readList(siteId, "XRF_Requests", accessToken),
+    readList(siteId, "XRF_Measurements", accessToken),
+    readList(siteId, "XRF_PrecisionExceptions", accessToken),
+  ]);
+  const measurementById = new Map(measurementRows.map(row => [cleanText(row?.fields?.Title).trim(), row]));
+  const legacyRows = requestRows.filter(row => cleanText(row?.fields?.field_1).trim().toLowerCase() === "precisionhandoffexception");
+  const periodSubstitutionRows = requestRows.filter(row => cleanText(row?.fields?.field_1).trim().toLowerCase() === "periodsubstitution");
+  const targets = legacyRows.map(row => legacyPrecisionExceptionTarget(row, measurementById));
+  const invalid = targets.filter(target => {
+    const fields = target.fields;
+    return !fields.Measurement_ID || !measurementById.has(fields.Measurement_ID) || !fields.Item_ID
+      || !fields.Exception_Reason || !fields.Excluded_At || !fields.Excluded_By;
+  });
+  const duplicateMeasurements = targets.map(target => target.fields.Measurement_ID)
+    .filter((value, index, all) => value && all.indexOf(value) !== index);
+  if (invalid.length || duplicateMeasurements.length) {
+    const error = new Error(`마이그레이션 원본 검증 실패: invalid=${invalid.map(row => row.sourceSpItemId).join(",")}; duplicate=${unique(duplicateMeasurements).join(",")}`);
+    error.status = 409;
+    throw error;
+  }
+  const allowedReasons = new Set(schema.columns.find(column => column.name === "Exception_Reason")?.choices || []);
+  const unsupportedReasons = unique(targets.map(target => target.fields.Exception_Reason).filter(reason => allowedReasons.size && !allowedReasons.has(reason)));
+  if (unsupportedReasons.length) {
+    const error = new Error(`Exception_Reason 선택값에 없는 기존 사유: ${unsupportedReasons.join(", ")}`);
+    error.status = 409;
+    throw error;
+  }
+
+  const plan = {
+    list: schema.list,
+    schemaColumns: schema.columns,
+    schemaWarnings: schema.warnings,
+    legacyPrecisionCount: legacyRows.length,
+    existingExceptionCount: existingRows.length,
+    periodSubstitutionCount: periodSubstitutionRows.length,
+    measurementIds: targets.map(target => target.fields.Measurement_ID),
+    periodSubstitutionIds: periodSubstitutionRows.map(row => ({ spItemId: row.id, title: row?.fields?.Title || "" })),
+  };
+  if (dryRun) return { dryRun: true, plan };
+
+  const existingByMeasurement = new Map(existingRows.map(row => [cleanText(row?.fields?.Measurement_ID).trim(), row]));
+  const created = [];
+  const updated = [];
+  for (const target of targets) {
+    const existing = existingByMeasurement.get(target.fields.Measurement_ID);
+    if (existing) {
+      await patchListItem(siteId, "XRF_PrecisionExceptions", existing.id, target.fields, accessToken);
+      updated.push(existing.id);
+    } else {
+      const createdRow = await createListItem(siteId, "XRF_PrecisionExceptions", target.fields, accessToken);
+      created.push(createdRow.id);
+    }
+  }
+
+  const verifiedRows = await readList(siteId, "XRF_PrecisionExceptions", accessToken);
+  const verifiedByMeasurement = new Map(verifiedRows.map(row => [cleanText(row?.fields?.Measurement_ID).trim(), row]));
+  const mismatches = [];
+  for (const target of targets) {
+    const actual = verifiedByMeasurement.get(target.fields.Measurement_ID)?.fields;
+    const expected = target.fields;
+    if (!actual
+      || cleanText(actual.Item_ID).trim() !== expected.Item_ID
+      || cleanText(actual.Exception_Reason).trim() !== expected.Exception_Reason
+      || cleanText(actual.Exception_Detail) !== expected.Exception_Detail
+      || cleanText(actual.Evidence_Reference) !== expected.Evidence_Reference
+      || bool(actual.Is_Active) !== expected.Is_Active
+      || cleanText(actual.Excluded_By).trim() !== expected.Excluded_By) {
+      mismatches.push(expected.Measurement_ID);
+    }
+  }
+  if (mismatches.length) {
+    const error = new Error(`새 예외 리스트 재조회 검증 실패: ${mismatches.join(", ")}`);
+    error.status = 500;
+    throw error;
+  }
+
+  const deletedLegacyPrecisionIds = [];
+  if (deleteLegacyPrecision) {
+    for (const row of legacyRows) {
+      await deleteListItem(siteId, "XRF_Requests", row.id, accessToken);
+      deletedLegacyPrecisionIds.push(row.id);
+    }
+    const remainingRequests = await readList(siteId, "XRF_Requests", accessToken);
+    const remainingLegacy = remainingRequests.filter(row => cleanText(row?.fields?.field_1).trim().toLowerCase() === "precisionhandoffexception");
+    if (remainingLegacy.length) throw new Error(`기존 PrecisionHandoffException 삭제 검증 실패: ${remainingLegacy.map(row => row.id).join(", ")}`);
+  }
+
+  return {
+    dryRun: false,
+    plan,
+    created,
+    updated,
+    verifiedCount: targets.length,
+    deletedLegacyPrecisionIds,
+    periodSubstitutionPreserved: periodSubstitutionRows.map(row => row.id),
   };
 }
 
@@ -1740,14 +1919,9 @@ async function handleUpsertPrecision(siteId, accessToken, payload) {
   const precisionRows = await readList(siteId, "XRF_PrecisionAnalyses", accessToken);
   let header = precisionRows.find(r => cleanText(r?.fields?.field_1).trim() === triggerMeasurementId) || null;
   const alreadyRequested = !!cleanText(header?.fields?.Requested_At).trim();
-  const requestRows = await readList(siteId, "XRF_Requests", accessToken);
-  const activeException = requestRows.some(row => {
-    const fields = row?.fields || {};
-    if (cleanText(fields.field_1).trim().toLowerCase() !== "precisionhandoffexception") return false;
-    const event = parseJsonObject(fields.Before_Target_Snapshot_JSON);
-    return cleanText(event?.triggerMeasurementId || fields.field_4).trim() === triggerMeasurementId
-      && String(event?.status || fields.field_2 || "").toUpperCase() === "ACTIVE";
-  });
+  const exceptionRows = await readList(siteId, "XRF_PrecisionExceptions", accessToken);
+  const activeException = exceptionRows.some(row => cleanText(row?.fields?.Measurement_ID).trim() === triggerMeasurementId
+    && bool(row?.fields?.Is_Active));
   if (activeException) throw new Error("정밀분석 대상 제외를 먼저 해제한 뒤 인계하세요.");
   if (!alreadyRequested && !verifyPrecisionHandoffPassword(payload?.precisionHandoffPassword)) {
     const error = new Error("정밀분석 인계 비밀번호가 올바르지 않습니다.");
@@ -1832,6 +2006,7 @@ async function readBootstrap(siteId, accessToken) {
     "XRF_ElementResults",
     "XRF_PrecisionAnalyses",
     "XRF_PrecisionElementResults",
+    "XRF_PrecisionExceptions",
   ];
   const entries = await Promise.all(names.map(async name => [name, await readList(siteId, name, accessToken)]));
   const lists = Object.fromEntries(entries);
@@ -1883,6 +2058,9 @@ export default async function handler(req, res) {
       if (params.has("columnsFor")) {
         return sendJson(res, 200, { ok: true, columns: await handleListColumns(siteId, accessToken, params.get("columnsFor")) });
       }
+      if (params.has("listInfoFor")) {
+        return sendJson(res, 200, { ok: true, list: await handleListInfo(siteId, accessToken, params.get("listInfoFor")) });
+      }
       if (params.has("precisionFilesFor")) {
         return sendJson(res, 200, { ok: true, files: await handleListPrecisionFiles(siteId, accessToken, params.get("precisionFilesFor")) });
       }
@@ -1917,6 +2095,7 @@ export default async function handler(req, res) {
     else if (action === "processDiscontinue") result = await handleProcessDiscontinue(siteId, accessToken, payload);
     else if (action === "revertDiscontinue") result = await handleRevertDiscontinue(siteId, accessToken, payload);
     else if (action === "setPrecisionHandoffException") result = await handleSetPrecisionHandoffException(siteId, accessToken, payload);
+    else if (action === "migratePrecisionExceptions") result = await handleMigratePrecisionExceptions(siteId, accessToken, payload);
     else if (action === "upsertPrecision") result = await handleUpsertPrecision(siteId, accessToken, payload);
     else if (action === "beginPrecisionFileUpload") result = await handleBeginPrecisionFileUpload(siteId, accessToken, payload);
     else if (action === "uploadPrecisionFileChunk") result = await handlePrecisionFileChunk(payload);

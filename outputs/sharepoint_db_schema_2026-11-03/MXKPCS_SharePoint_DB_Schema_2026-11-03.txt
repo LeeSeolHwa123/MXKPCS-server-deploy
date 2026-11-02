@@ -1,0 +1,442 @@
+MXKPCS SharePoint DB Structure
+================================
+Extracted At (UTC): 2026-11-02T23:32:58.782Z
+Site ID: kochind.sharepoint.com,094129d8-9492-4d1d-9223-c716e28317a9,c79c6d5a-5dab-47fb-bc5e-43a44c51c84a
+Source Deployment: https://mxkpcs-ovafr4fj8-yah2685-2386.vercel.app
+Lists/Libraries: 9
+
+Summary
+-------
+- XRF_Items: XRF_Items, template=genericList, rows=67, columns=42
+- XRF_Requests: XRF_Requests, template=genericList, rows=11, columns=60
+- XRF_Measurements: XRF_Measurements, template=genericList, rows=195, columns=32
+- XRF_ElementResults: XRF_ElementResults, template=genericList, rows=1170, columns=28
+- XRF_PrecisionAnalyses: XRF_PrecisionAnalyses, template=genericList, rows=0, columns=32
+- XRF_PrecisionElementResults: XRF_PrecisionElementResults, template=genericList, rows=0, columns=27
+- XRF_PrecisionExceptions: XRF_PrecisionExceptions, template=genericList, rows=15, columns=34
+- XRF_ReportLibrary: XRF_보고서_파일 문서, template=documentLibrary, rows=not included in bootstrap, columns=34
+- XRF_ItemPhotoLibrary: XRF_ItemPhotoLibrary, template=documentLibrary, rows=not included in bootstrap, columns=35
+
+[XRF_Items]
+  ID: 651d2a7e-d6b9-43ce-9c44-2991682eb058
+  Display Name: XRF_Items
+  Template: genericList
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/Lists/XRF_Items
+  Created: 2026-09-04T06:16:22Z
+  Modified: 2026-11-02T07:16:55Z
+  Current Rows: 67
+  Application-visible columns:
+  - Title (Title) :: type=text, required=Yes, indexed=Yes, unique=Yes, readOnly=No, hidden=No, multiline=No, default=-
+  - field_1 (Part_Number) :: type=text, required=Yes, indexed=Yes, unique=Yes, readOnly=No, hidden=No, multiline=No, default=-
+  - field_2 (Item_Name) :: type=text, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_3 (Item_Name_EN) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_4 (Item_Type) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Auxiliary Materials | Facility
+  - field_5 (Handling_Dept) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Assembly | Common | Molding | Plating | Stamping
+  - field_6 (Material_Category) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Metal | Plated Metal | Plastic | Rubber | Glass | Ceramics | Paper | Paint/Ink | Adhesive | Silicon | Solder wire/paste/flux | Textile | Chemical | Vinyl | Tape | Label | Others
+  - field_7 (Material_State) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Liquid | Volatile Liquid | Viscous Liquid | Aerosol | Gas | Solid
+  - field_8 (CR_Type) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=직접접촉+잔류 | 직접접촉+비잔류 | 비접촉
+  - field_9 (Lifecycle_Status) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=ExistingActive | NewItem | NewReplacement | ReplacedOld | Discontinued
+  - field_10 (Is_Current) :: type=boolean, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=1
+  - field_11 (Registration_Period_No) :: type=number, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_13 (Action_Note) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Lifecycle_End_Date (Lifecycle_End_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Replacement_Of (Replacement_Of) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Replacement_Date (Replacement_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Photo_File_Name (Photo_File_Name) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Photo_File_ID (Photo_File_ID) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Photo_File_URL (Photo_File_URL) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  SharePoint system columns:
+  - LinkTitle (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkTitleNoMenu (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Attachments (Attachments) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_Requests]
+  ID: 187a06a8-5a0a-40d0-9164-8cb45372ef32
+  Display Name: XRF_Requests
+  Template: genericList
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/Lists/XRF_Requests
+  Created: 2026-09-04T06:43:14Z
+  Modified: 2026-11-02T07:17:01Z
+  Current Rows: 11
+  Application-visible columns:
+  - Title (Title) :: type=text, required=Yes, indexed=Yes, unique=Yes, readOnly=No, hidden=No, multiline=No, default=-
+  - field_1 (Request_Type) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=New | Replacement | Discontinue | Restore
+  - field_2 (Request_Status) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Pending | Applied | Rejected | Cancelled | Reverted
+  - field_3 (Target_Item_ID) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_4 (Proposed_Item_ID) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_5 (Proposed_Part_Number) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_6 (Item_Name) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_7 (Item_Type) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Auxiliary Materials | Facility
+  - field_8 (Handling_Dept) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Assembly | Common | Molding | Plating | Stamping
+  - field_9 (Material_Category) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Metal | Plated Metal | Plastic | Rubber | Glass | Ceramics | Paper | Paint/Ink | Adhesive | Silicon | Solder wire/paste/flux | Textile | Chemical | Vinyl | Tape | Label | Others
+  - field_10 (Material_State) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Liquid | Volatile Liquid | Viscous Liquid | Aerosol | Gas | Solid
+  - field_11 (Manufacturer) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_13 (CR_Type) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=직접접촉+잔류 | 직접접촉+비잔류 | 비접촉
+  - field_14 (XRF_Input_Mode) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Upload | Request
+  - field_15 (Reason) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - field_16 (Disposition) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_18 (Note) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Use_Date (Use_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Effective_Date (Effective_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Request_Reason (Request_Reason) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Replacement_Reason_Other (Replacement_Reason_Other) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Old_Item_Disposition (Old_Item_Disposition) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=신규 품목 승인 후 기존 재고 소진 후 단종 | 승인 후 즉시 단종 | 신규 품목 승인 후 병행 사용 | 기존 품목 유지, 신규 품목 추가 등록만 진행
+  - Replacement_Date (Replacement_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Discontinue_Reason (Discontinue_Reason) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=사용 중지 | 공정 변경 | 고객 요구 | 공급 중단 | 대체품 적용 완료 | 기타
+  - Discontinue_Reason_Other (Discontinue_Reason_Other) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Final_Use_Date (Final_Use_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Stock_Disposition (Stock_Disposition) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=재고 소진 후 사용 중지 | 폐기 | 반품 | 별도 보관 | 기타
+  - Processed_At (Processed_At) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Processed_By (Processed_By) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Reverted_At (Reverted_At) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Reverted_By (Reverted_By) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Revert_Reason (Revert_Reason) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Before_Target_Snapshot_JSON (Before_Target_Snapshot_JSON) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Restored_Target_Snapshot_JSON (Restored_Target_Snapshot_JSON) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Is_Migration (Is_Migration) :: type=boolean, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=0
+  - Replacement_Reason (Replacement_Reason) :: type=choice, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=기존 품목 단종 | 공급업체 변경 | 제조사 변경 | 사양 변경 | 품질 개선 | 원가 절감 | 고객 요구 | 기타
+  - Requester_Name (Requester_Name) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - LinkTitle (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkTitleNoMenu (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Attachments (Attachments) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_Measurements]
+  ID: dd0bf876-6066-4877-be6d-eb10eb5ce35c
+  Display Name: XRF_Measurements
+  Template: genericList
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/Lists/XRF_Measurements
+  Created: 2026-09-04T07:00:35Z
+  Modified: 2026-11-02T07:16:48Z
+  Current Rows: 195
+  Application-visible columns:
+  - Title (Title) :: type=text, required=Yes, indexed=Yes, unique=Yes, readOnly=No, hidden=No, multiline=No, default=-
+  - field_1 (Item_ID) :: type=text, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_3 (Measurement_Role) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Initial | Periodic | Retest
+  - field_4 (Attempt_No) :: type=number, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=1
+  - field_5 (Parent_Measurement_ID) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_6 (Source_File_Name) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_7 (Source_Sheet) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Measured_Date (Measured_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Requester_Name (Requester_Name) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - LinkTitle (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkTitleNoMenu (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Attachments (Attachments) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_ElementResults]
+  ID: b0a877ee-5334-4237-9b8f-e94235b118a4
+  Display Name: XRF_ElementResults
+  Template: genericList
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/Lists/XRF_ElementResults
+  Created: 2026-09-04T07:11:52Z
+  Modified: 2026-11-02T07:16:42Z
+  Current Rows: 1170
+  Application-visible columns:
+  - Title (Title) :: type=text, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_1 (Element_Code) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Pb | Hg | Cr | Cd | Cl | Br
+  - field_2 (Raw_Content_Text) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_3 (Raw_Sigma_Text) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_4 (Raw_Judgement) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - LinkTitle (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkTitleNoMenu (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Attachments (Attachments) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_PrecisionAnalyses]
+  ID: 3c387146-a8c5-4b94-9bf3-251452b19a1c
+  Display Name: XRF_PrecisionAnalyses
+  Template: genericList
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/Lists/XRF_PrecisionAnalyses
+  Created: 2026-09-04T07:20:34Z
+  Modified: 2026-11-02T00:05:43Z
+  Current Rows: 0
+  Application-visible columns:
+  - Title (Title) :: type=text, required=Yes, indexed=Yes, unique=Yes, readOnly=No, hidden=No, multiline=No, default=-
+  - field_1 (Trigger_Measurement_ID) :: type=text, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_2 (Lab_Name) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_3 (Report_No) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_5 (Result_File_URL) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_6 (Final_Confirmed) :: type=boolean, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=0
+  - Measured_Date (Measured_Date) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Requested_At (Requested_At) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Requested_By (Requested_By) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - LinkTitle (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkTitleNoMenu (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Attachments (Attachments) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_PrecisionElementResults]
+  ID: 3fc979f1-4d6c-4d8a-9c75-3cab099d9971
+  Display Name: XRF_PrecisionElementResults
+  Template: genericList
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/Lists/XRF_PrecisionElementResults
+  Created: 2026-09-04T07:26:15Z
+  Modified: 2026-11-02T00:05:43Z
+  Current Rows: 0
+  Application-visible columns:
+  - Title (Title) :: type=text, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - field_1 (Element_Code) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=Pb | Hg | Cr | Cd | Cl | Br | Cl+Br
+  - field_2 (Presence) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-, choices=함유 | 미함유
+  - field_3 (Content_ppm) :: type=number, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - LinkTitle (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkTitleNoMenu (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Attachments (Attachments) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_PrecisionExceptions]
+  ID: a9146c7a-84c2-485c-872d-e17f3d4beef8
+  Display Name: XRF_PrecisionExceptions
+  Template: genericList
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/Lists/XRF_PrecisionExceptions
+  Created: 2026-11-02T02:16:47Z
+  Modified: 2026-11-02T23:25:32Z
+  Current Rows: 15
+  Application-visible columns:
+  - Title (Title) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Measurement_ID (Measurement_ID) :: type=text, required=Yes, indexed=Yes, unique=Yes, readOnly=No, hidden=No, multiline=No, default=-
+  - Item_ID (Item_ID) :: type=text, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Exception_Reason (Exception_Reason) :: type=choice, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=원재료 및 구성성분 영향, choices=원재료 및 구성성분 영향 | 제조공정 및 오염 영향 | 시료 및 측정조건 영향 | 관리기준 및 판정 오류 | 기타 (직접 입력)
+  - Exception_Detail (Exception_Detail) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Evidence_Reference (Evidence_Reference) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - Is_Active (Is_Active) :: type=boolean, required=Yes, indexed=Yes, unique=No, readOnly=No, hidden=No, multiline=No, default=1
+  - Excluded_At (Excluded_At) :: type=dateTime, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Excluded_By (Excluded_By) :: type=text, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Removed_At (Removed_At) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Removed_By (Removed_By) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - LinkTitle (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Attachments (Attachments) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkTitleNoMenu (Title) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_ReportLibrary]
+  ID: 0462cdd6-f3ce-40bf-a814-471796a6147b
+  Display Name: XRF_보고서_파일 문서
+  Template: documentLibrary
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/XRF__
+  Created: 2026-05-18T00:48:07Z
+  Modified: 2026-11-02T06:25:04Z
+  Current Rows: not included in bootstrap
+  Application-visible columns:
+  - Title (Title) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - _ExtendedDescription (Description) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - _CopySource (Copy Source) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - CheckoutUser (Checked Out To) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _CheckinComment (Check In Comment) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkFilenameNoMenu (Name) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkFilename (Name) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FileSizeDisplay (File Size) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _CommentCount (Comment count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _LikeCount (Like count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _DisplayName (Sensitivity) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ParentVersionString (Source Version (Converted Document)) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ParentLeafName (Source Name (Converted Document)) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - FileLeafRef (Name) :: type=other, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
+[XRF_ItemPhotoLibrary]
+  ID: ef7471b3-dea2-447f-a54a-254cddc7ed1a
+  Display Name: XRF_ItemPhotoLibrary
+  Template: documentLibrary
+  Web URL: https://kochind.sharepoint.com/sites/MLX_MXKPCS/XRF_ItemPhotoLibrary
+  Created: 2026-09-21T23:42:27Z
+  Modified: 2026-10-29T01:01:09Z
+  Current Rows: not included in bootstrap
+  Application-visible columns:
+  - Title (Title) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - _ExtendedDescription (Description) :: type=text, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=Yes, default=-
+  - MediaServiceLocation (Location) :: type=text, required=No, indexed=Yes, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _CopySource (Copy Source) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - CheckoutUser (Checked Out To) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _CheckinComment (Check In Comment) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkFilenameNoMenu (Name) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - LinkFilename (Name) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FileSizeDisplay (File Size) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _CommentCount (Comment count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _LikeCount (Like count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _DisplayName (Sensitivity) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ParentVersionString (Source Version (Converted Document)) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ParentLeafName (Source Name (Converted Document)) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  SharePoint system columns:
+  - FileLeafRef (Name) :: type=other, required=Yes, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - _ColorTag (Color Tag) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ComplianceAssetId (Compliance Asset Id) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ID (ID) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ContentType (Content Type) :: type=other, required=No, indexed=No, unique=No, readOnly=No, hidden=No, multiline=No, default=-
+  - Created (Created) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Author (Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Modified (Modified) :: type=dateTime, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Editor (Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - DocIcon (Type) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - ItemChildCount (Item Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - FolderChildCount (Folder Child Count) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceFlags (Label setting) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTag (Retention label) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagWrittenTime (Retention label Applied) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _ComplianceTagUserId (Label applied by) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _IsRecord (Item is a Record) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppAuthor (App Created By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - AppEditor (App Modified By) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - Edit (Edit) :: type=other, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+  - _UIVersionString (Version) :: type=text, required=No, indexed=No, unique=No, readOnly=Yes, hidden=No, multiline=No, default=-
+
