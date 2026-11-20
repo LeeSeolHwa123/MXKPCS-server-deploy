@@ -22,7 +22,7 @@ export {
   precisionCaseFlowKey,summarizePrecisionCases,approvalFilterKey,workflowStageLabel,
   itemXrfWorst,isPrecisionHandoffExceptionCase,precisionRowsForListMode,
   activePrecisionExceptionCaseOf,riskPrecisionPresentationOf,precisionAnalysisResultOf,
-  translateUiTextKoToEn
+  translateUiTextKoToEn,xrfCurrentStageLabel
 };
 `;
 
@@ -80,6 +80,8 @@ assert(workflow.approval?.status==="승인","precision exceptions must appear as
 assert(app.approvalFilterKey(workflow.approval?.status)==="approved","material-list approval filters must map precision exceptions to approved");
 assert(app.precisionAnalysisResultOf({...item,__workflow:workflow})==="해당 없음","material-list precision result must expose the exception as not applicable");
 assert(app.workflowStageLabel(workflow.stage)==="정밀분석 대상 제외","current-action labels must expose the excluded state");
+assert(app.xrfCurrentStageLabel(workflow)==="해당 없음","XRF analysis current stage must show the excluded NG case as not applicable");
+assert(app.xrfCurrentStageLabel({...workflow,stage:"XRF_REMEASURE_REQUIRED",approval:{status:"보류"}})==="XRF 재측정","an outstanding XRF remeasurement must remain ahead of the precision exception");
 assert(app.itemXrfWorst(item)==="NG","exception must not overwrite the source XRF NG result");
 assert(app.isPrecisionHandoffExceptionCase(precisionCase)===true,"exception case classifier must recognize the DB-mapped row");
 assert(app.precisionRowsForListMode([precisionCase],"targets").length===0,"active precision target list must exclude exception cases");
@@ -132,6 +134,7 @@ assert(source.includes('Save Changes'),"exception editor must expose a dedicated
 assert(source.includes('row?.precision?.exceptionReasonDetail'),"exception-list search must include the saved detailed reason");
 assert(source.includes('role="switch" aria-checked={checked}'),"exception actions must use an accessible ON/OFF switch");
 assert(source.includes('background:checked?C.charcoalDk:C.card'),"active exception switches must use the requested black styling");
+assert(source.includes('const precisionExcluded=!!activePrecisionExceptionCaseOf(wf)')&&source.includes('const approvalReached=approvalFilterKey(approvalValue)==="approved"'),"XRF workflow must show excluded precision as not applicable and advance to approval");
 assert(!source.includes('openExceptionDialog'),"precision detail must not retain an exception action");
 assert(source.includes('if(isPrecisionHandoffExceptionCase(selectedCase))'),"exception cases must be redirected away from precision detail");
 assert(!source.includes('기존과 동일하게 NG 발생 건이 자동으로 누적됩니다.'),"removed precision-list guidance must not remain");

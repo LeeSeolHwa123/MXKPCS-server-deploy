@@ -2343,6 +2343,12 @@ function workflowStageLabel(stage){
   const map={XRF_REQUIRED:"확인 필요",XRF_REMEASURE_REQUIRED:"XRF 재측정",PRECISION_TRANSFER_REQUEST_REQUIRED:"정밀분석 인계 필요",PRECISION_TRANSFER_RESULT_WAITING:"정밀분석 결과 대기",PRECISION_FOLLOWUP_REQUIRED:"후속조치 필요",PRECISION_REQUEST_REQUIRED:"정밀분석 의뢰 필요",PRECISION_HANDOFF_EXEMPTED:"정밀분석 대상 제외",PRECISION_RESULT_WAITING:"정밀분석 결과 대기",APPROVED:"처리 완료",PRECISION_NG_REVIEW:"정밀분석 NG",RISK_NOT_ALLOWED:"사용불허"};
   return map[stage]||stage||"—";
 }
+function xrfCurrentStageLabel(workflow){
+  // 정밀분석 대상에서 제외한 NG 측정은 XRF 분석 화면에서 더 이상
+  // "인계 필요" 단계가 아니므로 현재 단계를 "해당 없음"으로 표시합니다.
+  // 다만 별도 XRF 재측정 의무가 남아 있으면 그 단계를 우선합니다.
+  return workflow?.stage==="PRECISION_HANDOFF_EXEMPTED" ? "해당 없음" : workflowStageLabel(workflow?.stage);
+}
 function baseWorkflowForItem(item){
   const caseData=workflowCaseForItem(item);
   if(caseData){
@@ -5743,7 +5749,10 @@ function WorkflowStrip({item, lang="ko"}){
   const attempts=wf.xrfAttempts||[];
   const xrfRaw=attempts.length ? attempts[attempts.length-1].normalizedResult : itemXrfWorst(item);
   const xrfValue=xrfRaw==="REMEASURE"?"재측정 필요":(xrfRaw||"—");
-  const precisionValue=wf.precision?.result
+  const precisionExcluded=!!activePrecisionExceptionCaseOf(wf);
+  const precisionValue=precisionExcluded
+    ? "해당 없음"
+    : wf.precision?.result
     || (wf.precision?.requestStatus==="REQUESTED"
       ? (wf.precision?.uploadStatus==="UPLOADED"?"결과 확인":"결과 대기")
       : wf.precision?.required
@@ -5754,9 +5763,11 @@ function WorkflowStrip({item, lang="ko"}){
   const latest=latestMeasurementOf(item);
   const remeasureTargets=pendingXrfRemeasureElements(latest);
 
-  const precisionSkipped=xrfValue==="OK" && !wf.precision?.result;
+  const precisionSkipped=precisionExcluded || (xrfValue==="OK" && !wf.precision?.result);
   const precisionStages=new Set(["PRECISION_FOLLOWUP_REQUIRED","PRECISION_REQUEST_REQUIRED","PRECISION_RESULT_WAITING","PRECISION_NG_REVIEW"]);
-  const activeIdx=wf.stage==="APPROVED"?2:(precisionStages.has(wf.stage)?1:0);
+  // 예외처리 후 파생된 승인도 일반 승인과 동일하게 3단계까지 도달시킵니다.
+  const approvalReached=approvalFilterKey(approvalValue)==="approved";
+  const activeIdx=approvalReached?2:(precisionStages.has(wf.stage)?1:0);
 
   // Open Color Gray 7/8을 타임라인의 주 배경으로 사용하고,
   // 현재 단계는 별도 포인트 컬러 없이 흰색으로만 강조합니다.
@@ -7627,6 +7638,57 @@ function expandedPhotoDisplaySize(naturalWidth,naturalHeight){
   const minimumExpandedWidth=Math.min(720,maxWidth);
   const scale=Math.max(fitScale,minimumExpandedWidth/width);
   return {displayWidth:Math.round(width*scale),displayHeight:Math.round(height*scale)};
+}
+
+function SharePointDbLoading(){
+  return (
+    <>
+      <style>{`
+        .mxk-db-loading-overlay {
+          position:fixed;
+          inset:0;
+          z-index:9999;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          background:${C.bg};
+        }
+        .mxk-db-loading-card {
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          padding:22px;
+          background:${C.card};
+          border:1px solid ${C.bd};
+          border-radius:${UI.r}px;
+          box-shadow:${UI.sh};
+        }
+        .mxk-db-loading-spinner {
+          width:28px;
+          height:28px;
+          box-sizing:border-box;
+          border:3px solid ${C.bd2};
+          border-top-color:${C.charcoalDk};
+          border-radius:50%;
+          animation:mxk-db-loading-rotate .8s linear infinite;
+        }
+        @keyframes mxk-db-loading-rotate {
+          to { transform:rotate(360deg); }
+        }
+      `}</style>
+      <div
+        className="mxk-db-loading-overlay"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        aria-label="SharePoint DB를 불러오는 중입니다."
+      >
+        <div className="mxk-db-loading-card">
+          <div className="mxk-db-loading-spinner" aria-hidden="true"/>
+        </div>
+      </div>
+    </>
+  );
 }
 
 export default function App(){
@@ -10419,11 +10481,7 @@ export default function App(){
     return <SplashScreen onSelectTab={(nextTab)=>{setTab(nextTab);setEntered(true);}} lang={lang} onLang={setLang}/>;
   }
   if(dbLoading){
-    return <div style={{fontFamily:FONT_SANS,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.bg,color:C.text2}}>
-      <div style={{padding:"22px 26px",background:C.card,border:`1px solid ${C.bd}`,borderRadius:UI.r,boxShadow:UI.sh,fontSize:13,fontWeight:600}}>
-        SharePoint DB를 불러오는 중입니다.
-      </div>
-    </div>;
+    return <SharePointDbLoading/>;
   }
   if(dbError){
     return <div style={{fontFamily:FONT_SANS,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:C.bg,color:C.text2,padding:24,boxSizing:"border-box"}}>
@@ -11181,7 +11239,7 @@ export default function App(){
                       ? [["요청일",sel.firstDate],["최종 사용 예정일",sel.finalUseDate||"—"]]
                       : [
                           [currentSubstitutionEvent?`${selectedPeriodLabel} 대체품 XRF`:`${selectedPeriodLabel} XRF 결과`, <Chip v={displayXrfText(selectedMetrics.xrf)} small result/>],
-                          ["현재 단계", workflowStageLabel(workflowForItem(sel).stage)],
+                          ["현재 단계", xrfCurrentStageLabel(workflowForItem(sel))],
                           ["최초 등록", sel.firstDate],
                           ["R Final Risk", itemFinalRisk(sel)||"—"],
                           ["R 검사주기", CYCLE_KO[itemCycleFromRisk(sel)]||itemCycleFromRisk(sel)||"—"],
