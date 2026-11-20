@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:local": "node scripts/local-vercel-dev.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "test:followup": "node scripts/followup-policy.test.mjs",
