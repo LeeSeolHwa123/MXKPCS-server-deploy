@@ -7642,52 +7642,17 @@ function expandedPhotoDisplaySize(naturalWidth,naturalHeight){
 
 function SharePointDbLoading(){
   return (
-    <>
-      <style>{`
-        .mxk-db-loading-overlay {
-          position:fixed;
-          inset:0;
-          z-index:9999;
-          display:flex;
-          align-items:center;
-          justify-content:center;
-          background:${C.bg};
-        }
-        .mxk-db-loading-card {
-          display:flex;
-          align-items:center;
-          justify-content:center;
-          padding:22px;
-          background:${C.card};
-          border:1px solid ${C.bd};
-          border-radius:${UI.r}px;
-          box-shadow:${UI.sh};
-        }
-        .mxk-db-loading-spinner {
-          width:28px;
-          height:28px;
-          box-sizing:border-box;
-          border:3px solid ${C.bd2};
-          border-top-color:${C.charcoalDk};
-          border-radius:50%;
-          animation:mxk-db-loading-rotate .8s linear infinite;
-        }
-        @keyframes mxk-db-loading-rotate {
-          to { transform:rotate(360deg); }
-        }
-      `}</style>
-      <div
-        className="mxk-db-loading-overlay"
-        role="status"
-        aria-live="polite"
-        aria-busy="true"
-        aria-label="SharePoint DB를 불러오는 중입니다."
-      >
-        <div className="mxk-db-loading-card">
-          <div className="mxk-db-loading-spinner" aria-hidden="true"/>
-        </div>
+    <div
+      className="mxk-db-loading-overlay"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label="SharePoint DB를 불러오는 중입니다."
+    >
+      <div className="mxk-db-loading-card">
+        <div className="mxk-db-loading-spinner" aria-hidden="true"/>
       </div>
-    </>
+    </div>
   );
 }
 
