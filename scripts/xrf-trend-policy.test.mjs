@@ -86,8 +86,8 @@ assert(!originalSource.includes('background:enabled?"rgba(25,49,167,.32)"'),"pre
 assert(originalSource.includes('gridTemplateColumns:"24px minmax(0,1fr) 24px"'),"precision upload button labels must remain optically centered");
 assert(!originalSource.includes('canEditPrecisionResult?"결과 입력 가능"'),"precision detail header must not show the result-entry-ready label");
 assert(originalSource.includes('border:"1px solid #343A40",borderRadius:6,background:"#343A40"'),"element trend button must match the compact edit-button shape and #343A40 color");
-assert(!originalSource.includes("품목 등록·변경"),"registration/change labels must consistently use a slash");
-assert(originalSource.includes('l:"품목 / 변경 관리"'),"registration/change tab must use the requested label");
+assert(!originalSource.includes("품목 등록·변경"),"registration/change labels must use the requested wording");
+assert(originalSource.includes('l:"품목 변경 관리"'),"registration/change tab must use the requested label");
 assert(!originalSource.includes("Lifecycle = "),"request type cards must not display internal lifecycle codes");
 assert(!originalSource.includes("의뢰자 등록은 먼저 요청 유형을 선택한 뒤"),"request type explanation must be removed");
 assert(originalSource.includes('const registrationButtonStyle='),"registration navigation and action buttons must share one style helper");

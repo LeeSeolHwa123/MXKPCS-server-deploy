@@ -1691,7 +1691,7 @@ function applyPeriodBasedCategories(items){
 const UI_EN_MAP = {
   // ── 탭 / 전역 ──
   "부자재 리스트":"Auxiliary Material List","XRF 분석":"XRF Analysis","정밀분석":"Precision Analysis",
-  "위험도 현황":"Risk Overview","품목 / 변경 관리":"Item / Change Management",
+  "위험도 현황":"Risk Overview","품목 변경 관리":"Item Change Management",
   "부자재 XRF 관리 시스템":"Auxiliary Material XRF Management System",
   "기준일":"As of","한국어":"Korean","영어":"English",
 
@@ -7267,7 +7267,7 @@ function SplashScreen({onSelectTab, lang="ko", onLang, developer="SHLee", depart
     {tab:"xrf",       icon:"xrf",       label:t("XRF 분석","XRF Analysis")},
     {tab:"precision", icon:"precision", label:t("정밀분석","Precision Analysis")},
     {tab:"risk",      icon:"risk",      label:t("위험도 현황","Risk Overview")},
-    {tab:"reg",       icon:"reg",       label:t("품목 / 변경 관리","Registration")},
+    {tab:"reg",       icon:"reg",       label:t("품목 변경 관리","Registration")},
   ];
 
   return (
@@ -10368,7 +10368,7 @@ export default function App(){
   const inp={padding:"8px 12px",border:`1px solid ${C.bd2}`,borderRadius:UI.rs,fontSize:12,outline:"none",background:C.card,color:C.text2,fontFamily:FONT_SANS};
   const fileInputOverlay={position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%"};
   const uploadBoxStyle={position:"relative",display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:`1px dashed ${C.bd2}`,background:C.card,color:C.text3,fontSize:12,fontWeight:600,cursor:"pointer",overflow:"hidden",textAlign:"center",padding:"0 12px",boxSizing:"border-box"};
-  const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 / 변경 관리"}];
+  const TABS=[{id:"list",l:"부자재 리스트"},{id:"xrf",l:"XRF 분석"},{id:"precision",l:"정밀분석"},{id:"risk",l:"위험도 현황"},{id:"reg",l:"품목 변경 관리"}];
   const fhp={filterState:fs,openFilter,onOpen:handleOpen,lang};
   const precisionFhp={filterState:precisionFilters,openFilter:precisionOpenFilter,onOpen:handlePrecisionFilterOpen,lang,balancedHeader:true,breakTwoWordEnglish:true};
   const precisionHasFilters=Object.values(precisionFilters).some(values=>values.length>0)||!!String(precisionSearch||"").trim();
@@ -11031,7 +11031,7 @@ export default function App(){
                 </button>
                 <button onClick={()=>{setTab("reg");setRegMode("requester");setRegStep(1);setRegType(null);setReqXrfMode("request");}}
                   style={{height:34,padding:"0 16px",background:C.charcoalDk,color:"#fff",border:"none",borderRadius:UI.rs,fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}>
-                  <span style={{fontSize:15,lineHeight:1}}>+</span> 품목 / 변경 관리
+                  <span style={{fontSize:15,lineHeight:1}}>+</span> 품목 변경 관리
                 </button>
               </div>
               <FilterChips filterState={fs} onClear={handleClear} onClearAll={handleClearAll}/>
@@ -11825,7 +11825,7 @@ export default function App(){
             <div style={{...card,padding:0,overflow:"hidden"}}>
               <div style={{padding:"18px 22px",borderBottom:`1px solid ${C.bd}`,display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
                 <div>
-                  <div style={{...T.pageTitle,marginBottom:5}}>품목 / 변경 관리</div>
+                  <div style={{...T.pageTitle,marginBottom:5}}>품목 변경 관리</div>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                   <div role="tablist" aria-label={lang==="en"?"Item registration mode":"품목 등록 방식"} style={{display:"inline-flex",alignItems:"center",gap:4,padding:4,background:C.charcoalBg,border:`1px solid ${C.bd2}`,borderRadius:9}}>
